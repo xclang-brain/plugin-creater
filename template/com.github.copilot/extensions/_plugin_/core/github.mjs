@@ -67,10 +67,10 @@ export function runCommand({ command, args, input = null, timeoutMs, clock, env 
 const STEP_PUBLISH = 'GitHub にこのプラグインを公開する。';
 // 入れ方によって、書き換えが反映される時期が違う。手元のフォルダから入れたものは、コピーされず、Copilot CLI を起動し直すか
 // /clear で新しい会話を始めると反映される（エクステンションは起動のたびに plugin.json を読み直す。V1 の確かめ）。
-// GitHub などから入れたものは、直した plugin.json を GitHub に送ってから入れ直すと反映される（コピーの動きは V1 では確かめていない）。
-// 画面に出る文なので、「セッション」のような説明のない言葉は使わない（REQ-025）。
+// GitHub などから入れたものは、直した plugin.json を GitHub に送り、アンインストールしてから、もう一度インストールすると読まれる（コピーの動きは V1 では確かめていない）。
+// 画面に出る文なので、「セッション」のような説明のない言葉や、「入れ直す」のような比喩は使わない（REQ-025）。
 const STEP_REPOSITORY =
-  'プラグインの設定ファイル（plugin.json）の repository に、公開したリポジトリの GitHub の URL を書く。手元のフォルダから入れたときは、Copilot CLI を起動し直すか、/clear で新しい会話を始めると反映される。GitHub などから入れたときは、直した plugin.json を GitHub に送ってから、入れ直すと反映される。';
+  'プラグインの設定ファイル（plugin.json）の repository に、公開したリポジトリの GitHub の URL を書く。そのあと、手元のフォルダからインストールしたときは、Copilot CLI を終了して起動し直すか、/clear で新しい会話を始める。GitHub などからインストールしたときは、直した plugin.json を GitHub に送り、このプラグインをアンインストールしてから、もう一度インストールする。';
 const STEP_GH = 'gh（GitHub の公式のコマンド）を入れて、gh auth login でログインする。';
 const STEP_LOGIN = 'gh auth login でログインする。';
 

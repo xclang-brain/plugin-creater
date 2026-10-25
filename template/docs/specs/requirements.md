@@ -185,7 +185,9 @@
 
 - 要件：課題の一覧には、{{plugin_name}} 自身を改善するための Issue の案（タイトルと本文）が並ぶ。ユーザーが Web管理画面の課題の一覧で、案ごとに承認ボタンを押すと、その案が {{plugin_name}} 自身の GitHub リポジトリに Issue として起票される。起票できるようにするには、次の手順が要る。起票できないときは、案は並び、この手順が画面に示される。
   1. {{plugin_name}} を GitHub に公開する。
-  2. {{plugin_name}} の設定ファイル（マニフェスト。`plugin.json`）の `repository` に、そのリポジトリを書き、{{plugin_name}} を入れ直す。
+  2. {{plugin_name}} の設定ファイル（マニフェスト。`plugin.json`）の `repository` に、そのリポジトリを書き、書いた後の `plugin.json` を Copilot CLI に読ませる。読ませるやり方は、{{plugin_name}} をどこからインストールしたかで違う。
+     - 手元のフォルダからインストールしたとき：Copilot CLI を終了して起動し直すか、`/clear` で新しい会話を始める。
+     - GitHub からインストールしたとき：直した `plugin.json` を GitHub に送り、{{plugin_name}} をアンインストールしてから、もう一度インストールする。
   3. gh（GitHub の公式のコマンド）を入れて、ログインする。
 - 根拠：憲章 第24条2項・3項
 - 受け入れ基準：
