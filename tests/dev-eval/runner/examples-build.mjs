@@ -8,6 +8,7 @@
 //   - 話し方は normal（既定。--style で変えられる）
 //   - クリエイターの版が、今の plugin.json の版と同じ（版を上げるたびに、その版の会話から作り直す）
 //   - 見ない模擬ユーザー（heldout）の会話は載せない（読めば、見ない模擬ユーザーではなくなるため）
+//   - 開発者が答えた会話（記録の answerer が human。6.7）は載せない（会話例は、AI が演じたユーザーとの会話と決めているため）
 // 冒頭に、AI が演じたユーザーとの会話であることと、plugin-creator の版と日付を書く（冒頭 30 行に「plugin-creator の版：x.y.z」。A3 の 1段目が突き合わせる）。
 // 続けて、試験の条件と点数（REQ-037）、聞かれないと話さないことにしていた決まりの一覧（REQ-037）を書く。見ない模擬ユーザーの会話は載せないので、一覧を出してよい。
 // 会話例はエンドユーザーが README と画面から読むので、書く言葉は画面と同じ「plugin-creator」にする（仕様 REQ-037 の「クリエイターの版」は開発者の用語）。
@@ -87,6 +88,7 @@ export function selectRecords(items, { pluginVersion, style = 'normal' }) {
   for (const item of items) {
     const r = item.record;
     if (r.heldout || item.file.split(path.sep).includes('records-heldout')) { skip(item, '見ない模擬ユーザーの会話は載せない（6.6）'); continue; }
+    if (r.answerer === 'human') { skip(item, '開発者が答えた会話は載せない（6.6、6.7）'); continue; }
     if (r.arm !== 'with') { skip(item, `クリエイターの会話ではない（腕：${r.arm}）`); continue; }
     if (r.style !== style) { skip(item, `話し方が ${style} ではない（${r.style}）`); continue; }
     if (r.stopped?.reason !== 'generated') { skip(item, `生成まで進んでいない（${r.stopped?.reason ?? '不明'}）`); continue; }

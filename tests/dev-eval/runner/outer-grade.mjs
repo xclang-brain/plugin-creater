@@ -18,6 +18,8 @@
 // 採点とは別に、設計書（testing.md 6.5）が「記録する」とした数を数える（countRecorded。合否には入れない）：
 //   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか。
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
+// 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
+//   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -414,8 +416,9 @@ export function gradeModels({ use, generatedCount }) {
  * @param {object|null} args.modelUse 動いたモデル { requested, main, subagents: [{ type, models }], lowCost }。腕 with で渡すと REQ-045・REQ-046 を採点する
  * @param {string} args.model クリエイターのモデルの ID
  * @param {'with'|'without'|'control'} args.arm
+ * @param {'user-role'|'human'} [args.answerer] 答えた人。human（開発者が答えた。testing.md 6.7）なら、ユーザー役の誤りを確かめず、会話例の候補にしない
  */
-export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with' }) {
+export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role' }) {
   const grades = [];
   const add = (id, ok, detail, req) => grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
   const exchanges = exchangesOf(items);
@@ -464,7 +467,8 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
 
   if (arm === 'with' && modelUse) for (const g of gradeModels({ use: modelUse, generatedCount })) add(g.id, g.ok, g.detail, g.req);
 
-  const faults = userRoleFaults({ exchanges, trace });
+  const human = answerer === 'human';
+  const faults = human ? [] : userRoleFaults({ exchanges, trace });
   const isHaiku = /haiku/i.test(model ?? '');
   const required = isHaiku ? HAIKU_REQUIRED.filter((id) => grades.some((g) => g.id === id)) : grades.map((g) => g.id);
   const failedRequired = grades.filter((g) => required.includes(g.id) && !g.ok).map((g) => g.id);
@@ -477,6 +481,7 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
     counts: countRecorded({ items, toolEvents, state }),
     verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired },
     // 会話例の候補（6.6）：採点の観点にすべて合格し、ユーザー役の誤りがない。最後は全文を読んで確かめる
-    exampleCandidate: !isHaiku && failedRequired.length === 0 && faults.length === 0,
+    // 開発者が答えた会話は、会話例にしない（6.6）
+    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0,
   };
 }

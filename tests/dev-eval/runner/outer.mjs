@@ -14,12 +14,38 @@
 //   サンドボックス（bubblewrap、socat）が既定で要る。ないときは始めずに断る。--no-sandbox で外せる（結果に警告が残る）。
 //   終了コード：0 最後まで動いた（点数が低くても 0）、1 途中で止まった（利用枠の上限、中断）、2 始められなかった。
 //   標準出力は結果の要約の JSON、進み具合は標準エラー出力。結果は <out>/outer-report.json に、実行が 1 つ終わるたびに書き直す。
+//   --inner-runs <n>     内側の EVAL の、あり・なしそれぞれの回数（既定 1）
+//
+// 開発者が答える形（testing.md 6.7）。ユーザー役の AI の代わりに、開発者がクリエイターの問いに答える:
+//   node tests/dev-eval/runner/outer.mjs --human --request-file <最初の依頼の文のファイル> [--relay <中継のフォルダ。既定は <out>/relay>]
+//        [--file <開発者のファイル>[=<作業フォルダでの置き場所>]]… [--models <1 つ>] [--inner] [--inner-runs 1] [--out …] [--no-sandbox] [--dry-run]
+//   --request-file       開発者が書いた最初の依頼の文（UTF-8 の空でない文字）
+//   --file               開発者のファイルを、作業フォルダに写す（置き場所の既定はファイルの名前。絶対の場所と「..」は使えない）
+//   --persona・--heldout・--style・--all-styles・--user-model は使えない。--arms は with だけ、--runs は 1 だけ、--models は 1 つだけ。
+//   内側の EVAL（--inner）は、生成プラグインに入った課題で動かし、エージェントの問いには決まった返事を返す（開発者には聞かない）。結果は点数に入れず、別に示す。
+//   統括（開発者と話す Claude Code のセッション）の手順:
+//     1. このコマンドを、統括のコマンドの時間の上限に縛られない形（裏で動かす）で始める。始まると、標準エラー出力に
+//        {"phase":"human-ready","relayDir":…,"out":…,"pid":…} の 1 行が出て、中継のフォルダの status.json が starting になる。
+//        この 1 行が出たか、コマンドが終わった（始められなかった。標準出力に {"ok":false,…}）かを見てから、2 に進む。
+//        この 1 行の後に始められなかったときは、status.json が stopped（result.reason が failed）になる。
+//     2. node tests/dev-eval/runner/human-relay.mjs wait --relay <中継のフォルダ> --timeout-seconds <統括のコマンドの時間の上限より短く>
+//        で、問いを待つ（終了コード 0 で問いの JSON が出る。5 は時間切れなので、もう一度 wait する）。
+//     3. 問いと、問いの前の文（notes）を言い換えずに開発者に示し、答えを変えずに
+//        node tests/dev-eval/runner/human-relay.mjs answer --relay <中継のフォルダ> --id <id> --text <答え> で返す。2 に戻る。
+//        答えのファイルは、じかに書かない（answer のコマンドだけで書く）。
+//     4. wait が終了コード 3（終わった）で返ったら、<out>/outer-report.json と status.json の result を見る。終わりの状態は、
+//        記録と outer-report.json を書き終えてから書く。中断の後も、採点が終わるまでは終わりにならない（phase が stopping）。
+//        4（プロセスがない）で返ったら、結果は書かれていない。heartbeatAt が古くなった（既定 10 分）ときにも 4 になる。
+//     コンパクションの後は、このコマンドを始め直さず、status.json と wait から続ける。
+//     このコマンドと wait・answer・status は、Claude Code のサンドボックスの中でも外でも動く（プロセスの番号の空間が違うときは、
+//     番号ではなく heartbeatAt でプロセスの有無を見る）。
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { loadPersona } from '../personas/validate.mjs';
+import { createHumanRelay, finalizeRelayStatus, startHeartbeat, writeRelayStatus } from './human-relay.mjs';
 import { sandboxStatus } from './isolation.mjs';
 import { REPO_ROOT } from './creator-tools.mjs';
 import { DEFAULTS, convertPlugin, defaultRunRoot, runOuterOnce } from './outer-run.mjs';
@@ -46,7 +72,7 @@ export class OuterEvalError extends Error {
 // ---- 引数 ----------------------------------------------------------------------------------------------------
 
 export function parseArgs(argv) {
-  const out = { personas: [], heldout: false, styles: [], allStyles: false, arms: ['with'], models: [DEFAULTS.model], runs: 1, inner: false, sandbox: true, dryRun: false };
+  const out = { personas: [], heldout: false, styles: [], allStyles: false, arms: ['with'], models: [DEFAULTS.model], runs: 1, inner: false, sandbox: true, dryRun: false, human: false, files: [] };
   const need = (i, flag) => {
     if (i + 1 >= argv.length) throw new OuterEvalError('usage', `${flag} には値が要ります。`);
     return argv[i + 1];
@@ -72,16 +98,112 @@ export function parseArgs(argv) {
       case '--no-sandbox': out.sandbox = false; break;
       case '--sandbox': out.sandbox = true; break;
       case '--dry-run': out.dryRun = true; break;
+      case '--human': out.human = true; break;
+      case '--request-file': out.requestFile = need(i, flag); i += 1; break;
+      case '--relay': out.relay = need(i, flag); i += 1; break;
+      case '--file': out.files.push(parseFileArg(need(i, flag))); i += 1; break;
+      case '--inner-runs': out.innerRuns = Number(need(i, flag)); i += 1; break;
       default: throw new OuterEvalError('usage', `知らない引数です：${flag}`);
     }
   }
-  if (out.personas.length === 0 && !out.heldout) throw new OuterEvalError('usage', '--persona（模擬ユーザーのフォルダ）か --heldout が要ります。');
+  if (out.innerRuns !== undefined && !(Number.isInteger(out.innerRuns) && out.innerRuns > 0)) throw new OuterEvalError('usage', '--inner-runs は 1 以上の整数にしてください。');
+  // 開発者が答える形（--human）は、模擬ユーザーを使わない。使えない引数を先に断る
+  if (out.human) checkHumanArgs(out, argv);
+  else {
+    for (const flag of ['--request-file', '--relay', '--file']) {
+      if (argv.includes(flag)) throw new OuterEvalError('usage', `${flag} は、開発者が答える形（--human）のときだけ使えます。`);
+    }
+  }
+  if (!out.human && out.personas.length === 0 && !out.heldout) throw new OuterEvalError('usage', '--persona（模擬ユーザーのフォルダ）か --heldout が要ります。');
   if (!Number.isInteger(out.runs) || out.runs < 1) throw new OuterEvalError('usage', '--runs は 1 以上の整数にしてください。');
   if (out.arms.length === 0 || !out.arms.every((a) => ['with', 'control', 'without'].includes(a))) throw new OuterEvalError('usage', '--arms は with・control・without（コンマ区切り）にしてください。');
   if (out.models.length === 0 || !out.models.every((m) => /^claude-[a-z]+-\d+-\d+$/.test(m))) throw new OuterEvalError('usage', '--models は Claude Code のモデルの ID（例：claude-opus-5-5）で書いてください。別名は使えません。');
   if (out.maxExchanges !== undefined && !(Number.isInteger(out.maxExchanges) && out.maxExchanges > 0)) throw new OuterEvalError('usage', '--max-exchanges は 1 以上の整数にしてください。');
   if (out.timeoutMs !== undefined && !(out.timeoutMs > 0)) throw new OuterEvalError('usage', '--timeout-minutes は正の数にしてください。');
   return out;
+}
+
+/** --file の値（<元のファイル>[=<置き場所>]）。置き場所は作業フォルダの中の相対の場所。最初の「=」で分ける */
+export function parseFileArg(value) {
+  const at = value.indexOf('=');
+  const src = at === -1 ? value : value.slice(0, at);
+  const place = (at === -1 ? path.basename(src) : value.slice(at + 1)).split('\\').join('/');
+  if (src === '') throw new OuterEvalError('usage', `--file に元のファイルがありません：${value}`);
+  if (path.posix.isAbsolute(place) || path.win32.isAbsolute(place)) throw new OuterEvalError('usage', `--file の置き場所は、作業フォルダの中の相対の場所で書いてください（絶対の場所は使えません）：${place}`);
+  if (place.split('/').some((part) => part === '..')) throw new OuterEvalError('usage', `--file の置き場所に「..」は使えません：${place}`);
+  // 「.」と空の区切りを除いてから、空かどうかを見る（「=.」「=./.」が作業フォルダそのものを指さないように）
+  const normalized = place.split('/').filter((part) => part !== '' && part !== '.').join('/');
+  if (normalized === '' || place.endsWith('/')) throw new OuterEvalError('usage', `--file の置き場所が空です（ファイルの名前まで書いてください）：${value}`);
+  return { src, place: normalized };
+}
+
+/** 開発者が答える形（--human）で、使えない引数を断る（testing.md 6.7） */
+function checkHumanArgs(out, argv) {
+  const has = (flag) => argv.includes(flag);
+  for (const flag of ['--persona', '--heldout', '--style', '--all-styles', '--user-model']) {
+    if (has(flag)) throw new OuterEvalError('usage', `--human では ${flag} は使えません（模擬ユーザーとユーザー役の AI を使わないため）。`);
+  }
+  if (out.arms.length !== 1 || out.arms[0] !== 'with') throw new OuterEvalError('usage', '--human では、--arms は with だけです（開発者が答えるのは、クリエイターとの会話だけ）。');
+  if (out.runs !== 1) throw new OuterEvalError('usage', '--human では、--runs は 1 だけです。');
+  if (out.models.length !== 1) throw new OuterEvalError('usage', '--human では、--models は 1 つだけです。');
+  if (!out.requestFile) throw new OuterEvalError('usage', '--human には --request-file（最初の依頼の文のファイル）が要ります。');
+  const places = out.files.map((f) => f.place);
+  const dup = places.find((p, i) => places.indexOf(p) !== i);
+  if (dup) throw new OuterEvalError('usage', `--file の置き場所が重なっています：${dup}`);
+}
+
+// ---- 開発者が答える形の読み込み ------------------------------------------------------------------------------
+
+/** 最初の依頼の文を読む。UTF-8 の空でない文字だけを受ける。終わりの改行は除く */
+export function readRequestFile(file) {
+  let buffer;
+  try {
+    buffer = fs.readFileSync(file);
+  } catch (error) {
+    throw new OuterEvalError('no_request', `最初の依頼の文のファイルを読めません（${file}）：${error.message}`);
+  }
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    throw new OuterEvalError('bad_request', `最初の依頼の文のファイルが UTF-8 ではありません（${file}）。`);
+  }
+  text = text.replace(/^\uFEFF/, '').replace(/(\r?\n)+$/, '');
+  if (text.trim() === '') throw new OuterEvalError('bad_request', `最初の依頼の文のファイルが空です（${file}）。`);
+  return text;
+}
+
+/**
+ * 開発者が答える形の、模擬ユーザーの代わり（loadPersona の返り値と同じ形）。ナレッジの一覧はない（testing.md 6.7）。
+ * loadPersona は、ナレッジが空の模擬ユーザーを断るので使わない。
+ */
+export function buildHumanLoaded({ requestFile, files = [] }) {
+  const request = readRequestFile(requestFile);
+  const placed = files.map((f) => {
+    const src = path.resolve(f.src);
+    let stat;
+    try {
+      stat = fs.statSync(src);
+    } catch {
+      throw new OuterEvalError('no_file', `--file のファイルが見つかりません：${f.src}`);
+    }
+    if (!stat.isFile()) throw new OuterEvalError('no_file', `--file はファイルにしてください（フォルダは写せません）：${f.src}`);
+    return { src, place: f.place, role: 'developer', describe: '開発者が示したファイル' };
+  });
+  return {
+    persona: {
+      id: 'human',
+      title: '開発者が答える',
+      experience: 'done',
+      request,
+      profile: '',
+      files: placed.map((f) => ({ place: f.place, role: f.role, describe: f.describe })),
+      knowledge: [],
+      styles: { normal: { label: '開発者', instruction: '' } },
+    },
+    dir: null,
+    files: placed,
+  };
 }
 
 // ---- 模擬ユーザーの読み込み --------------------------------------------------------------------------------------
@@ -301,7 +423,11 @@ export async function runPlan({ plan, personaById, outDir, creatorRoot, controlR
   return report;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+/**
+ * @param {string[]} argv
+ * @param {{ query?: Function, runOptions?: object }} [deps] 試験用：query（Agent SDK）と、runOuterOnce に足す引数（runStages、convert など）を差し替える
+ */
+export async function main(argv = process.argv.slice(2), deps = {}) {
   let args;
   try {
     args = parseArgs(argv);
@@ -311,19 +437,45 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const abort = new AbortController();
   process.once('SIGINT', () => abort.abort());
+  // 開発者が答える形では、統括がプロセスを止めたときも、中継の状態を stopped にしてから終わる
+  const onTerm = () => abort.abort();
+  if (args.human) process.once('SIGTERM', onTerm);
   const timer = args.timeoutMs ? setTimeout(() => abort.abort(), args.timeoutMs) : null;
+  let relayDir = null;
+  let stopHeartbeat = () => {};
+  let failure = null;
+  let reportFile = null;
   try {
-    const personas = await loadPersonas({ dirs: args.personas, heldout: args.heldout });
+    // 開発者が答える形は、ほかの確かめより先に中継のフォルダを決めて starting を書く。始められなかったときも、
+    // 統括の wait が待ち続けずに、stopped（failed）で返るように（試しの実行では、何も作らない）
+    let outDir = null;
+    if (args.human && !args.dryRun) {
+      outDir = path.resolve(args.out ?? fs.mkdtempSync(path.join(defaultRunRootEnsured(), 'outer-')));
+      const dir = path.resolve(args.relay ?? path.join(outDir, 'relay'));
+      // 前の実行の問いと答えが混ざらないように、空でない中継のフォルダは使わない（統括が始め直したときも、ここで気づく）。
+      // このときは、前の実行の状態を書き換えない
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) throw new OuterEvalError('relay_in_use', `中継のフォルダが空ではありません（${dir}）。前の実行の続きなら、このコマンドを始め直さずに human-relay.mjs の wait で続けてください。新しく始めるなら、別の --relay か --out を指定してください。`);
+      fs.mkdirSync(outDir, { recursive: true });
+      relayDir = dir;
+      writeRelayStatus(relayDir, { state: 'starting', pid: process.pid, out: outDir, runDir: null, workDir: null, pending: null });
+      // クリエイターの置き換え（convertPlugin）は止まって動くので、その間は書き直せない。wait はその分を見込んで待つ（human-relay.mjs の STALE_MS）
+      stopHeartbeat = startHeartbeat(relayDir);
+      console.error(JSON.stringify({ phase: 'human-ready', relayDir, out: outDir, pid: process.pid }));
+    }
+    const personas = args.human
+      ? [{ loaded: buildHumanLoaded({ requestFile: args.requestFile, files: args.files }), heldout: false }]
+      : await loadPersonas({ dirs: args.personas, heldout: args.heldout });
     const plan = planRuns({ personas, styles: args.styles, allStyles: args.allStyles, arms: args.arms, models: args.models, runs: args.runs, inner: args.inner });
     if (args.dryRun) {
-      console.log(JSON.stringify({ ok: true, dryRun: true, runs: plan.length, estimateUsd: estimateUsd(plan), note: '費用は試作（Claude の定価）の目安。実行のたびに変わる。利用枠も使う。', plan: plan.map((p) => ({ ...p, persona: p.heldout ? '(見ない模擬ユーザー)' : p.persona })) }, null, 2));
+      const human = args.human ? { human: true, relayDir: args.relay ? path.resolve(args.relay) : '<out>/relay', files: args.files } : {};
+      console.log(JSON.stringify({ ok: true, dryRun: true, runs: plan.length, estimateUsd: estimateUsd(plan), note: '費用は試作（Claude の定価）の目安。実行のたびに変わる。利用枠も使う。', ...human, plan: plan.map((p) => ({ ...p, persona: p.heldout ? '(見ない模擬ユーザー)' : p.persona })) }, null, 2));
       return 0;
     }
     if (args.sandbox) {
       const status = sandboxStatus();
       if (!status.available) throw new OuterEvalError('sandbox_missing', `OS のサンドボックスの道具が足りません（${status.missing.join('、')}）。入れるか、--no-sandbox で外してください（外すと、コマンドが作業フォルダの外に書けます）。`);
     }
-    const outDir = path.resolve(args.out ?? fs.mkdtempSync(path.join(defaultRunRootEnsured(), 'outer-')));
+    if (!outDir) outDir = path.resolve(args.out ?? fs.mkdtempSync(path.join(defaultRunRootEnsured(), 'outer-')));
     fs.mkdirSync(outDir, { recursive: true });
     const creatorRoot = path.resolve(args.creator ?? REPO_ROOT);
     const controlRoot = path.resolve(args.control ?? CONTROL_DIR);
@@ -331,23 +483,36 @@ export async function main(argv = process.argv.slice(2)) {
     let convertedControl;
     if (args.arms.includes('with')) convertedCreator = args.converted ? path.resolve(args.converted) : convertPlugin(creatorRoot, path.join(outDir, 'converted', 'creator')).root;
     if (args.arms.includes('control')) convertedControl = convertPlugin(controlRoot, path.join(outDir, 'converted', 'control')).root;
-    const query = await loadQuery();
+    const query = deps.query ?? (await loadQuery());
     const personaById = new Map(personas.map((p) => [p.loaded.persona.id, p]));
+    const humanOptions = args.human
+      // 中継の heartbeatAt は、この入口が書く。終わりの状態も、記録と outer-report.json を書き終えてから、この入口が書く（下の finally）
+      ? { answerer: 'human', createAnswerer: ({ runDir, workDir, signal }) => createHumanRelay({ relayDir, signal, runDir, workDir, heartbeatMs: 0, deferTerminal: true }) }
+      : {};
     const report = await runPlan({
       plan, personaById, outDir, creatorRoot, controlRoot, convertedCreator, convertedControl, signal: abort.signal,
-      common: { query, sandbox: args.sandbox, userRoleModel: args.userModel, maxExchanges: args.maxExchanges },
+      common: {
+        query, sandbox: args.sandbox, userRoleModel: args.userModel, maxExchanges: args.maxExchanges,
+        ...(args.innerRuns !== undefined ? { innerRuns: args.innerRuns } : {}), ...humanOptions, ...(deps.runOptions ?? {}),
+      },
       onProgress: (p) => {
         if (p.phase === 'start') console.error(`[外側の EVAL] ${p.index}/${p.total} ${p.persona} ${p.style} ${p.arm} ${p.model} ${p.n} 回目を始める`);
         else if (p.phase === 'end') console.error(`[外側の EVAL] ${p.index}/${p.total} 終わり：点数 ${p.score.toFixed(2)}${p.stopped ? `（${p.stopped}）` : ''}`);
       },
     });
-    console.log(JSON.stringify({ ok: true, status: report.status, stopped: report.stopped, reportFile: report.reportFile, heldoutRecordsDir: report.heldoutRecordsDir, summary: report.summary, userRoleModel: args.userModel ?? USER_ROLE_MODEL }, null, 2));
+    reportFile = report.reportFile;
+    console.log(JSON.stringify({ ok: true, status: report.status, stopped: report.stopped, reportFile: report.reportFile, heldoutRecordsDir: report.heldoutRecordsDir, summary: report.summary, userRoleModel: args.human ? 'human' : args.userModel ?? USER_ROLE_MODEL, ...(relayDir ? { relayDir } : {}) }, null, 2));
     return report.status === 'stopped' ? 1 : 0;
   } catch (error) {
     console.log(JSON.stringify({ ok: false, error: error.code ?? 'failed', message: error.message }));
+    failure = { reason: 'failed', message: error.message };
     return 2;
   } finally {
     if (timer) clearTimeout(timer);
+    if (args.human) process.off('SIGTERM', onTerm);
+    stopHeartbeat();
+    // どの終わり方でも、記録と outer-report.json を書き終えた後に、中継の状態を終わりにする（統括の wait が待ち続けないように）
+    if (relayDir) finalizeRelayStatus(relayDir, { fallback: { reason: abort.signal.aborted ? 'interrupted' : 'ended' }, failure, extra: reportFile ? { reportFile } : {} });
   }
 }
 

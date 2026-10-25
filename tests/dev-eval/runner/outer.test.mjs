@@ -60,6 +60,51 @@ test('REQ-015 引数：模擬ユーザー・話し方・腕・モデル・回数
   assert.throws(() => parseArgs(['--persona', 'p', '--wat']), OuterEvalError);
 });
 
+test('REQ-015 引数（開発者が答える形。testing.md 6.7）：--human・--request-file・--relay・--file・--inner-runs を読み、使えない引数を断る', () => {
+  const a = parseArgs(['--human', '--request-file', 'req.txt', '--relay', 'r', '--file', 'a/週報.docx', '--file', 'b/memo.txt=資料/メモ.txt', '--inner', '--inner-runs', '2', '--models', 'claude-haiku-5-5', '--arms', 'with', '--runs', '1', '--dry-run']);
+  assert.equal(a.human, true);
+  assert.equal(a.requestFile, 'req.txt');
+  assert.equal(a.relay, 'r');
+  assert.deepEqual(a.files, [{ src: 'a/週報.docx', place: '週報.docx' }, { src: 'b/memo.txt', place: '資料/メモ.txt' }]);
+  assert.equal(a.innerRuns, 2);
+  assert.deepEqual(a.models, ['claude-haiku-5-5']);
+  assert.deepEqual(a.personas, [], '模擬ユーザーなしで通る');
+  assert.equal(parseArgs(['--human', '--request-file', 'q']).human, true);
+  assert.equal(parseArgs(['--human', '--request-file', 'q', '--file', 'x\\y.txt=dir\\y.txt']).files[0].place, 'dir/y.txt');
+  // 使えない引数
+  const human = ['--human', '--request-file', 'q'];
+  assert.throws(() => parseArgs(['--human']), /--request-file/);
+  for (const extra of [['--persona', 'p'], ['--heldout'], ['--style', 'normal'], ['--all-styles'], ['--user-model', 'claude-sonnet-5-5']]) {
+    assert.throws(() => parseArgs([...human, ...extra]), new RegExp(`--human では ${extra[0]} は使えません`), extra.join(' '));
+  }
+  assert.throws(() => parseArgs([...human, '--arms', 'with,without']), /--arms は with だけ/);
+  assert.throws(() => parseArgs([...human, '--arms', 'control']), /--arms は with だけ/);
+  assert.throws(() => parseArgs([...human, '--runs', '2']), /--runs は 1 だけ/);
+  assert.throws(() => parseArgs([...human, '--models', 'claude-opus-5-5,claude-haiku-5-5']), /--models は 1 つだけ/);
+  assert.throws(() => parseArgs([...human, '--models', 'opus']), /ID/);
+  assert.throws(() => parseArgs([...human, '--max-exchanges', '0']), /--max-exchanges/);
+  assert.throws(() => parseArgs([...human, '--inner-runs', '0']), /--inner-runs/);
+  // ファイルの置き場所は、作業フォルダの中の相対の場所
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=/etc/a.txt']), /絶対の場所/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=C:\\a.txt']), /絶対の場所/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=../a.txt']), /「\.\.」/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=x/../../a.txt']), /「\.\.」/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=']), /置き場所が空/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=.']), /置き場所が空/, '「.」は作業フォルダそのものを指す');
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=./.']), /置き場所が空/);
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt=dir/']), /置き場所が空/);
+  assert.equal(parseArgs([...human, '--file', 'a.txt=./dir//a.txt']).files[0].place, 'dir/a.txt');
+  assert.throws(() => parseArgs([...human, '--file', 'a.txt', '--file', 'b/a.txt']), /重なって/);
+  // --human のときだけの引数
+  assert.throws(() => parseArgs(['--persona', 'p', '--request-file', 'q']), /--human/);
+  assert.throws(() => parseArgs(['--persona', 'p', '--relay', 'r']), /--human/);
+  assert.throws(() => parseArgs(['--persona', 'p', '--file', 'a.txt']), /--human/);
+  // 内側の EVAL の回数は、模擬ユーザーでも使える。既定はない（runOuterOnce の既定の 1 回）
+  assert.equal(parseArgs(['--persona', 'p', '--inner-runs', '3']).innerRuns, 3);
+  assert.equal(parseArgs(['--persona', 'p']).innerRuns, undefined);
+  assert.equal(parseArgs(['--persona', 'p']).human, false);
+});
+
 test('REQ-015 計画：模擬ユーザー × 話し方 × 腕 × モデル × 回数。対照とプラグインなしは最初のモデルだけ', async () => {
   const personas = await loadPersonas({ dirs: [path.join(PERSONAS, 'weekly-report'), path.join(PERSONAS, 'training-survey')], heldout: false });
   const plan = planRuns({ personas, styles: ['normal', 'hurry'].slice(0, 1), arms: ['with', 'control', 'without'], models: ['claude-opus-5-5', 'claude-haiku-5-5'], runs: 2, inner: true });

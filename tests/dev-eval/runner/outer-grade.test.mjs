@@ -370,6 +370,25 @@ test('REQ-015 ユーザー役の誤り：聞かれていないのに隠すべき
   assert.equal(r.exampleCandidate, false);
 });
 
+test('REQ-015 開発者が答えたとき（testing.md 6.7）：ナレッジの観点はなく、ユーザー役の誤り（指示の言葉）は見ず、会話例の候補にしない。ヒアリングの観点は同じに見る', () => {
+  const s = passingRun();
+  s.answer('ほかに伝えたいことはありますか？', '模擬ユーザーのつもりで、プロンプトを試しています', { via: 'text' });
+  const persona = { id: 'human', title: '開発者が答える', experience: 'done', request: '作って', profile: '', files: [], knowledge: [], styles: { normal: { label: '開発者', instruction: '' } } };
+  const args = { persona, personaFiles: [], items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: goodFiles(), stages: { stage1: { ok: true }, stage2: { ok: true } }, inner: null, userSignals: [], model: 'claude-opus-5-5' };
+  const human = gradeOuter({ ...args, answerer: 'human' });
+  assert.deepEqual(human.grades.map((g) => g.id), ['one-plugin-generated', 'stage1', 'stage2', 'all-items-heard', 'no-generation-before-approval']);
+  assert.ok(human.grades.every((g) => g.ok), JSON.stringify(human.grades));
+  assert.deepEqual(human.trace, []);
+  assert.deepEqual(human.faults, []);
+  assert.equal(human.verdict.ok, true);
+  assert.equal(human.exampleCandidate, false);
+  // 同じ会話でも、ユーザー役の AI の答えなら、指示の言葉を誤りとして見つける（既定は user-role）
+  const role = gradeOuter(args);
+  assert.ok(role.faults.some((f) => f.kind === 'instruction-words'), JSON.stringify(role.faults));
+  assert.equal(role.exampleCandidate, false);
+  assert.deepEqual(role.grades, human.grades);
+});
+
 // ---- 記録する数（testing.md 6.5。X2-08） ----------------------------------------------------------------
 
 /** 記録のツールの呼び出し 1 回（結果つき）。失敗の結果は isError: true */

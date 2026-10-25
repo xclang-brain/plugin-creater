@@ -82,7 +82,7 @@ test('REQ-037 記録の読み込み：外側の EVAL の記録（schema が oute
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('REQ-037 会話の選び方：すべての観点に合格し、ユーザー役の誤りがなく、今の版の、生成まで進んだ、normal の、クリエイターの会話だけを選ぶ', () => {
+test('REQ-037 会話の選び方：すべての観点に合格し、ユーザー役の誤りがなく、今の版の、生成まで進んだ、normal の、クリエイターの、ユーザー役が答えた会話だけを選ぶ', () => {
   const item = (overrides, file = 'a.json') => ({ file, record: record(overrides) });
   const items = [
     item({}, 'good.json'),
@@ -94,6 +94,7 @@ test('REQ-037 会話の選び方：すべての観点に合格し、ユーザー
     item({ grading: { score: 1, exampleCandidate: false, faults: [{ kind: 'leaked' }], verdict: { failed: [] } } }, 'leak.json'),
     item({ grading: { score: 1, exampleCandidate: false, faults: [], verdict: { failed: ['stage1'] } } }, 'failed.json'),
     item({ creator: { version: '0.0.9' } }, 'old.json'),
+    item({ answerer: 'human', persona: { id: 'human', title: '開発者が答える', experience: 'done' } }, 'human.json'),
   ];
   const { selected, skipped } = selectRecords(items, { pluginVersion: '0.1.0' });
   assert.deepEqual([...selected.keys()], ['weekly-report']);
@@ -107,6 +108,10 @@ test('REQ-037 会話の選び方：すべての観点に合格し、ユーザー
   assert.match(reasons['leak.json'], /ユーザー役の誤り/);
   assert.match(reasons['failed.json'], /不合格がある（stage1）/);
   assert.match(reasons['old.json'], /クリエイターの版が違う/);
+  // 開発者が答えた会話（testing.md 6.7）は、ほかの条件を満たしても載せない
+  assert.match(reasons['human.json'], /開発者が答えた会話は載せない/);
+  assert.equal(selectRecords([item({ answerer: 'human' }, 'h1.json')], { pluginVersion: '0.1.0' }).selected.size, 0);
+  assert.equal(selectRecords([item({ answerer: 'user-role' }, 'u1.json')], { pluginVersion: '0.1.0' }).selected.size, 1);
 });
 
 test('REQ-037 点数の高さだけでは選ばない：条件を満たさない高得点より、条件を満たす低得点を選ぶ。条件を満たす中では点数が高い方', () => {
