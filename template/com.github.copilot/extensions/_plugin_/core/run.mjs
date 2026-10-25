@@ -1,10 +1,12 @@
 import { LIMITS } from './constants.mjs';
 import { baseAgentName, roleOfAgentType } from './analysis.mjs';
 import { clone, summarizeText } from './util.mjs';
+import { logEntry } from './log.mjs';
 
 // 1 回の実行の状態（メモリ上）と、それを状態の全体（BLUEPRINT 3.5）の run に直す部分。
 
-const ACTIVE_AGENT = new Set(['running', 'waiting']);
+// waiting_human は、人の判断を待って手番を終えた統括（4.15）。Copilot CLI では idle で残っている
+const ACTIVE_AGENT = new Set(['running', 'waiting', 'waiting_human']);
 export const isActiveAgent = (rec) => ACTIVE_AGENT.has(rec.status);
 
 function makeSlot(slot, role, label, selectedModel) {
@@ -54,6 +56,7 @@ export function createRun(ctx, { id, settings, requestText, isAuto, startedAt })
     entries: [],
     waits: [],
     limit: null, // 最後の利用の上限の待ち { requestId, answered, action }
+    humanWait: null, // 人の判断待ちの質問 { question, askedAt, iteration, turnEnded, waitingSince, answerUnknown? }（4.15）
     refusals: {},
     stopRequested: false,
     stopAt: null,
@@ -132,6 +135,36 @@ export function currentIteration(run) {
   return run.iterations.length > 0 ? run.iterations[run.iterations.length - 1] : null;
 }
 
+// ---- 人の判断待ち（4.15） ---------------------------------------------------------------------
+
+// 質問を記録した統括が手番を終えた。実行を終えずに「人の判断待ち」にする。統括は取り消さない。
+export function enterHumanWait(ctx, run, at) {
+  run.status = 'waiting_human';
+  run.humanWait.turnEnded = true;
+  run.humanWait.waitingSince = at;
+  const rec = run.tree.get(run.rootId);
+  if (rec) {
+    rec.status = 'waiting_human';
+    rec.lastEventAt = at;
+    syncSlot(run, rec);
+  }
+  logEntry(ctx, run, { t: 'status', at, status: 'waiting_human' });
+}
+
+// 答えが統括に届いた（または統括が動き出した）。実行中に戻す。how は記録に残す、戻ったきっかけ（answered か activity）。
+export function resumeFromHumanWait(ctx, run, at, how) {
+  if (run.status !== 'waiting_human') return;
+  run.status = 'running';
+  run.humanWait = null;
+  const rec = run.tree.get(run.rootId);
+  if (rec && rec.status === 'waiting_human') {
+    rec.status = 'running';
+    rec.lastEventAt = at;
+    syncSlot(run, rec);
+  }
+  logEntry(ctx, run, { t: 'status', at, status: 'running', resumed: how });
+}
+
 // 起票の印から、案の起票の状態を読む（4.11）
 export function filingOf(ctx, runId, issueId) {
   const m = ctx.store.readMarker(runId, issueId);
@@ -183,5 +216,8 @@ export function viewRun(ctx, run) {
     canFile: clone(ctx.canFile),
     unstopped: run.unstopped.map((u) => ({ ...u })),
     waits: run.waits.map((w) => ({ requestId: w.requestId, slot: w.slot, kind: w.kind, detail: clone(w.detail) })),
+    humanWait: !finished && run.humanWait
+      ? { question: run.humanWait.question, askedAt: run.humanWait.askedAt, iteration: run.humanWait.iteration, waiting: run.status === 'waiting_human' }
+      : null,
   };
 }

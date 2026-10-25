@@ -6,7 +6,7 @@
 //   await startAdapter({ joinSession: fake.joinSession });
 //   fake.config                          joinSession に渡された設定 { tools, hooks, onPermissionRequest }
 //   fake.calls                           rpc と log の呼び出しの記録 [{ method, args }]（callsOf(method) で絞る）
-//   fake.behave('tasks.startAgent', { error })   呼び出しを失敗させる
+//   fake.behave('tasks.startAgent', { error })   呼び出しを失敗させる（tasks.sendMessage も同じ）
 //   fake.behave('model.list', { value: ... })    返す値を決める（関数でもよい）
 //   fake.behave('workspaces.getWorkspace', { gate })   gate（Promise）が解けるまで、呼び出しを返さない
 //   fake.tasks                           tasks.list に載るタスク（spawn で足す）
@@ -223,6 +223,15 @@ export function createFakeSdk({ sessionId = 'session-fake-1', cwd = process.cwd(
           return { cancelled: true };
         }),
       list: () => invoke('tasks.list', undefined, () => ({ tasks: fake.tasks.map((t) => ({ ...t })) })),
+      // 本物（Copilot CLI 1.0.102・1.0.103 で確かめた。設計書 11章 #19）：待ち（idle）のエージェントは動き出して { sent: true }。
+      // ない番号や取り消したエージェントには、例外ではなく { sent: false, error } が返る
+      sendMessage: (args) =>
+        invoke('tasks.sendMessage', args, () => {
+          const target = fake.task(args.id);
+          if (!target || !['idle', 'running'].includes(target.status)) return { sent: false, error: 'Agent not found or not accepting messages' };
+          target.status = 'running';
+          return { sent: true };
+        }),
     },
     tools: {
       updateSubagentSettings: (args) =>

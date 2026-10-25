@@ -145,6 +145,14 @@ export function analyzeEntries(entries, opts) {
     for (const x of chain(id)) if (agents.get(x).role) return agents.get(x).role;
     return null;
   };
+  // 人の判断待ち（4.15）の時間は、イベントがない時間に数えない。待ちが終わったとき、それまでの最後の時刻を待ちの長さだけ後ろにずらす
+  let humanSince = null;
+  const endHumanWait = (at) => {
+    if (humanSince === null || !Number.isFinite(at)) return;
+    const gap = Math.max(0, at - humanSince);
+    for (const [id, prev] of last) last.set(id, prev <= humanSince ? prev + gap : at);
+    humanSince = null;
+  };
   const touch = (id, at) => {
     for (const x of chain(id)) {
       const prev = last.get(x);
@@ -157,6 +165,10 @@ export function analyzeEntries(entries, opts) {
 
   for (const entry of entries) {
     if (entry.t === 'note' && entry.kind === 'retry_limit') retryLimit = true;
+    if (entry.t === 'status' && Number.isFinite(entry.at)) {
+      if (entry.status === 'waiting_human') humanSince ??= entry.at;
+      else endHumanWait(entry.at);
+    }
     if (entry.t === 'record') {
       if (entry.tool === 'finish') finishRecorded = true;
       if (entry.tool === 'plan') {
@@ -265,6 +277,7 @@ export function analyzeEntries(entries, opts) {
   // 終わった時点で、まだ終わっていないエージェントの沈黙
   const unstoppedIds = new Set(unstopped.map((u) => u.agentId));
   if (Number.isFinite(endAt)) {
+    endHumanWait(endAt);
     for (const a of agents.values()) {
       if (a.ended || unstoppedIds.has(a.id) || stalled.has(a.id) || waiting.get(a.id) > 0) continue;
       const l = last.get(a.id);

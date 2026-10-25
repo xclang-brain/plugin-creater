@@ -15,6 +15,8 @@
 // 既定の動き（本物の Copilot CLI で確かめた形。設計書 11章 #4・#6）：
 //   startAgent は番号を返し、一覧に running で載る。
 //   cancelAgent は、そのエージェントと下のエージェントを一覧で cancelled にする。
+//   sendMessage は、一覧で idle か running のエージェントなら running にして { sent: true } を返す。ほかは
+//   { sent: false, error: 'Agent not found or not accepting messages' }（例外にしない。設計書 11章 #19）。
 //   setSubagentSettings(map) は overrides に覚え、null で外す。
 
 export function createFakePort({ clock, idPrefix = '' } = {}) {
@@ -111,6 +113,13 @@ export function createFakePort({ clock, idPrefix = '' } = {}) {
           if (t && !port.stubborn.has(id) && (t.status === 'running' || t.status === 'idle')) t.status = 'cancelled';
         }
       }
+    });
+  port.sendMessage = (agentId, message) =>
+    invoke('sendMessage', [agentId, message], () => {
+      const t = port.task(agentId);
+      if (!t || (t.status !== 'idle' && t.status !== 'running')) return { sent: false, error: 'Agent not found or not accepting messages' };
+      t.status = 'running';
+      return { sent: true };
     });
   port.listTasks = () => invoke('listTasks', [], () => port.tasks.map((t) => ({ ...t })));
   port.setSubagentSettings = (map) =>

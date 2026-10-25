@@ -1,8 +1,8 @@
 import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
-import { DISCONNECTED_MESSAGE, LIMITS, STOPPED_MESSAGE } from './constants.mjs';
+import { ASK_RECORDED_MESSAGE, DISCONNECTED_MESSAGE, LIMITS, STOPPED_MESSAGE } from './constants.mjs';
 import { analyzeEntries, formatReviewText, numberIssues } from './analysis.mjs';
-import { currentIteration, isActiveAgent } from './run.mjs';
+import { currentIteration, isActiveAgent, resumeFromHumanWait } from './run.mjs';
 import { logEntry } from './log.mjs';
 import { requestClose } from './lifecycle.mjs';
 import { isPlainObject } from './util.mjs';
@@ -21,7 +21,7 @@ const refuse = (message) => {
   throw new RecordRefusal(message);
 };
 
-const COUNTED_TOOLS = new Set(['plan', 'verdict', 'review', 'issue', 'finish']);
+const COUNTED_TOOLS = new Set(['plan', 'verdict', 'review', 'issue', 'finish', 'ask']);
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== '';
 
@@ -278,6 +278,21 @@ function recordFinish(ctx, run, args) {
   return '実行全体のまとめを記録しました。作業を終えてください。';
 }
 
+// ---- 人の判断待ちの質問（4.15） -------------------------------------------------------------------
+
+function recordAsk(ctx, run, args, agentId) {
+  if (agentId !== run.rootId) refuse('人の判断を求める質問は、この実行の統括エージェントだけが記録できます。');
+  if (run.status === 'summarizing') {
+    refuse(`繰り返しはもう終わっています。まとめの間は、人の判断を求められません。${tool(ctx, 'review')}、${tool(ctx, 'issue')}、${tool(ctx, 'finish')} でまとめを続けてください。`);
+  }
+  if (run.status !== 'running') refuse('いまは、人の判断を求められません。');
+  if (run.humanWait) refuse('答えを待っている質問があります。新しい質問は記録しません。ほかのツールを呼ばずに、手番を終えて、答えを待ってください。');
+  if (!isNonEmptyString(args?.question)) refuse('人への質問の文（question）を渡してください。');
+  const it = currentIteration(run);
+  run.humanWait = { question: args.question.trim(), askedAt: ctx.clock.now(), iteration: it ? it.n : 0, turnEnded: false, waitingSince: null };
+  return ASK_RECORDED_MESSAGE;
+}
+
 // ---- 入口 -----------------------------------------------------------------------------------
 
 const HANDLERS = {
@@ -287,6 +302,7 @@ const HANDLERS = {
   review: { role: 'orchestrator', run: recordReview },
   issue: { role: 'orchestrator', run: recordIssue },
   finish: { role: 'orchestrator', run: recordFinish },
+  ask: { role: 'orchestrator', run: recordAsk },
 };
 
 export function isRecordTool(shortName) {
@@ -311,6 +327,9 @@ export function applyRecord(ctx, shortName, args, agentId) {
   if (run.status === 'starting' || agentId == null || !run.tree.has(agentId)) throw new RecordRefusal(DISCONNECTED_MESSAGE);
   const handler = HANDLERS[shortName];
   if (!handler) throw new RecordRefusal('知らない記録のツールです。');
+  // 人の判断待ちのあいだに、統括が記録のツールを呼んだ。答えが届いて動き出したとみる（答えの送りが時間切れだったとき。4.15）。
+  // 作業・検証の記録では戻さない。待っている統括が動いた印ではなく、戻すと、統括の手番の終わりが来ないまま実行中で残るため
+  if (run.status === 'waiting_human' && agentId === run.rootId) resumeFromHumanWait(ctx, run, ctx.clock.now(), 'activity');
   const counted = COUNTED_TOOLS.has(shortName);
   try {
     if (handler.role && run.tree.get(agentId)?.role !== handler.role) {

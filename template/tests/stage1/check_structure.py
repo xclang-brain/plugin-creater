@@ -1332,7 +1332,7 @@ def check_agent_tools(ctx: Context, c: Check) -> None:
                         c.error("%s tools にコマンドのツール %s がある（検証エージェントはコマンドを動かせない）" % (where, tool))
 
 
-RECORD_SUFFIXES = "open|plan|verdict|show|review|issue|finish"
+RECORD_SUFFIXES = "open|plan|verdict|show|review|issue|finish|ask|answer"
 RECORD_TOOL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*?)_(%s)$" % RECORD_SUFFIXES)
 BACKTICKED = re.compile(r"`([^`\s]+)`")
 

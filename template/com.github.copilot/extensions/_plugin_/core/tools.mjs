@@ -136,6 +136,40 @@ export const TOOL_DEFS = Object.freeze([
       additionalProperties: false,
     },
   },
+  {
+    name: 'ask',
+    caller: 'orchestrator',
+    skipPermission: true,
+    description:
+      '統括エージェントが、作業ごとの指示が人に判断を求めている場面（例：ビルドが失敗したら、どうするかを人に聞く）でだけ呼ぶ。人への質問を記録し、画面に「人の判断待ち」として出す。呼んだら、ほかのツールを呼ばずに、返った文のとおりの形で返事を書いて手番を終える。手番を終えても、この実行は終わらない。ユーザーがチャットで答えると、答えがメッセージで届くので、それに沿って同じ試行の続きから進める。作業ごとの指示が人に判断を求めていないことは、このツールで聞かずに、作業ごとの指示と設定の値から判断して進める。繰り返しの途中（計画・実行・評価）でだけ使え、まとめの間と、答えを待っている質問があるときは断る。',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          minLength: 1,
+          description: '人への質問。何が起きたか（例：試行 2 のビルドが失敗した）と、人に決めてほしいことを、平易な日本語で簡潔に書く。',
+        },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'answer',
+    caller: 'main',
+    skipPermission: true,
+    description:
+      '名前の頭（`_answer` の前の部分）と同じ名前のプラグインの統括エージェントが、人の判断を待っているときに、メインのエージェントが呼ぶ。ユーザーがチャットで答えた文を、要約も言い換えも足しもせずに、ユーザーの言葉のまま渡す。答えは待っている統括エージェントに届き、同じ実行が続く。返った文を、ユーザーに伝える。判断を待っていないときは、答えを渡さずに、そのことを返す。',
+    parameters: {
+      type: 'object',
+      properties: {
+        answer: { type: 'string', minLength: 1, description: 'ユーザーがチャットで答えた文。ユーザーの言葉のまま渡す。' },
+      },
+      required: ['answer'],
+      additionalProperties: false,
+    },
+  },
 ]);
 
 export const RECORD_TOOL_NAMES = Object.freeze(TOOL_DEFS.map((t) => t.name));

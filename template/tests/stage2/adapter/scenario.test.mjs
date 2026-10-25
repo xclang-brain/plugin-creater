@@ -296,3 +296,48 @@ describe('エクステンションが起動し直されたとき（REQ-008、REQ
     assert.equal(second.fake.config.hooks.onPreToolUse({ toolName: 'edit', agentId: root }), undefined, '拒む一覧は自分のセッションの記録だけから作る');
   });
 });
+
+describe('人の判断待ち（REQ-051）', () => {
+  test('REQ-051 統括が質問を記録して手番を終えると、待ちのまま残り、答えを渡すツールで同じ統括に答えが届いて、同じ実行が続く', async () => {
+    const p = await startPlugin();
+    const call = recorder(p);
+    const root = await beginRun(p);
+    await call('plan', planOf(), root);
+    const asked = await call('ask', { question: 'ビルドが失敗しました。どうしますか？' }, root);
+    assert.match(asked, /人の判断待ち/);
+    await endTurn(p, root, '人の判断待ち\nビルドが失敗しました。どうしますか？', { status: 'idle' });
+    let run = p.core.getState().run;
+    assert.equal(run.status, 'waiting_human');
+    assert.equal(run.humanWait.question, 'ビルドが失敗しました。どうしますか？');
+    assert.equal(p.fake.callsOf('tasks.cancel').length, 0, '待っている統括は取り消さない');
+    const state = await (await fetchApi(p, '/api/state')).json();
+    assert.equal(state.run.humanWait.question, 'ビルドが失敗しました。どうしますか？', '画面のサーバーの状態にも出る');
+
+    const answered = await p.fake.callTool(`${PLUGIN}_answer`, { answer: 'ツールチェーンは /opt/arm/bin です' });
+    assert.equal(answered.ok, true, answered.error);
+    const [sent] = p.fake.callsOf('tasks.sendMessage').map((c) => c.args);
+    assert.equal(sent.id, root);
+    assert.ok(sent.message.includes('ツールチェーンは /opt/arm/bin です'));
+    run = p.core.getState().run;
+    assert.equal(run.status, 'running');
+    assert.equal(p.fake.task(root).status, 'running');
+
+    // 続き：2回目からの手番の終わりは agent_idle だけ（subagent.completed は出ない）
+    p.fake.emit(sdkEvent.toolStart(root, 'tc-r', 'view', { path: 'build.log' }));
+    await startChild(p, { agentId: 'ag-w', parentAgentId: root, agent: 'worker', model: 'gpt-6-luna' });
+    await endTurn(p, 'ag-w', '直しました');
+    await startChild(p, { agentId: 'ag-v', parentAgentId: root, agent: 'verifier', model: 'claude-opus-5-5' });
+    await call('verdict', allPass(), 'ag-v');
+    await endTurn(p, 'ag-v', '合格です');
+    await call('finish', { summary: '人の答えの後に合格しました。' }, root);
+    await p.fake.callHook('onSubagentStop', { agentId: root, response: '終わりました' });
+    p.fake.task(root).status = 'idle';
+    p.fake.emit(sdkEvent.agentIdle(root));
+    await p.core.whenIdle();
+    run = p.core.getState().run;
+    assert.equal(run.status, 'finished');
+    assert.deepEqual(run.endReason, { kind: 'all_passed', detail: null, unstoppable: false });
+    assert.equal(run.agents.find((a) => a.slot === 'orchestrator').replySummary, '終わりました', '2回目からの手番の返事も画面に出る');
+    assert.equal(p.fake.callsOf('tasks.startAgent').length, 1);
+  });
+});

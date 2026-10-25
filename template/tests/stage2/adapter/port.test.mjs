@@ -35,6 +35,24 @@ describe('窓口 port の呼び出しの形（REQ-007、REQ-009）', () => {
     assert.equal(p.fake.task(agentId).status, 'cancelled');
   });
 
+  test('REQ-051 sendMessage は tasks.sendMessage を、タスクの番号（id）と文で呼び、送れたかを返す。送れないときは例外ではなく sent が偽', async () => {
+    const p = await startPlugin();
+    const { agentId } = await p.port.startAgent({ agentType: `${PLUGIN}:orchestrator`, name: '統括', prompt: 'p' });
+    p.fake.task(agentId).status = 'idle';
+    assert.deepEqual(await p.port.sendMessage(agentId, '人の判断の答え'), { sent: true });
+    assert.deepEqual(p.fake.callsOf('tasks.sendMessage').map((c) => c.args), [{ id: agentId, message: '人の判断の答え' }]);
+    assert.equal(p.fake.task(agentId).status, 'running');
+    await p.port.cancelAgent(agentId);
+    assert.deepEqual(await p.port.sendMessage(agentId, 'もう一度'), { sent: false, error: 'Agent not found or not accepting messages' });
+    assert.deepEqual(await p.port.sendMessage('ag-none', 'x'), { sent: false, error: 'Agent not found or not accepting messages' });
+    for (const value of [{}, null, { sent: 'yes' }]) {
+      p.fake.behave('tasks.sendMessage', { value });
+      assert.deepEqual(await p.port.sendMessage(agentId, 'x'), { sent: false }, JSON.stringify(value));
+    }
+    p.fake.behave('tasks.sendMessage', { error: new Error('Unknown method') });
+    await assert.rejects(p.port.sendMessage(agentId, 'x'), /Unknown method/, '呼び出しの失敗は、そのまま中心の処理に返す（中心の処理が扱う）');
+  });
+
   test('REQ-009 listTasks は、エージェントのタスクだけを窓口の形で返す（シェルなどは除く）。親の番号は、開始のイベントから補う', async () => {
     const p = await startPlugin();
     p.fake.spawn({ agentId: 'ag-root', agentType: `${PLUGIN}:orchestrator`, displayName: '統括 r1', executionMode: 'background' });

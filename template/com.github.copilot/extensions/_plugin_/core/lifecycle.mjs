@@ -198,7 +198,7 @@ function activeTreeAgents(run, tasks) {
 // 一覧が取れなかったとき、止まったと確かめられないエージェント
 function unconfirmedAgents(run) {
   return [...run.tree.values()]
-    .filter((rec) => rec.status === 'running' || rec.status === 'waiting' || (rec.agentId === run.rootId && rec.status !== 'stopped' && rec.status !== 'failed'))
+    .filter((rec) => rec.status === 'running' || rec.status === 'waiting' || rec.status === 'waiting_human' || (rec.agentId === run.rootId && rec.status !== 'stopped' && rec.status !== 'failed'))
     .map((rec) => rec.agentId);
 }
 
@@ -532,7 +532,7 @@ function finalizeRun(ctx, run, state) {
   const taskById = new Map((state.tasks ?? []).map((t) => [t.agentId, t]));
   for (const rec of run.tree.values()) {
     ctx.deny.add(rec.agentId);
-    if (rec.status !== 'running' && rec.status !== 'waiting') continue;
+    if (rec.status !== 'running' && rec.status !== 'waiting' && rec.status !== 'waiting_human') continue;
     if (unstoppedIds.has(rec.agentId)) rec.status = 'unstopped';
     else {
       const ts = taskById.get(rec.agentId)?.status;

@@ -321,7 +321,7 @@ test('REQ-008 記録のツールの定義は 1 か所にあり、名前の頭に
   const defs = h.core.toolDefinitions;
   assert.deepEqual(
     defs.map((d) => d.name),
-    ['open', 'plan', 'verdict', 'show', 'review', 'issue', 'finish'].map((n) => `${PLUGIN}_${n}`),
+    ['open', 'plan', 'verdict', 'show', 'review', 'issue', 'finish', 'ask', 'answer'].map((n) => `${PLUGIN}_${n}`),
   );
   for (const d of defs) {
     assert.equal(d.parameters.type, 'object');

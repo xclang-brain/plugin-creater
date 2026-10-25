@@ -9,6 +9,9 @@
 //   4. 成果物を採点する（C3 の grade.mjs。生成プラグインの検証エージェントの合否は使わない。モデルで判定する基準は Agent SDK で判定する）。
 // なしの流れ：プラグインを何も読み込まず、同じ課題を渡す。
 // どちらも、メインのエージェントがチャットで返事や答えを求めて手番を終えたら、ユーザー役が人の代わりに返事をする（7章）。
+// ありで、統括が人の判断を求めて手番を終えたとき（人の判断待ち。生成プラグインの設計書 4.15）は、Copilot CLI がメインのエージェントに
+// 知らせるのと同じく、メインのエージェントの会話を続けて知らせ、チャットに出た質問にユーザー役が答える。メインのエージェントが答えを
+// <名前>_answer で渡すと、統括が同じ実行の続きを始める。人の判断待ちでない手番の終わりは、メインのエージェントに知らせない（費用を抑える）。
 //
 // 実際のモデルを使うのは Agent SDK の実行とユーザー役と判定だけで、sdk・userRole・judge は引数で受ける（試験は偽物を渡せる）。
 
@@ -130,14 +133,24 @@ export async function runInnerArm(o) {
   const result = {
     arm, task: task.id, status: 'completed', reason: null, runDir, workDir, url: null, replies: 0, history: [], skillsUsed: [], mainTools: [],
     main: { sessionId: null, turns: 0, costUsd: 0, results: [] }, screen: null, finalState: null, agents: [], orchestratorRuns: [],
-    checks: [], grading: null, refused: [], subagentModels: {}, limitHit: null, settings: [],
+    checks: [], grading: null, refused: [], subagentModels: {}, limitHit: null, settings: [], humanWaits: 0,
+  };
+  // 人の判断待ちの知らせ（下の notifyMain）は、メインのエージェントの最初の手番が終わってから、1つずつ順に行う
+  let mainDone = Promise.resolve();
+  let notifyChain = Promise.resolve();
+  const onOrchestratorTurnEnd = (turn) => {
+    notifyChain = notifyChain
+      .then(() => notifyMain(turn))
+      .catch((error) => {
+        result.notifyError = String(error?.message ?? error);
+      });
   };
 
   let adapter = null;
   let reportInfo = null;
   if (arm === 'with') {
     reportInfo = readConversionReport(convertedRoot);
-    adapter = await createInnerAdapter({ sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra, mainModel: model, sandbox, record });
+    adapter = await createInnerAdapter({ sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra, mainModel: model, sandbox, record, onOrchestratorTurnEnd });
     const names = adapter.checkToolNames();
     if (names.missing.length > 0) {
       result.status = 'error';
@@ -278,6 +291,45 @@ export async function runInnerArm(o) {
   }
 
   /**
+   * 統括が手番を終えた知らせ（Copilot CLI では「Background agent … completed.」と、自動で読む統括の返事）を、メインのエージェントの会話に続けて渡す。
+   * 人の判断待ちのときだけ行う。メインのエージェントが質問をチャットに出して手番を終えたら、ユーザー役が答え、その答えで会話を続ける。
+   * 答えが統括に渡る（実行が人の判断待ちでなくなる）か、返事の数の上限までで終える。
+   */
+  async function notifyMain(turn) {
+    await mainDone;
+    if (abort.signal.aborted || !adapter) return;
+    const waitingNow = () => {
+      const run = adapter.core.getState().run;
+      return run?.status === 'waiting_human' ? run.humanWait : null;
+    };
+    const wait = waitingNow();
+    if (!wait) return;
+    let resume = result.main.sessionId;
+    if (!resume) return;
+    result.humanWaits += 1;
+    record({ t: 'human_wait', question: wait.question, orchestrator: turn.id });
+    let prompt = `Background agent "${turn.name}" (${reportInfo.plugin}:orchestrator) completed.\n\n（統括エージェントの最後の返事）\n${turn.lastText}`;
+    for (let replies = 0; replies <= maxReplies; replies += 1) {
+      const t = await runMainTurn(prompt, resume);
+      if (abort.signal.aborted || !waitingNow()) return;
+      // 人は、チャットに出た文（と画面の質問）を読んで答える
+      const question = t.finalText.trim() !== '' ? t.finalText : wait.question;
+      const notes = takeNotes().filter((note) => note !== t.finalText.trim());
+      let answer;
+      try {
+        answer = await userRole({ question, choices: [], history: [...history], notes });
+      } catch (error) {
+        result.userRoleError = error;
+        abort.abort();
+        throw error;
+      }
+      history.push({ via: 'human-wait', question, answer, ...notesField(notes) });
+      prompt = answer;
+      resume = t.sessionId ?? resume;
+    }
+  }
+
+  /**
    * 画面に入れる設定。役割ごとのモデルと繰り返しの上限は試験の仕組みが決める。作業ごとの設定の欄は、ユーザー役が決める
    * （コマンドラインの補い ＞ 課題の settings.task ＞ ユーザー役。decideSettings）。決めた値と聞いた文・答えは result.settings に残す。
    */
@@ -313,6 +365,7 @@ export async function runInnerArm(o) {
 
   try {
     const main = mainLoop();
+    mainDone = main.catch(() => {});
     let screenOutcome = null;
     let screenError = null;
     if (arm === 'with') {
@@ -324,6 +377,8 @@ export async function runInnerArm(o) {
     } else {
       await main.catch((error) => { result.mainException = error; });
     }
+    // 人の判断待ちの知らせの途中なら、終わるのを少しだけ待つ（止めたので、すぐ終わる）
+    await Promise.race([notifyChain, new Promise((resolve) => setTimeout(resolve, 5000).unref())]);
     if (arm === 'with') {
       result.screen = screenOutcome
         ? { finished: screenOutcome.finished, timedOut: screenOutcome.timedOut, endReason: screenOutcome.endReason, endReasonText: screenOutcome.endReasonText, summary: screenOutcome.summary, snapshots: screenOutcome.snapshots }

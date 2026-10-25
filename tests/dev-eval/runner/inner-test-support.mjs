@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { firstUserText, lastToolResults } from './fake-anthropic.mjs';
+import { firstUserText, lastToolResults, lastUserMessage } from './fake-anthropic.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(HERE, '..', '..', '..');
@@ -66,6 +66,18 @@ const WEEKLY = '# 週報\n\n## 今週やったこと\n- 3件の問い合わせ�
 const workDirOf = (body) => /Primary working directory: ([^\\\n"]+)/.exec(JSON.stringify(body))?.[1]?.trim();
 const criteriaOf = (text) => [...String(text).matchAll(/^- ([A-Z]-\d+)：(.+)$/gm)].map((m) => ({ id: m[1], text: m[2].trim() }));
 const textBlock = (text) => ({ type: 'text', text });
+/** 最後の user のメッセージの文字（ツールの返り値は除く） */
+const lastUserText = (body) => {
+  const content = lastUserMessage(body)?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.filter((c) => c.type === 'text').map((c) => c.text).join('\n') : '';
+};
+/** 最後の assistant のメッセージで呼んだツールの名前 */
+const lastAssistantTools = (body) => {
+  const last = [...(body.messages ?? [])].reverse().find((m) => m.role === 'assistant');
+  return Array.isArray(last?.content) ? last.content.filter((c) => c.type === 'tool_use').map((c) => c.name) : [];
+};
+export const HUMAN_QUESTION = '試行 1 のビルドが失敗しました。どうしますか？';
 const tool = (name, input, extra = {}) => ({ type: 'tool_use', name, input, ...extra });
 
 /**
@@ -86,10 +98,12 @@ const tool = (name, input, extra = {}) => ({ type: 'tool_use', name, input, ...e
  * @param {string} [scenario.plainContent] プラグインなしのメインが書く成果物の中身（省くと content と同じ）
  * @param {boolean} [scenario.askTool] メインが質問のツール（AskUserQuestion）で週を聞く
  * @param {string} [scenario.askNote] askTool のとき、質問のツールを呼ぶ前に、同じ応答でチャットに書く文
+ * @param {boolean} [scenario.humanWait] 統括が計画の後に人の判断を求めて手番を終え（_ask）、答えが届いたら続ける。メインは、知らせを受けたら質問をチャットに出し、
+ *   ユーザーの答えを _answer で渡す（生成プラグインの設計書 4.15）
  * @param {(role: string, body: object) => void} [scenario.onRequest]
  */
 export function scriptedModel(scenario = {}) {
-  const { server = 'weekly-report', workerWrites = true, verifierPass = true, verifierDelayMs = 0, workerDelayMs = 0, askFirst = false, background = false, useSkill = true, badPlan = false, plain: forcedPlain, askTool = false, askNote = '', deliverable = 'out/weekly.md', content: workerContent = WEEKLY, plainContent = workerContent, onRequest } = scenario;
+  const { server = 'weekly-report', workerWrites = true, verifierPass = true, verifierDelayMs = 0, workerDelayMs = 0, askFirst = false, background = false, useSkill = true, badPlan = false, plain: forcedPlain, askTool = false, askNote = '', deliverable = 'out/weekly.md', content: workerContent = WEEKLY, plainContent = workerContent, humanWait = false, onRequest } = scenario;
   const mcp = (name) => `mcp__${server}__${name}`;
   return async ({ body }) => {
     const role = roleOf(body);
@@ -118,6 +132,18 @@ export function scriptedModel(scenario = {}) {
       }
       if (useSkill && !used.includes('Skill')) return { model, blocks: [tool('Skill', { skill: `${server}:${server}` })] };
       if (!used.includes(mcp('open'))) return { model, blocks: [tool(mcp('open'), { requestText: firstUserText(body) })] };
+      if (humanWait) {
+        const said = lastUserText(body);
+        // 統括の手番の終わりの知らせ：返事の1行目が「人の判断待ち」なら、質問をそのままチャットに出して手番を終える（入口のスキル）
+        if (said.startsWith('Background agent') && said.includes('人の判断待ち')) {
+          return { model, blocks: [textBlock(`統括エージェントが、あなたの判断を待っています。\n${HUMAN_QUESTION}\nこのチャットで答えてください。`)] };
+        }
+        if (lastAssistantTools(body).includes(mcp('answer'))) return { model, blocks: [textBlock(`${lastToolResults(body).join('\n')}`)] };
+        // 質問の後のユーザーの答えは、言い換えずに答えを渡すツールへ
+        if (JSON.stringify(body.messages).includes('このチャットで答えてください。') && said !== '' && !said.startsWith('Background agent')) {
+          return { model, blocks: [tool(mcp('answer'), { answer: said })] };
+        }
+      }
       const shown = lastToolResults(body).join('\n');
       return { model, blocks: [textBlock(`画面を開きました。\n${shown}\n画面で設定して、開始ボタンを押してください。`)] };
     }
@@ -129,6 +155,11 @@ export function scriptedModel(scenario = {}) {
       const planCalls = used.filter((n) => n === mcp('plan')).length;
       if (planCalls < (badPlan ? 2 : 1)) {
         return { model, blocks: [tool(mcp('plan'), { iteration: badPlan && planCalls === 0 ? 2 : 1, criteria, plan: '週報を書いて確かめる' })] };
+      }
+      if (humanWait && !used.includes(mcp('ask'))) return { model, blocks: [tool(mcp('ask'), { question: HUMAN_QUESTION })] };
+      // 質問を記録したら、答えが届くまで、決まった形の返事で手番を終える（ひな形の統括の「人の判断を求めるとき」）
+      if (humanWait && !JSON.stringify(body.messages).includes('人の判断の答えが届きました')) {
+        return { model, blocks: [textBlock(`人の判断待ち\n${HUMAN_QUESTION}`)] };
       }
       if (agentCalls === 0) return { model, blocks: [tool('Agent', agentArgs('weekly-report:worker', '試行 1 の作業'))] };
       if (agentCalls === 1) return { model, blocks: [tool('Agent', agentArgs('weekly-report:verifier', '試行 1 の確かめ'))] };
