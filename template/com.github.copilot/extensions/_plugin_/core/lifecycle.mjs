@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, UNSTOPPED_HOW_TO } from './constants.mjs';
+import { EFFORT_LEVELS, INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, SUMMARY_END_KINDS, UNSTOPPED_HOW_TO } from './constants.mjs';
 import { effortAgents } from './task-def.mjs';
 import { analyzeEntries, buildMechanicalSummary, numberIssues } from './analysis.mjs';
 import { logEntry } from './log.mjs';
@@ -546,7 +546,7 @@ function finalizeRun(ctx, run, state) {
   run.unstopped = state.unstopped;
   run.waits = [];
 
-  const normalEnd = endReason.kind === 'all_passed' || endReason.kind === 'max_iterations';
+  const normalEnd = SUMMARY_END_KINDS.includes(endReason.kind); // まとめ中に入って終わった（4.8、4.15）
   const drafts = analyzeEntries(run.entries, {
     pluginName: ctx.pluginName,
     runId: run.id,

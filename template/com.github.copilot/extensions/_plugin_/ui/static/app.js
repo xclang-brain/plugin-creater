@@ -32,6 +32,7 @@
   const END_KINDS = {
     all_passed: ['評価基準をすべて満たした', 'completed'],
     max_iterations: ['上限の回数に達した', 'waiting'],
+    human_ended: ['人の指示で終えた', 'stopped'], // 人の判断待ちの答えで終えた（4.15）。人が決めた終わりで、失敗ではない
     user_stopped: ['ユーザーが止めた', 'stopped'],
     aborted: ['途中で終わった', 'failed'],
   };

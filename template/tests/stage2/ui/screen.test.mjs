@@ -653,6 +653,7 @@ describe('結果の確認（REQ-011、REQ-012、REQ-013）', () => {
     const cases = [
       [{ kind: 'all_passed' }, '評価基準をすべて満たした', '終了（評価基準をすべて満たした）'],
       [{ kind: 'max_iterations' }, '上限の回数に達した', '終了（上限の回数に達した）'],
+      [{ kind: 'human_ended' }, '人の指示で終えた', '終了（人の指示で終えた）'],
       [{ kind: 'user_stopped' }, 'ユーザーが止めた', '終了（ユーザーが止めた）'],
       [{ kind: 'aborted', detail: 'cut_off' }, '途中で終わった（途中で切れた）', '終了（途中で終わった）'],
       [{ kind: 'aborted', detail: 'credit_limit' }, '途中で終わった（AI クレジットの上限）', '終了（途中で終わった）'],
@@ -673,6 +674,16 @@ describe('結果の確認（REQ-011、REQ-012、REQ-013）', () => {
         assert.equal(await textOf(page, '#run-status'), pill);
         assert.equal(await page.locator('#s-unstopped').isHidden(), true);
       }
+    });
+  });
+
+  test('REQ-051 人の指示で終えた実行は「終了（人の指示で終えた）」になり、札の色は「ユーザーが止めた」と同じ種類で、まとめが出る', async () => {
+    const state = finishedState({ kind: 'human_ended', detail: null, unstoppable: false }, { summary: '人の指示で、試行 1 の途中で終えました。' });
+    await withScreen({ state }, async ({ page }) => {
+      assert.equal(await textOf(page, '#run-status'), '終了（人の指示で終えた）');
+      assert.match(await textOf(page, '#end-reason'), /終わった理由：\s*人の指示で終えた/);
+      assert.equal(await page.locator('#run-status .badge').getAttribute('class'), 'badge badge-stopped');
+      assert.match(await textOf(page, '#s-end'), /まとめ[\s\S]*人の指示で、試行 1 の途中で終えました。/);
     });
   });
 

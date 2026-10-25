@@ -104,8 +104,17 @@ export const TOOL_DEFS = Object.freeze([
     caller: 'orchestrator',
     skipPermission: true,
     description:
-      '統括エージェントが、繰り返しを終えた後（すべての評価基準を満たしたか、上限の回数まで試行した後）に、まとめの最初に呼ぶ。記録から機械的に洗い出した課題と、試行ごとの合否の要点を返す。返った課題は、何もしなくても課題の一覧に入る。繰り返しの途中では断る。',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      '統括エージェントが、繰り返しを終えた後（すべての評価基準を満たしたか、上限の回数まで試行した後）に、まとめの最初に呼ぶ。記録から機械的に洗い出した課題と、試行ごとの合否の要点を返す。返った課題は、何もしなくても課題の一覧に入る。繰り返しの途中では断る。ただし、人の判断待ちの答えが、ここで終えるよう言ったとき（例：「やめて」）は、endedByHuman を true にして呼ぶと、繰り返しの途中でもそこで繰り返しを終えて、まとめに進める。この印は、人の答えが届いていない実行と、答えを待っている質問があるときは断る。',
+    parameters: {
+      type: 'object',
+      properties: {
+        endedByHuman: {
+          type: 'boolean',
+          description: '人の判断待ちの答えが、ここで終えるよう言ったときだけ true にする。それ以外は付けない。',
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: 'issue',

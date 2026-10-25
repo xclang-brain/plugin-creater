@@ -1,4 +1,4 @@
-import { ABORT_REASON_TEXT, LIMITS, PHASE_LABELS, ROLE_LABELS } from './constants.mjs';
+import { ABORT_REASON_TEXT, LIMITS, PHASE_LABELS, ROLE_LABELS, SUMMARY_END_KINDS } from './constants.mjs';
 import { RECORD_TOOL_NAMES } from './tools.mjs';
 import { stableStringify, summarizeText } from './util.mjs';
 
@@ -341,7 +341,8 @@ export function analyzeEntries(entries, opts) {
   const lastIndex = iterations.length - 1;
   iterations.forEach((it, i) => {
     const endedNormally = endReason?.kind === 'all_passed' || endReason?.kind === 'max_iterations';
-    if (i === lastIndex && !endedNormally) return; // 途中で止まった最後の試行は、終わった理由の課題で足りる
+    // 途中で止まった最後の試行は、終わった理由の課題で足りる。人の指示で終えたときは、人がそこで終えると決めたので課題にしない（4.15）
+    if (i === lastIndex && !endedNormally) return;
     const missing = [];
     if (it.workers.length === 0) missing.push('作業の開始');
     if (it.verifiers.length === 0) missing.push('検証の開始');
@@ -353,7 +354,7 @@ export function analyzeEntries(entries, opts) {
       ]);
     }
   });
-  const normalEnd = endReason?.kind === 'all_passed' || endReason?.kind === 'max_iterations';
+  const normalEnd = SUMMARY_END_KINDS.includes(endReason?.kind); // まとめ中に入って終わった（人の指示で終えたときを含む）
   if (normalEnd && cause?.creditLimit) {
     add('まとめ中に AI クレジットの上限に達しました', [
       '繰り返しが終わった後のまとめの途中で、AI クレジットの上限に達し、統括エージェントが終わりました。',

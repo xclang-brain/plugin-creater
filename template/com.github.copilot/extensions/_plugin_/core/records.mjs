@@ -231,10 +231,27 @@ function recordShow(ctx, run, args, agentId) {
 
 function requireSummarizing(ctx, run, name) {
   if (run.status !== 'summarizing') {
+    // 人の答えが届いた実行では、人の指示で終える印のことを添える（4.15）
+    const hint = run.humanAnswered
+      ? `人の判断待ちの答えが、ここで終えるよう言っていたときは、${tool(ctx, 'review')} を endedByHuman を true にして呼び、まとめを続けてください。`
+      : '';
     refuse(
-      `まだ繰り返しの途中です。${tool(ctx, name)} は、評価基準をすべて満たすか、上限の回数まで試行した後に呼んでください。`,
+      `まだ繰り返しの途中です。${tool(ctx, name)} は、評価基準をすべて満たすか、上限の回数まで試行した後に呼んでください。${hint}`,
     );
   }
+}
+
+// 人の指示で終える（4.15）。人の答えが届いた後に、統括が印を付けて _review を呼んだ。繰り返しの途中でも、まとめ中に移す。
+// 人の答えなしに、統括が自分の判断で繰り返しを抜けられないよう、答えが届いた実行だけで受け付ける。
+// まとめ中の印は使わない（繰り返しは人の指示の前に終わっているので、終わった理由は合否の記録のまま）。
+function endByHuman(run) {
+  if (run.status !== 'running') return;
+  if (!run.humanAnswered) {
+    refuse('この実行では、まだ人の答えが届いていません。endedByHuman は、人の判断待ちの答えが、ここで終えるよう言ったときだけ付けます。印を付けずに、繰り返しを続けてください。');
+  }
+  if (run.humanWait) refuse('答えを待っている質問があります。ほかのツールを呼ばずに、手番を終えて、答えを待ってください。');
+  run.outcome = 'human_ended';
+  run.status = 'summarizing';
 }
 
 function mechanicalDrafts(ctx, run) {
@@ -249,7 +266,8 @@ function mechanicalDrafts(ctx, run) {
   });
 }
 
-function recordReview(ctx, run) {
+function recordReview(ctx, run, args) {
+  if (args.endedByHuman === true) endByHuman(run);
   requireSummarizing(ctx, run, 'review');
   const issues = numberIssues(mechanicalDrafts(ctx, run), 'M', 'mechanical');
   return formatReviewText({

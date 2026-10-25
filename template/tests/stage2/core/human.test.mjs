@@ -300,3 +300,139 @@ test('REQ-051 人の判断待ちのまま止めて終わっても、待ってい
   await h.clock.advance(LIMITS.STOP_POLL_MS);
   assert.ok(!h.run().issues.some((i) => i.title.includes('動きませんでした')), h.run().issues.map((i) => i.title).join(' / '));
 });
+
+// ---- 人が終えるよう答えたとき（4.15） --------------------------------------------------------------
+
+const END = { endedByHuman: true };
+
+// 試行 1 の作業の後（合否の記録の前）に、統括が人に聞いて手番を終えた状態にする（例：ビルドが失敗した）
+async function toWaitingBeforeVerdict(h, extra = {}) {
+  await h.begin(extra);
+  await h.tool('plan', h.planArgs(1), h.root);
+  const worker = await h.spawn('worker');
+  await h.complete(worker);
+  await h.tool('ask', { question: QUESTION }, h.root);
+  await rootTurnEnd(h);
+}
+
+test('REQ-051 人が終えるよう答えると、印を付けた _review で繰り返しの途中でもまとめに進み、「人の指示で終えた」で終わる。試行・まとめ・統括の Issue の案が残る', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h, { maxIterations: 3 });
+  await answer(h, 'やめて');
+  const review = await h.tool('review', END, h.root);
+  assert.match(review, /機械的に洗い出した課題/);
+  assert.match(review, /試行 1：合否の記録がありません/);
+  assert.equal(h.run().status, 'summarizing');
+  const verifier = await h.spawn('verifier');
+  assert.match(await expectRefusal(h.tool('verdict', h.verdictArgs(1, { pass: false }), verifier)), /繰り返しはもう終わっています/);
+  await h.complete(verifier);
+  await h.tool('issue', { title: 'ビルドの道具の場所を設定で渡せるようにする', body: 'ビルドの道具が見つからず、人に聞きました。' }, h.root);
+  await h.tool('finish', { summary: '人の指示で、試行 1 の途中で終えました。' }, h.root);
+  await rootTurnEnd(h, { first: false, response: '実行の番号：x' });
+  const run = h.run();
+  assert.equal(run.status, 'finished');
+  assert.deepEqual([run.endReason.kind, run.endReason.detail], ['human_ended', null]);
+  assert.equal(run.summary, '人の指示で、試行 1 の途中で終えました。');
+  assert.deepEqual(run.iterations.map((i) => i.n), [1], 'それまでの試行が残る');
+  assert.ok(run.issues.some((i) => i.source === 'orchestrator' && i.title === 'ビルドの道具の場所を設定で渡せるようにする'), '統括の Issue の案が残る');
+  const titles = run.issues.map((i) => i.title).join(' / ');
+  assert.ok(!run.issues.some((i) => i.title.includes('試行 1') || i.title.includes('途中で終わりました') || i.title.includes('まとめを記録しない')), titles);
+  assert.deepEqual(h.port.argsOf('cancelAgent'), [h.root], '残った統括は取り消す');
+});
+
+test('REQ-051 人の答えが届いていない実行では、印を付けた _review は断られ、繰り返しを抜けられない', async (t) => {
+  const h = await makeHarness(t);
+  await h.begin({ maxIterations: 3 });
+  await h.iterate(1, { pass: false });
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.match(await expectRefusal(h.tool('finish', { summary: 'まとめ' }, h.root)), /まだ繰り返しの途中です/);
+  assert.equal(h.run().status, 'running');
+  // 質問を記録しても、答えが届く前は同じ
+  await h.tool('ask', { question: QUESTION }, h.root);
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.equal(h.run().status, 'running');
+});
+
+test('REQ-051 答えを待っている質問があるときは、印を付けた _review は断られる。印のない _review の断りには、印のことが添えられる', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h, { maxIterations: 3 });
+  await answer(h, 'このまま続けて');
+  assert.match(await expectRefusal(h.tool('review', {}, h.root)), /まだ繰り返しの途中です[\s\S]*endedByHuman/);
+  await h.tool('ask', { question: 'もう一度聞きます。終えますか、続けますか？' }, h.root);
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /答えを待っている質問があります/);
+  assert.equal(h.run().status, 'running');
+  await rootTurnEnd(h, { first: false });
+  await answer(h, 'ここで終わりにして');
+  await h.tool('review', END, h.root);
+  assert.equal(h.run().status, 'summarizing');
+});
+
+test('REQ-051 まとめ中の印は、終わった理由を変えない（繰り返しは合否の記録で終わっている）', async (t) => {
+  const h = await makeHarness(t);
+  await toWaiting(h, { maxIterations: 3 });
+  await answer(h, '続けて');
+  await h.iterate(2);
+  assert.equal(h.run().status, 'summarizing');
+  await h.tool('review', END, h.root);
+  await h.tool('finish', { summary: 'まとめ' }, h.root);
+  await rootTurnEnd(h, { first: false });
+  assert.deepEqual([h.run().endReason.kind, h.run().endReason.detail], ['all_passed', null]);
+});
+
+test('REQ-051 人の指示で終えた後に、統括がまとめを記録しないまま終わると、「人の指示で終えた」のまま「まとめのない終わり」が課題に出る', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h);
+  await answer(h, 'やめて');
+  await h.tool('review', END, h.root);
+  await rootTurnEnd(h, { first: false });
+  const run = h.run();
+  assert.deepEqual([run.endReason.kind, run.endReason.detail], ['human_ended', null]);
+  assert.ok(run.issues.some((i) => i.title.includes('まとめを記録しない')), run.issues.map((i) => i.title).join(' / '));
+  assert.match(run.summary, /試行は 1 回です/, 'まとめは記録から機械的に作る');
+});
+
+test('REQ-051 人の指示で終えた後のまとめ中に止めると、「ユーザーが止めた」になる（止めるボタンの振る舞いは変わらない）', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h);
+  await answer(h, 'やめて');
+  await h.tool('review', END, h.root);
+  await h.tool('issue', { title: '案', body: '本文' }, h.root);
+  h.core.stop();
+  await h.settle();
+  await h.clock.advance(LIMITS.STOP_POLL_MS);
+  const run = h.run();
+  assert.deepEqual([run.endReason.kind, run.endReason.unstoppable], ['user_stopped', false]);
+  assert.ok(!run.issues.some((i) => i.source === 'orchestrator'), '止めたときは、統括の案を出さない');
+});
+
+test('REQ-051 答えの送りが時間切れの後に、統括が印を付けた _review を呼んでも受け付ける（答えが届いて動き出した）', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h);
+  h.port.behave('sendMessage', { hang: true, times: 1 });
+  const pending = expectRefusal(answer(h, 'やめて'));
+  await h.clock.advance(LIMITS.CALL_TIMEOUT_MS + 1);
+  await pending;
+  assert.equal(h.run().status, 'waiting_human');
+  await h.tool('review', END, h.root);
+  assert.equal(h.run().status, 'summarizing');
+});
+
+test('REQ-051 統括に送る答えの文に、終えるよう言う答えのときはまとめに進むことが入る', async (t) => {
+  const h = await makeHarness(t);
+  await toWaiting(h);
+  await answer(h, 'やめて');
+  const [[, message]] = h.port.callsOf('sendMessage').map((c) => c.args);
+  assert.match(message, /^人の判断の答えが届きました。/);
+  assert.match(message, /ここで終えるよう言っているときは[\s\S]*まとめに進んでください/);
+  assert.ok(message.endsWith('答え：\nやめて'), '答えはそのまま入る');
+});
+
+test('REQ-051 答えを渡さないまま、待っている統括が動き出しても、人の答えが届いたとはみず、印を付けた _review は断られる', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h, { maxIterations: 3 });
+  // <名前>_answer を通らずに、統括が動き出した（例：メインのエージェントが直接メッセージを送った）
+  await h.event({ type: 'tool.started', agentId: h.root, toolCallId: 'tc-x1', toolName: 'weekly-report_review', arguments: {} });
+  assert.equal(h.run().status, 'running');
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.equal(h.run().status, 'running');
+});

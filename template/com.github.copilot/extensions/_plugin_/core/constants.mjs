@@ -31,6 +31,9 @@ export const LIMITS = Object.freeze({
 // 実行の状態（6.1）
 export const ACTIVE_STATUSES = Object.freeze(['starting', 'running', 'waiting_human', 'summarizing', 'stopping']);
 
+// まとめ中に入って終わる、終わった理由（4.8、4.15）。統括がまとめと Issue の案を作る
+export const SUMMARY_END_KINDS = Object.freeze(['all_passed', 'max_iterations', 'human_ended']);
+
 // 思考の深さの選択肢（4.6）。公式のコマンドリファレンスの --effort の値。選ばない（''）ときは上書きしない
 export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
@@ -57,8 +60,10 @@ export const STOPPED_MESSAGE = 'この実行は止められました。ツール
 export const ASK_RECORDED_MESSAGE =
   '質問を記録しました。画面に「人の判断待ち」として出ています。ほかのツールを呼ばずに、返事の1行目に「人の判断待ち」と書き、2行目から同じ質問を書いて、手番を終えてください。この実行は終わりません。ユーザーがチャットで答えると、答えがメッセージで届くので、それに沿って続けてください。';
 // 統括に送る文の始め。この後に、質問と答えを付ける
-export const ANSWER_HEAD = '人の判断の答えが届きました。答えに沿って、この実行の手順を続けてください。試行の番号と記録は、待つ前の続きです。';
-export const ANSWER_DELIVERED_MESSAGE = '答えを統括エージェントに渡しました。同じ実行が続きます。ユーザーにそう伝えて、手番を終えてください。';
+export const ANSWER_HEAD =
+  '人の判断の答えが届きました。答えに沿って、この実行の手順を続けてください。試行の番号と記録は、待つ前の続きです。答えが、ここで終えるよう言っているときは、あなたの定義の「人の判断を求めるとき」のとおりに、endedByHuman を true にして、まとめに進んでください。';
+export const ANSWER_DELIVERED_MESSAGE =
+  '答えを統括エージェントに渡しました。統括エージェントが、同じ実行で、答えに沿って進めます。終えるよう答えたときは、まとめと Issue の案を作ってから終えます。ユーザーにそう伝えて、手番を終えてください。';
 export const ANSWER_NOT_DELIVERED_MESSAGE =
   '答えを統括エージェントに渡せませんでした。この実行は「途中で終わった」で終わります。結果は画面で見られます。ユーザーにそう伝えて、手番を終えてください。作業を自分で続けないでください。';
 export const ANSWER_UNKNOWN_MESSAGE =

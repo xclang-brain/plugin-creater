@@ -46,7 +46,7 @@ export function createRun(ctx, { id, settings, requestText, isAuto, startedAt })
     tree: new Map(), // agentId → 木に入れたエージェント
     slots,
     iterations: [], // { n, criteria, plan, verdicts|null, agentIds, workerIds }
-    outcome: null, // all_passed | max_iterations（まとめ中に入ったとき）
+    outcome: null, // all_passed | max_iterations | human_ended（まとめ中に入ったとき）
     displays: {},
     files: new Map(),
     summary: null,
@@ -57,6 +57,7 @@ export function createRun(ctx, { id, settings, requestText, isAuto, startedAt })
     waits: [],
     limit: null, // 最後の利用の上限の待ち { requestId, answered, action }
     humanWait: null, // 人の判断待ちの質問 { question, askedAt, iteration, turnEnded, waitingSince, answerUnknown? }（4.15）
+    humanAnswered: false, // この実行で、人の答えが統括に届いたか（人の指示で終える印を受け付ける条件。4.15）
     refusals: {},
     stopRequested: false,
     stopAt: null,
@@ -154,6 +155,9 @@ export function enterHumanWait(ctx, run, at) {
 // 答えが統括に届いた（または統括が動き出した）。実行中に戻す。how は記録に残す、戻ったきっかけ（answered か activity）。
 export function resumeFromHumanWait(ctx, run, at, how) {
   if (run.status !== 'waiting_human') return;
+  // 人の答えが届いたとみるのは、<名前>_answer で答えを送ったか、送りが時間切れだった（届いて動き出した）ときだけ。
+  // ほかのきっかけで統括が動き出しても、人の指示で終える印は受け付けない（4.15）
+  if (how === 'answered' || run.humanWait?.answerUnknown) run.humanAnswered = true;
   run.status = 'running';
   run.humanWait = null;
   const rec = run.tree.get(run.rootId);
