@@ -103,8 +103,9 @@ function nameList(names, shown = SHOWN_REMAINING) {
  * @param {object} options.store store.mjs の createStore の返り値
  * @param {string} options.sessionId
  * @param {{ now: () => number }} options.clock
+ * @param {() => void} [options.onCreated] 記録を作った直後に呼ぶ（頼みの文の追記。7.4）
  */
-export function createHearing({ store, sessionId, clock }) {
+export function createHearing({ store, sessionId, clock, onCreated = () => {} }) {
   const iso = () => new Date(clock.now()).toISOString();
 
   let state = null;
@@ -121,9 +122,11 @@ export function createHearing({ store, sessionId, clock }) {
   }
 
   function commit(next) {
+    const created = state === null;
     next.updatedAt = iso();
     store.writeState(next);
     state = next;
+    if (created) onCreated();
   }
 
   const working = () => (state ? clone(state) : freshState({ sessionId, now: iso() }));

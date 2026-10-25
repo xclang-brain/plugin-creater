@@ -57,10 +57,13 @@ export function createCreator({
 
   let workDir = cwd;
   const store = createStore({ home, sessionId });
-  const hearing = createHearing({ store, sessionId, clock });
+  let flushRequests = () => {};
+  const hearing = createHearing({ store, sessionId, clock, onCreated: () => flushRequests() });
   const readResult = createResultReader();
   const sample = createSample({ loadUi, clock });
-  const { hooks, onSessionEvent } = createHooks({ hearing, store, clock, warn });
+  const recorder = createHooks({ hearing, store, clock, warn });
+  const { hooks, onSessionEvent } = recorder;
+  flushRequests = recorder.flushRequests;
 
   // ---- 画面に出す状態 ------------------------------------------------------------------------
 

@@ -118,6 +118,20 @@ describe('状態取得ツール（plugin-creator_state）', () => {
     });
   });
 
+  test('REQ-049 頼みの文は、最後の問答では「頼みの文」として示され、振り返りの材料の問答の記録にも入る', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: '週報づくりを自動化したい' });
+      await run.call('progress', { stage: '始まり' });
+      await run.fake.askUser({ message: '問い1', answer: 'User responded: 答え1' });
+
+      const last = await run.call('state', { include: '最後の問答' });
+      assert.match(last, /最後の問答（2件）：\n {2}\[\d\d:\d\d\] 頼みの文：週報づくりを自動化したい\n/);
+      const review = await run.call('state', { include: '振り返りの材料' });
+      assert.match(review, /問答の記録のすべて（2件。1行が1件の JSON）：/);
+      assert.ok(review.includes('"type":"request","text":"週報づくりを自動化したい"'));
+    });
+  });
+
   test('REQ-049 質問の改善案の対象（11章の1つ目の観点）：未着手の項目に話したものは対象にならず、聞いた後に話したものと、確認で足したものは対象になる', async () => {
     await withRun(async (run) => {
       await run.call('record', { knowledge: [knowledge({ item: '成果物', source: 'ユーザーが自分から話した', text: '未着手の項目に話した', quote: '最初の頼み' })] }); // K-01：対象外

@@ -1323,7 +1323,10 @@ describe('エージェントや記録から来た文字（REQ-005、REQ-006）',
   });
 
   test('REQ-006 画面の応答の CSP が、インラインのスクリプトを止める（画面の側に穴があっても動かない）', async () => {
-    await withScreen({ state: runState('do'), allowErrors: [/Refused to execute inline/] }, async ({ page, app }) => {
+    // CSP が止めたときのブラウザーのメッセージは、版で文が違う（古い Chromium は「Refused to execute inline …」、
+    // 新しい Chromium は「Executing inline script / event handler violates …」）。どちらも、止めたという知らせなので見逃す
+    const blocked = [/Refused to execute inline/, /Executing inline (script|event handler) violates the following Content Security Policy directive/];
+    await withScreen({ state: runState('do'), allowErrors: blocked }, async ({ page, app }) => {
       const policy = (await page.request.get(app.url)).headers()['content-security-policy'];
       assert.match(policy, /script-src 'self'/);
       // 実際にインラインのスクリプトを足そうとしても、動かない
