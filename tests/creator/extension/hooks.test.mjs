@@ -94,6 +94,22 @@ describe('問答の記録（onPostToolUse、onUserPromptSubmitted）', () => {
     });
   });
 
+  test('REQ-016 頼みの文の流れを問いに示して聞いたときも、前回の1回の抜き書きは答えから取る（示した流れは抜き書きにならない）', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: '基本フロー 1. ソースコードの静的調査 2. クロスコンパイル 3. 実機へのデプロイ' });
+      await startHearing(run);
+
+      await run.fake.askUser({
+        message: 'AI は、あなたがふだん当たり前にしている手順を知りません。あなたが最初に書いた流れは、次のように理解しました。1. ソースコードの静的調査 2. クロスコンパイル 3. 実機へのデプロイ 最近この作業を実際にした1回で、あなたがしたことのうち、この流れに書かれていないことは何ですか？',
+        answer: 'User responded: デプロイの前に、実機の電源を入れ直しました',
+      });
+      const fromFlow = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '聞いた', quote: 'ソースコードの静的調査' }] });
+      assert.equal(fromFlow.ok, false, '頼みの文と問いに示した流れの言葉は、ユーザーの答えの抜き書きにならない');
+      const fromAnswer = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '聞いた', quote: '実機の電源を入れ直しました' }] });
+      assert.equal(fromAnswer.ok, true, fromAnswer.error);
+    });
+  });
+
   test('REQ-049 前の記録があるセッションに戻ったときは、記録の前の発言として覚えない（打った発言として追記する）', async () => {
     const home = tempDir('pc-hooks-home-');
     try {
