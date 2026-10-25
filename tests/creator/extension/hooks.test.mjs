@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describe, test } from 'node:test';
 
-import { answerEverything, readyToConfirm, withRun } from './helpers.mjs';
+import { answerEverything, readyToConfirm, tempDir, withRun } from './helpers.mjs';
 
 const CANCELLED = 'User cancelled the request.';
 const UNAVAILABLE = 'The user is not available to respond and will review your work later. Work autonomously and make good decisions. If the request is genuinely ambiguous or unresolvable, stop and call task_complete.';
@@ -59,6 +59,52 @@ describe('問答の記録（onPostToolUse、onUserPromptSubmitted）', () => {
       assert.equal(fs.existsSync(run.qaPath()), false);
       assert.equal(fs.existsSync(run.creator.store.dir), false, '記録のフォルダも作らない');
     });
+  });
+
+  test('REQ-049 記録ができる前に打たれた発言は、記録を作ったときに、頼みの文として qa.jsonl の初めに追記される', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: '週報づくりを自動化したい' });
+      run.clock.advance(1000);
+      await run.hook('onUserPromptSubmitted', { prompt: '毎週金曜に出しています' });
+      assert.equal(fs.existsSync(run.qaPath()), false, '記録ができる前は、ファイルに書かない');
+
+      run.clock.advance(1000);
+      await startHearing(run);
+      await run.hook('onUserPromptSubmitted', { prompt: '記録ができた後の発言' });
+
+      const qa = run.readQa();
+      assert.deepEqual(qa.map((e) => e.type), ['request', 'request', 'user_prompt']);
+      assert.deepEqual(qa.map((e) => e.text), ['週報づくりを自動化したい', '毎週金曜に出しています', '記録ができた後の発言']);
+      assert.deepEqual(qa.map((e) => e.at), ['2026-10-22T09:00:00.000Z', '2026-10-22T09:00:01.000Z', '2026-10-22T09:00:02.000Z'], '時刻は打たれた時刻');
+    });
+  });
+
+  test('REQ-049 頼みの文は、記録を作ったときに1回だけ追記され、抜き書きの確かめでユーザーの答えに数えない', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: '週報づくりを自動化したい' });
+      await startHearing(run);
+      await run.call('progress', { stage: '始まり' });
+      assert.equal(run.readQa().filter((e) => e.type === 'request').length, 1, '記録を作るのは1回なので、頼みの文も1回');
+
+      await run.fake.askUser({ message: '成果物は何ですか？', answer: 'User responded: 週報の Word ファイルです' });
+      const fromRequest = await run.callSafe('progress', { items: [{ item: '作業の目的', status: '聞いた', quote: '週報づくりを自動化したい' }] });
+      assert.equal(fromRequest.ok, false, '頼みの文の言葉は、ユーザーの答えの抜き書きにならない');
+      const fromAnswer = await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '週報の Word ファイルです' }] });
+      assert.equal(fromAnswer.ok, true, fromAnswer.error);
+    });
+  });
+
+  test('REQ-049 前の記録があるセッションに戻ったときは、記録の前の発言として覚えない（打った発言として追記する）', async () => {
+    const home = tempDir('pc-hooks-home-');
+    try {
+      await withRun((run) => startHearing(run), { home });
+      await withRun(async (run) => {
+        await run.hook('onUserPromptSubmitted', { prompt: '続きをお願いします' });
+        assert.deepEqual(run.readQa().map((e) => e.type), ['user_prompt']);
+      }, { home });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('REQ-049 ヒアリングの最中でなくなったとき（段階が「生成」に進んだ後）は、問答も発言も記録しない', async () => {

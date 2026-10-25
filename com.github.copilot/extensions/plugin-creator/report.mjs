@@ -42,6 +42,7 @@ export function qaLines(entry, { questionMax = 300, answerMax = 500 } = {}) {
   const time = timeOf(entry.at);
   const head = time ? `[${time}] ` : '';
   if (entry.type === 'user_prompt') return [`${head}ユーザーの発言：${clip(entry.text, answerMax)}`];
+  if (entry.type === 'request') return [`${head}頼みの文：${clip(entry.text, answerMax)}`];
   const outcome = OUTCOME_JA[entry.outcome] ?? '';
   return [
     `${head}問い：${clip(questionText(entry.question), questionMax)}`,

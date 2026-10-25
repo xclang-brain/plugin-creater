@@ -2,7 +2,8 @@
 // 段階が「生成」に進む前の間（7.4）。
 //
 //   onPostToolUse（ask_user のとき）  問い（toolArgs）と答え（結果の文。取り消しと断りを含む）を qa.jsonl に追記する
-//   onUserPromptSubmitted             ユーザーが打った発言を qa.jsonl に追記する
+//   onUserPromptSubmitted             ユーザーが打った発言を qa.jsonl に追記する。記録がまだないあいだは、メモリーに覚えておき、
+//                                     記録を作ったときに、頼みの文として qa.jsonl の初めに追記する（flushRequests）
 //   onPreToolUse                      コンパクションの後に、次のメインのエージェントの呼び出しへ、1回だけ差し込む
 //
 // どのフックの関数も、例外を投げない。問答の記録のフックは、差し込みを返さない（onPostToolUse の差し込みは画面に出るため。2.5）。
@@ -53,13 +54,14 @@ function argsValue(toolArgs) {
 
 /**
  * @param {object} options
- * @param {{ active: boolean }} options.hearing
+ * @param {{ active: boolean, exists: boolean, loadError: unknown }} options.hearing
  * @param {{ appendQa: (entry: object) => void }} options.store
  * @param {{ now: () => number }} options.clock
  * @param {(text: string) => void} [options.warn] 失敗を知らせる（標準エラー。標準出力は JSON-RPC なので使わない）
  */
 export function createHooks({ hearing, store, clock, warn = () => {} }) {
   let compactionPending = false;
+  let requests = []; // 記録がまだないあいだに打たれた発言（頼みの文。hearing.md 7.4）
   const at = () => new Date(clock.now()).toISOString();
 
   function append(entry) {
@@ -85,7 +87,9 @@ export function createHooks({ hearing, store, clock, warn = () => {} }) {
 
     onUserPromptSubmitted(input) {
       try {
-        if (hearing.active && typeof input?.prompt === 'string') append({ type: 'user_prompt', text: input.prompt });
+        if (typeof input?.prompt !== 'string') return undefined;
+        if (hearing.active) append({ type: 'user_prompt', text: input.prompt });
+        else if (!hearing.exists && !hearing.loadError) requests.push({ at: at(), text: input.prompt });
       } catch (error) {
         warn(`onUserPromptSubmitted：${error?.message ?? error}`);
       }
@@ -121,5 +125,18 @@ export function createHooks({ hearing, store, clock, warn = () => {} }) {
     }
   }
 
-  return { hooks, onSessionEvent, get compactionPending() { return compactionPending; } };
+  /** 記録を作った直後に呼ぶ。覚えておいた発言を、頼みの文として qa.jsonl の初めに追記する。記録ができた後は、覚えない */
+  function flushRequests() {
+    const pending = requests;
+    requests = [];
+    for (const r of pending) {
+      try {
+        store.appendQa({ at: r.at, type: 'request', text: r.text });
+      } catch (error) {
+        warn(`頼みの文の記録に失敗しました：${error?.message ?? error}`);
+      }
+    }
+  }
+
+  return { hooks, onSessionEvent, flushRequests, get compactionPending() { return compactionPending; } };
 }

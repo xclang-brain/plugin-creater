@@ -29,6 +29,7 @@ export function quoteFound(quote, answers) {
 
 /**
  * 問答の記録から、ユーザーの言葉を取り出す：答えが来た ask_user の答え（取り消しと断りは除く）と、ユーザーが打った発言。
+ * 頼みの文（request）は数えない（hearing.md 7.4。外側の EVAL の採点が、最初の依頼の文を抜き書きの出どころに含めないため）。
  * @param {Array<object>} qa store.readQa() の返り値
  */
 export function userWords(qa) {
