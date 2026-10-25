@@ -942,6 +942,41 @@ class AgentTools(Sandbox):
         self.assertPasses("tool-names")
 
 
+class Marketplace(Sandbox):
+    FILE = ".github/plugin/marketplace.json"
+
+    def test_REQ_004_good_marketplace_passes(self):
+        self.assertPasses("marketplace")
+
+    def test_REQ_004_missing_marketplace_fails(self):
+        self.remove(self.FILE)
+        self.assertFailsWith("marketplace", "marketplace.json がない")
+
+    def test_REQ_004_broken_json_fails(self):
+        self.write(self.FILE, "{")
+        self.assertFailsWith("marketplace", "JSON として読めない")
+
+    def test_REQ_004_name_owner_and_plugins_are_required(self):
+        self.edit_json(self.FILE, lambda d: d.pop("name"))
+        self.assertFailsWith("marketplace", "マーケットプレイスの名前（name）がない")
+        self.edit_json(self.FILE, lambda d: d.update({"name": "sample-plugin", "owner": {}}))
+        self.assertFailsWith("marketplace", "持ち主の名前（owner.name）がない")
+        self.edit_json(self.FILE, lambda d: d.update({"owner": {"name": "x"}, "plugins": []}))
+        self.assertFailsWith("marketplace", "プラグインの一覧（plugins）がない")
+
+    def test_REQ_004_every_listed_plugin_needs_a_name(self):
+        self.edit_json(self.FILE, lambda d: d["plugins"].append({"source": "./other"}))
+        self.assertFailsWith("marketplace", "プラグインの名前（name）がない")
+
+    def test_REQ_004_listed_name_must_match_plugin_json(self):
+        self.edit_json(self.FILE, lambda d: d["plugins"][0].update({"name": "old-name"}))
+        self.assertFailsWith("marketplace", "plugin.json の名前「sample-plugin」がない", "「old-name」", "copilot plugin install が失敗する")
+
+    def test_REQ_004_marketplace_is_checked_only_for_generated_plugins(self):
+        self.remove(self.FILE)
+        self.assertNotIn("marketplace", {c.id for c in self.report("plugin").checks})
+
+
 class Trace(Sandbox):
     DESIGN = "docs/design/design.md"
     SPEC = "docs/specs/requirements.md"
