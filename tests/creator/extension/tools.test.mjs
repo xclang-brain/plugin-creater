@@ -151,7 +151,7 @@ describe('ツールの登録', () => {
       const path_ = run.fake.tool(T('confirm')).parameters.properties.evalTasks.items.properties.inputs.items.properties.path;
       assert.equal(
         path_.description,
-        '入力のファイルの場所。実物のファイルは、その絶対パス。仮のファイル（`provisional` が true）は、生成プラグインの中の置き場所（`tests/eval/<課題の番号>/inputs/<名前>`）。',
+        '入力のファイルの場所。実物のファイルは、その絶対パス（フォルダは渡せないので、フォルダの中のファイルを1つずつ渡す）。仮のファイル（`provisional` が true）は、生成プラグインの中の置き場所（`tests/eval/<課題の番号>/inputs/<名前>`）。',
       );
     });
   });
