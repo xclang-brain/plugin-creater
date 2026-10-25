@@ -1416,6 +1416,18 @@ class RealTemplate(Base):
             self.assertTrue(os.path.isfile(self.at(rel)), rel)
         self.assertIn("weekly-report", self.read("docs/constitution.md"))
 
+    def test_REQ_050_the_readme_starts_with_what_it_does_and_how_to_use_it(self):
+        self.build()
+        text = self.read("README.md")
+        headings = [line for line in text.splitlines() if line.startswith("## ")]
+        self.assertEqual(headings[:2], ["## できること", "## 使い方"])
+        self.assertIn("部長宛ての週報ができあがります", text)
+        self.assertIn("「先週の記録をもとに、今週の週報を書いてください。」", text)
+
+    def test_REQ_050_a_readme_slot_with_a_level_2_heading_is_refused(self):
+        self.write(self.part("slots/readme-how.md"), "## 頼み方\n\nチャットで頼みます。\n")
+        self.assertMentions(self.refusal(), "readme-how.md", "### 以下")
+
     def test_REQ_039_the_base_check_script_finds_and_restores_a_changed_base_file(self):
         self.build()
         target = self.at("com.github.copilot/extensions/weekly-report/core/index.mjs")
