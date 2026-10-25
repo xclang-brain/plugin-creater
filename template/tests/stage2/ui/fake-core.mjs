@@ -211,7 +211,7 @@ export function richFinished() {
   state.run.endReason = { kind: 'aborted', detail: 'credit_limit', unstoppable: true };
   state.run.agents = state.run.agents.map((a, i) => ({ ...a, status: ['completed', 'failed', 'stopped', 'unstopped'][i] }));
   state.run.unstopped = [{ agentId: 'ag-work-b', role: 'worker', howTo: 'チャットで Esc を2回押すか、Copilot CLI を終えてください。' }];
-  state.run.canFile = { ok: false, reason: 'gh にログインしていません。', steps: ['gh auth login を実行する。', 'プラグインを入れ直す。'] };
+  state.run.canFile = { ok: false, reason: 'gh にログインしていません。', steps: ['gh auth login を実行する。', 'プラグインをアンインストールしてから、もう一度インストールする。'] };
   state.run.issues = [
     { id: 'i1', title: '未起票の案', body: '本文', source: 'mechanical', filing: { state: 'none', url: null, reason: null } },
     { id: 'i2', title: '起票済みの案', body: '本文', source: 'orchestrator', filing: { state: 'filed', url: 'https://github.com/o/r/issues/2', reason: null } },

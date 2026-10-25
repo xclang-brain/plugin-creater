@@ -181,7 +181,7 @@ const HTTP_404 = /status of 404/;
 // 起票できないときの手順（中心の処理が決める文。core/github.mjs の STEP_* と同じ書き方の見本）
 const FILE_STEPS = [
   'GitHub にこのプラグインを公開する。',
-  'プラグインの設定ファイル（plugin.json）の repository に、公開したリポジトリの GitHub の URL を書く。手元のフォルダから入れたときは、Copilot CLI を起動し直すか、/clear で新しい会話を始めると反映される。GitHub などから入れたときは、直した plugin.json を GitHub に送ってから、入れ直すと反映される。',
+  'プラグインの設定ファイル（plugin.json）の repository に、公開したリポジトリの GitHub の URL を書く。そのあと、手元のフォルダからインストールしたときは、Copilot CLI を終了して起動し直すか、/clear で新しい会話を始める。GitHub などからインストールしたときは、直した plugin.json を GitHub に送り、このプラグインをアンインストールしてから、もう一度インストールする。',
   'gh（GitHub の公式のコマンド）を入れて、gh auth login でログインする。',
 ];
 const openAllFolds = (page) => page.evaluate(() => document.querySelectorAll('details').forEach((d) => (d.open = true)));
@@ -824,11 +824,11 @@ describe('Issue の起票の承認（REQ-014）', () => {
       assert.equal(core.callsOf('fileIssue').length, 0);
       // 中心の処理が手順を決めているときは、その手順を出す
       core.set((s) => {
-        s.run.canFile = { ok: false, reason: 'repository がありません。', steps: ['リポジトリを書く。', '入れ直す。'] };
+        s.run.canFile = { ok: false, reason: 'repository がありません。', steps: ['リポジトリを書く。', 'アンインストールしてから、もう一度インストールする。'] };
         return s;
       });
       await until(page, () => document.getElementById('cannot-file')?.innerText.includes('リポジトリを書く。'));
-      assert.deepEqual(await page.locator('#cannot-file ol li').allInnerTexts(), ['リポジトリを書く。', '入れ直す。']);
+      assert.deepEqual(await page.locator('#cannot-file ol li').allInnerTexts(), ['リポジトリを書く。', 'アンインストールしてから、もう一度インストールする。']);
       // 起票できるようになったら、手順は消えてボタンが押せる
       core.set((s) => {
         s.run.canFile = { ok: true, reason: null, steps: [] };

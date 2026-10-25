@@ -101,7 +101,7 @@ Copilot CLI 1.0.101 から、この確認は必ずあなたに出ます。許可
 起票できるようにするには、次の手順を行います。起票できないときも案は並び、この手順が画面に示されます。
 
 1. {{plugin_name}} を GitHub に公開します。
-2. `plugin.json` の `repository` に、そのリポジトリの URL（例：`https://github.com/OWNER/REPO`）を書きます。手元のフォルダのマーケットプレイスから入れたときは、Copilot CLI を起動し直すか、`/clear` で新しい会話を始めると反映されます。GitHub から入れたときは、直した `plugin.json` を GitHub に送ってから、{{plugin_name}} を入れ直します。
+2. `plugin.json` の `repository` に、そのリポジトリの URL（例：`https://github.com/OWNER/REPO`）を書きます。そのあと、手元のフォルダのマーケットプレイスからインストールしたときは、Copilot CLI を終了して起動し直すか、`/clear` で新しい会話を始めます。GitHub からインストールしたときは、直した `plugin.json` を GitHub に送り、次のコマンドで {{plugin_name}} をアンインストールしてから、もう一度インストールします。
 
    ```shell
    copilot plugin uninstall {{plugin_name}}
