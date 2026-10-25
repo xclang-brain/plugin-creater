@@ -43,9 +43,9 @@
   - Copilot CLI を終えると、異常終了でもサーバーのプロセスが残らない。
 - **手元だけで開ける**（要件：REQ-006。決定：4.2、6.3）
   - ほかのマシンからも、同じマシンのほかの Web ページからも、エージェントが作ったファイルの中のスクリプトからも、開始・停止・起票を送れない。
-- **費用の低いモデルでも同じ画面**（要件：REQ-028、REQ-030、REQ-031。決定：4.9）
+- **費用の低いモデルでも同じ画面**（要件：REQ-028、REQ-030、REQ-031。決定：4.9、4.16）
   - 作業ごとの画面は、AI が決まった形の定義を書くだけでできる。
-  - 見た目と動きは土台が決める。
+  - 見た目と動きは土台が決める。見た目は、AI が作ったと分かる画面の癖を避けた「設計図風」で、書体は同梱する（4.16）。
 - **作ることと判定することが混ざらない**（要件：REQ-010、REQ-011。決定：4.7、4.8）
   - 検証エージェントは成果物を書き換えられない。
   - ユーザーと確かめた基準は、評価基準から外せない。
@@ -596,6 +596,33 @@ flowchart LR
 | 同じ実行のまま、新しい統括を起動し直す（指示文に、試行の番号、上限、記録の要点、人の答えを入れる） | 統括の会話が要点だけになる。1つの実行に統括が何体もでき、中心の処理が複雑になる。待っている統括に送れば続けられると確かめたので、要らない（11章 #19） |
 | 答えを画面の入力欄で受ける | 開発者が、答えはチャットで行う（REQ-005）と決めた |
 
+### 4.16 画面の見た目と書体
+
+- 決めたこと：画面の見た目は「設計図風」にする。開発者が、見た目の案の見本から選んだ。
+  - 工程のループ図とエージェントの構成図と同じ描き方にする。区画は方眼の下地にし、中の箱は白い四角（角は 3px）にする。
+  - フェーズの箱と箱のあいだと、データの受け渡しの矢印は、文字（「→」）ではなく、線と三角で描く。
+  - 状態の色は4つだけにする。灰は終わったもの・対象、青はいま、黄は判断待ち（チャットで確認を待っている、人の判断待ち）と、ユーザーに確かめてほしいこと（止めている途中、上限の回数に達した、選んだモデルと違う、起票したか分からない）、赤はエラー（失敗、止まっていない）である。色は補助で、状態はいつも文字でも示す（REQ-030）。
+  - 等幅の書体は、コマンドの全文だけに使う。
+  - 文字と背景の色の差は 4.5:1 以上にする（WCAG 2.2）。
+- 書体は IBM Plex Sans JP にし、標準（400）と太字（700）の2つの WOFF2 を、ひな形の `ui/static/fonts/ibm-plex-sans-jp/` に同梱する。
+  - 外部の配信（Google Fonts など）からは読み込まない。画面は手元のサーバーから CSP をかけて出す（6.3）ので、CSP の `font-src 'self'` で、フォントも自分のサーバーのものだけにする。
+  - 書体の名前のあとに、手元の日本語の書体（Hiragino Sans、Yu Gothic UI、Meiryo）を、読み込めなかったときの代わりとして並べる。OS の標準の書体（`system-ui`）は使わない。
+  - フォントのファイルは、IBM が npm で配っているもの（`@ibm/plex-sans-jp` 3.0.0 の `fonts/complete/woff2/hinted/`）を、変えずに使う。ライセンスは SIL Open Font License 1.1 で、予約された書体名「Plex」がある。文字を間引いたり、最適化したりすると、改変版になり（OFL-FAQ 2.5、2.6）、「Plex」を含む名前で配れない。形式を変える（TTF から WOFF2 など）のも、ふつうは改変版になる（2.2）。改変版にならないのは、WOFF の圧縮のほかはフォントのデータを変えず、メタデータも元のまま写すときだけである（2.2.1）。IBM が配っているファイルのままなら、改変版にならない。
+  - ライセンスの文（著作権の表示を含む）を、フォントの隣に `OFL.txt` として置く（OFL の条件2、OFL-FAQ 1.20）。同梱していることは、生成プラグインの README に書く。
+  - IBM の版（1.004）の漢字は 12,710 字ある。Google Fonts の版（1.001）は 6,746 字に絞られていて、作業の文やファイル名の漢字が欠けやすいので使わない。大きさは、1つ約 2.3MB、2つで約 4.6MB である。
+  - クリエイターのリポジトリも生成プラグインも、この分だけ大きくなる。憲章 第10条2項（リポジトリを肥大化させない）に照らして、開発者が、見本どおりの見た目にするために、この大きさを認めた。フォントを変えないかぎり、その後は増えない。
+- 画面の部品の窓口（静的ファイル）は、`fonts/…` のような入れ子のフォルダのファイルも出す。`.` と `..` を含むパスと、置き場所の外は出さない。フォントは `font/woff2` の種類で、ほかの部品と同じ指定（合言葉の確かめ、CSP、`nosniff`、`no-store`）を付けて返す。
+- CSS の中のフォントの URL にも、合言葉を付ける。サーバーは、`index.html` と CSS の中の差し込み口（`%%K%%`）を、今の合言葉にする。フォントなど、ほかのファイルはバイトのまま返す。
+- 理由：開発者が、画面を「いかにも Claude が作った見た目」にしないと決めた。AI が作った画面の癖（OS の標準の書体、全部同じ角丸の箱、文字の後ろの「→」、小さな札の等幅の書体など。ナレッジ「AI が作ったと分かる画面の特徴」）を避ける。書体を同梱するのは、手元に入っている書体によって見た目が変わらないようにするためである。
+
+| 代案 | 採らなかった理由 |
+| --- | --- |
+| Google Fonts などの配信から読み込む | CSP で外部を止めている（6.3）。ネットにつながらないと見た目が変わる。画面を開くたびに外部へ問い合わせが出る |
+| Google Fonts の TTF を、自分で WOFF2 に変える | 漢字が少ない（6,746 字）。変換で、圧縮のほかにフォントのデータやメタデータが変わると改変版になり、「IBM Plex Sans JP」の名前で配れない（OFL-FAQ 2.2、2.2.1）。変わっていないことを確かめる手間もかかる |
+| 標準（400）だけを同梱し、太字はブラウザーに太らせる | 大きさは半分（約 2.3MB）になるが、見出しや札の太字が、見本より少しつぶれて見える |
+| フォントを同梱しない | リポジトリは大きくならないが、使う人の PC に入っている書体で出て、PC ごとに見た目が変わる |
+| IBM の、文字の範囲ごとに分けたファイル（`fonts/split/`） | 2つの太さで約250のファイルになり、CSS も長くなる。手元のサーバーから出すので、分けて小さくする効き目がない |
+
 ## 5. 場面ごとの流れ
 
 ### 5.1 頼んでから終わるまで
@@ -780,7 +807,7 @@ stateDiagram-v2
   - どれにも、スクリプトを動かさない指定（`Content-Security-Policy: sandbox` と `X-Content-Type-Options: nosniff`）を付ける。
   - エージェントが作ったファイルの中のスクリプトが、合言葉を読んで開始・停止・起票を送るのを防ぐためである。
 - エージェントや記録から来た文字（最後の返事、作業ごとの表示の値、Issue の案、確認の待ちのコマンドの文など）は、すべて文字として出し、HTML として扱わない。
-  - 画面の応答には、自分のサーバーのスクリプトだけを動かす指定（`Content-Security-Policy` の `script-src 'self'` など）を付ける。
+  - 画面の応答には、自分のサーバーのスクリプトだけを動かす指定（`Content-Security-Policy` の `script-src 'self'` など）を付ける。フォントも、自分のサーバーのもの（同梱の書体。4.16）だけにする（`font-src 'self'`）。
   - エージェントが書いた文字の中のスクリプトに、合言葉を読ませて開始・停止・起票を送らせないためである。
 - 確認の待ち（4.14）では、何の確認かを示す。
   - 示すのは、求めたエージェントの役割と、確認の種類（許可・利用の上限・質問）である。エージェントの番号のない待ちは、実行全体の待ちとして示す。
@@ -869,7 +896,7 @@ stateDiagram-v2
 
 クリエイターの画面（REQ-043、REQ-044）は、土台の一部を流用し、見るだけの使い方で動かす（憲章 第15条2項、第18条）。
 
-- 流用するのは、描画の部品、画面のサーバー、合言葉（127.0.0.1 だけで待ち受けることを含む）、Copilot CLI の終了で終わること（4.2。Copilot CLI を終えると、クリエイターの画面のサーバーのプロセスも残らない。REQ-043）にとどめる。
+- 流用するのは、描画の部品（見た目の `style.css` と同梱の書体を含む。4.16）、画面のサーバー、合言葉（127.0.0.1 だけで待ち受けることを含む）、Copilot CLI の終了で終わること（4.2。Copilot CLI を終えると、クリエイターの画面のサーバーのプロセスも残らない。REQ-043）にとどめる。
   - 生成プラグインの実行の状態（試行、エージェントの木、終わった理由）は流用しない。クリエイターの画面に出す状態は、クリエイターのエクステンションが持つ。
   - サンドボックスとの関係も同じで、クリエイターを使うにも試験的機能を有効にする必要がある（`copilot --experimental` か `/settings experimental on`。4.1）。
 - クリエイターのエクステンション（`com.github.copilot/extensions/<クリエイターの画面の名前>/extension.mjs`）は、ひな形の中にある描画の部品と画面のサーバーを読み込む。
@@ -994,7 +1021,7 @@ stateDiagram-v2
 - 統括が、使ってよいツールの一覧にないツールを使うと、フックで拒まれる。止めた実行の拒みが先に効く（4.4、4.7）。
 - 待っている統括に送る窓口が、`tasks.sendMessage` を統括の番号と文で呼び、送れたかを返す。`agent_idle` に、`onSubagentStop` で届いた最後の返事が付く。答えを渡すツールが、中心の処理に答えと呼んだエージェントの番号を渡す（4.15）。
 
-**2段目 部品の試験（サーバー）**（要件：REQ-006、REQ-014、REQ-029）
+**2段目 部品の試験（サーバー）**（要件：REQ-006、REQ-014、REQ-029、REQ-030）
 
 - 127.0.0.1 だけで待ち受ける。
 - 合言葉や名前が違う問い合わせを断る。
@@ -1002,6 +1029,7 @@ stateDiagram-v2
 - 知らされていないファイルと、作業フォルダの外のファイル（外を指すシンボリックリンクを含む）を出さない。
 - SVG と HTML は画像として出さず、ダウンロードさせる形で返す。
 - どのファイルにも、スクリプトを動かさない指定が付く。
+- 画面の部品は、入れ子のフォルダ（`fonts/…`）のファイルも出し、置き場所の外は出さない。フォントは `font/woff2` の種類で、バイトのまま出る。CSS の中の合言葉の差し込み口は、今の合言葉になる。CSP で、フォントは自分のサーバーのものだけになる（4.16）。
 - 偽物の `gh` で、次を確かめる。
   - 承認すると起票される。
   - 2回押しても、2つのサーバーから同じ案を承認しても、1件だけになる。
@@ -1026,6 +1054,8 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 - 幅を変えても崩れない。
 - 文字を大きくしても崩れない。
 - 文字と背景の色の差が十分ある（WCAG 2.2 の色の差の基準）。
+- 文字が、同梱の書体（IBM Plex Sans JP の標準と太字）で描かれる（4.16）。
+- 飾りの矢印の文字（「→」など）を使わず、等幅の書体はコマンドの全文だけに使う（4.16）。
 - 状態が文字でも示される。
 - 長い内容が畳まれている。
 
@@ -1132,6 +1162,7 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 ## 根拠
 
 - 憲章 第5条、第6条1項・3項、第9条、第10条、第15条、第18条、第19条〜第24条
+- ナレッジ「AI が作ったと分かる画面の特徴」（4.16）
 - 出力の要件（REQ-001〜REQ-014、REQ-025、REQ-029〜REQ-031、REQ-050、REQ-051）、作る流れの要件（REQ-015、REQ-017、REQ-018、REQ-020、REQ-026〜REQ-028、REQ-033、REQ-043、REQ-044、REQ-049）、試験の要件（REQ-038、REQ-039、REQ-042）
 - ナレッジ「ハーネスエンジニアリングの目的と人間の役割」「画面と Copilot CLI のつなぎ方」「カスタムエージェント」「プラグイン」「自己改善」「AI の思考サイクル（PDS）」「KISS」
 - SWEBOK V4 第2章（アーキテクチャの記述と決定の根拠、品質の特性）、第3章（設計で考える事項：並行性、イベントの扱い、データの永続化、エラーと耐障害性、セキュリティ）
@@ -1150,4 +1181,6 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 - Copilot CLI 1.0.98 の npm パッケージ（`@github/copilot`）に含まれるプログラム：`copilot-sdk/docs/extensions.md`・`agent-author.md`（エクステンションの起動と終了、`/clear` での読み込み直し、ツールとフックの登録）、`copilot-sdk/types.d.ts`・`extension.d.ts`・`docs/examples.md`（`JoinSessionConfig` の `onPermissionRequest`、`ToolInvocation.agentId`、フックの入力の `agentId`・`parentAgentId`、`requestExtensions`、`requestedEnvironmentVariables` を断るとエクステンションが読み込まれないこと）、`copilot-sdk/generated/rpc.d.ts`（`tasks.startAgent`・`cancel`・`list`、`TasksStartAgentRequest.name` と `displayName`、`TaskStatus` の `idle`、`TaskShellInfo`、`tools.updateSubagentSettings` と `SubagentSettings`・`UpdateSubagentSettingsRequest`、`cancelAllBackgroundAgents`、`model.getCurrent`、`models.list`）、`copilot-sdk/generated/session-events.d.ts`（`subagent.*` と `cancelled`・`executionMode`、`permission.requested` と許可の求めの `PermissionRequestShell`・`requestSandboxBypass`・`extension-permission-access`、`permission.completed`、`user_input.*` と質問の `question`、`session_limits_exhausted.*` と待ちの終わりの `response.action`、`system.notification` の `agent_idle` のイベント）、`schemas/api.schema.json`（`hooks.invoke`）、`preloads/extension_bootstrap.mjs`（親のプロセスの見張り）、`cli-main.js`（エクステンションを読み込む条件、`launcherProgram`、読み込みのときの `extension-permission-access` の確認と断ったときの扱い）、`index.js`・`extension.js`（起動用のファイルの読み込み、許可の求めをすべての相手に届けて最初の答えを使う `_handleBroadcastEvent`）、`definitions/explore.agent.yaml`（`model` のリスト）、`runtime.node`（`model` のリストを求める文字列、`model-policy`、`task` の `mode` と `agent_type`）
 - Copilot CLI 1.0.103 の npm パッケージ（`@github/copilot-linux-x64`）に含まれるプログラム：`copilot-sdk/generated/rpc.d.ts`（`SubagentSettingsEntry` の `effortLevel`、`TasksStartAgentRequest` に思考の深さの項目がないこと、`tasks.sendMessage` の `TasksSendMessageRequest`・`TasksSendMessageResult`、`TaskStatus` の `idle` の説明「The task is waiting for additional input」）、`changelog.json`（1.0.62 サブエージェントのモデル・思考の深さの設定、1.0.66 カスタムエージェントの定義の思考の深さ、1.0.88 モデルが受け付けない深さは使わないこと）
 - [Web Content Accessibility Guidelines (WCAG) 2.2](https://www.w3.org/TR/WCAG22/)
+- [SIL Open Font License 1.1](https://openfontlicense.org/open-font-license-official-text/) と [OFL-FAQ](https://openfontlicense.org/ofl-faq/)（2.2・2.2.1 形式の変換がふつうは改変版になることと、改変版にならない WOFF の条件、2.5・2.6 最適化と間引きは改変版、1.20 プログラムに同梱するときに付けるもの）
+- [IBM Plex](https://github.com/IBM/plex)（`LICENSE.txt`：Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"）と、npm の [`@ibm/plex-sans-jp`](https://www.npmjs.com/package/@ibm/plex-sans-jp) 3.0.0（`fonts/complete/woff2/hinted/` の WOFF2 と `license.txt`）
 - [SWEBOK Guide V4.0](https://www.computer.org/education/bodies-of-knowledge/software-engineering/v4)

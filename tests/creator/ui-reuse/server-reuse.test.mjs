@@ -31,7 +31,7 @@ function get({ port, path: requestPath }) {
       .get({ host: '127.0.0.1', port, path: requestPath, headers: { Host: `127.0.0.1:${port}` } }, (res) => {
         const chunks = [];
         res.on('data', (chunk) => chunks.push(chunk));
-        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
       })
       .on('error', reject);
   });
@@ -65,6 +65,10 @@ test('REQ-043 ひな形の描画の部品（render.js）と見た目（style.css
       assert.equal(response.status, 200, name);
       assert.ok(response.body.length > 100, name);
     }
+    // style.css が読み込む同梱のフォントも、ひな形の置き場所から出る（クリエイターは写しを持たない）
+    const font = await get({ port: server.port, path: `/fonts/ibm-plex-sans-jp/IBMPlexSansJP-Regular.woff2?k=${server.token}` });
+    assert.equal(font.status, 200, 'フォント');
+    assert.equal(font.headers['content-type'], 'font/woff2');
     assert.equal((await get({ port: server.port, path: '/render.js' })).status, 403, '合言葉がなければ、部品も出さない');
   } finally {
     await server.close();

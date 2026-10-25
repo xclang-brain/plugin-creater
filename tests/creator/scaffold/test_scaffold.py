@@ -278,6 +278,23 @@ class Place(Base):
             self.build()
         self.assertEqual(self.git("log", "-1", "--format=%an <%ae>").strip(), "plugin-creator <plugin-creator@localhost>")
 
+    def test_REQ_021_binary_files_of_the_template_are_copied_byte_for_byte(self):
+        # フォントなどの中に、差し込み口に見えるバイトの並びがあっても、置き換えず、断りもしない
+        # UTF-8 として読めるもの（0 のバイトがある）と、読めないものの両方
+        files = {
+            "com.github.copilot/extensions/_plugin_/ui/static/fonts/x/X-Regular.woff2": b"wOF2\x00\x01{{plugin_name}}\x00{{slot:readme-what}}\r\n",
+            "docs/picture.bin": b"\x89PNG\x00{{plugin_name}}\x00{{slot:readme-what}}\xff\xfe\r\n\x80",
+            "docs/picture-text.bin": b"\x00{{plugin_name}}\n",
+        }
+        for rel, data in files.items():
+            os.makedirs(os.path.dirname(self.tmpl(rel)), exist_ok=True)
+            with open(self.tmpl(rel), "wb") as f:
+                f.write(data)
+        self.assertTrue(self.build()["ok"])
+        for rel, data in files.items():
+            self.assertEqual(self.read_bytes(rel.replace("_plugin_", "weekly-report")), data, rel)
+        self.assertEqual(scaffold.check_base(self.out, template=self.template)["differences"], [])
+
     def test_REQ_021_the_files_of_the_template_that_are_caches_or_tools_are_not_copied(self):
         for rel in ("core/__pycache__/x.pyc", "tests/results/latest.json", "tests/.venv/bin/python"):
             self.write(self.tmpl("com.github.copilot/extensions/_plugin_/" + rel), "x")
@@ -1408,6 +1425,16 @@ class RealTemplate(Base):
                 for m in scaffold.PLACEHOLDER.finditer(text):
                     leftovers.append("%s: %s" % (os.path.relpath(path, self.out), m.group(0)))
         self.assertEqual(leftovers, [])
+
+    def test_REQ_030_the_bundled_fonts_are_copied_byte_for_byte_and_kept_as_binary_in_git(self):
+        self.build()
+        fonts = "com.github.copilot/extensions/%s/ui/static/fonts/ibm-plex-sans-jp/"
+        for name in ("IBMPlexSansJP-Regular.woff2", "IBMPlexSansJP-Bold.woff2", "OFL.txt"):
+            with open(os.path.join(REAL_TEMPLATE, *(fonts % "_plugin_" + name).split("/")), "rb") as f:
+                self.assertEqual(self.read_bytes(fonts % "weekly-report" + name), f.read(), name)
+        # git が文字のファイルとして扱わない（改行の置き換えで壊れない）
+        for name in ("IBMPlexSansJP-Regular.woff2", "IBMPlexSansJP-Bold.woff2"):
+            self.assertIn("i/-text", self.git("ls-files", "--eol", fonts % "weekly-report" + name), name)
 
     def test_REQ_001_the_built_plugin_has_the_constitution_the_specs_the_design_and_the_tests(self):
         self.build()

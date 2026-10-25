@@ -1469,6 +1469,35 @@ describe('見た目（REQ-030）', () => {
     }
   });
 
+  test('REQ-030 文字は、同梱の書体（IBM Plex Sans JP の標準と太字）で描かれる。日本語も英数字も、ほかの書体に代わらない', async () => {
+    await withScreen({ state: runState('do') }, async ({ page, context, requests }) => {
+      const faces = await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].map((f) => `${f.family.replace(/["']/g, '')}|${f.weight}|${f.status}`).sort();
+      });
+      assert.deepEqual(faces, ['IBM Plex Sans JP|400|loaded', 'IBM Plex Sans JP|700|loaded']);
+      assert.ok(requests.some((url) => url.includes('/fonts/ibm-plex-sans-jp/IBMPlexSansJP-Regular.woff2?k=')), '標準のフォントを読み込んでいない');
+      assert.ok(requests.every((url) => url.startsWith(new URL(page.url()).origin)), '自分のサーバーの外を読み込んでいる');
+      // ブラウザーが実際に使った書体（Chromium の開発者向けの窓口で調べる）
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('DOM.enable');
+      await cdp.send('CSS.enable');
+      const { root } = await cdp.send('DOM.getDocument', { depth: -1 });
+      for (const [selector, what] of [
+        ['h1', '見出し（日本語・太字）'],
+        ['.trial-help', '説明（日本語・標準）'],
+        ['.actual-model', 'モデルの名前（英数字）'],
+        ['.agent-status .badge', '状態の札（日本語・太字）'],
+      ]) {
+        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector });
+        assert.ok(nodeId, `${selector} がない`);
+        const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+        assert.ok(fonts.length > 0, `${what}：書体が分からない`);
+        assert.deepEqual(fonts.filter((f) => f.familyName !== 'IBM Plex Sans JP' || !f.isCustomFont).map((f) => f.familyName), [], `${what}が、ほかの書体で描かれている`);
+      }
+    });
+  });
+
   const WIDTHS = [320, 375, 480, 768, 1024, 1280, 1600, 1920];
   const SCREENS = [
     ['実行中', () => richRunning(), ALL_DISPLAYS_TASK],
@@ -1529,6 +1558,44 @@ describe('見た目（REQ-030）', () => {
       });
     });
   }
+
+  test('REQ-030 設計図風の決まり：飾りの矢印の文字（「→」など）を使わず、等幅の書体はコマンドの全文だけに使う', async () => {
+    for (const [name, makeState, task] of SCREENS) {
+      await withScreen({ state: makeState(), task, allowErrors: [HTTP_404] }, async ({ page }) => {
+        await openAllFolds(page);
+        const problems = await page.evaluate(() => {
+          const found = [];
+          const ARROW = /[←→↑↓⇒⇐›»➔➜➝➞]/;
+          const where = (el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${el.className && typeof el.className === 'string' ? `.${el.className.trim().split(/\s+/).join('.')}` : ''}`;
+          for (const el of document.querySelectorAll('body *')) {
+            // 矢印は、文字ではなく線と三角で描く（::before・::after に文字を入れない）
+            for (const pseudo of ['::before', '::after']) {
+              const content = getComputedStyle(el, pseudo).content;
+              if (content && content !== 'none' && content !== 'normal' && ARROW.test(content)) found.push(`${where(el)}${pseudo} に矢印の文字：${content}`);
+            }
+            // リンク・ボタン・畳みの見出し・札・図の箱の文字の前後に、矢印の文字を付けない
+            if (el.matches('a, button, summary, .badge, .phase, .flow-node, .flow-link')) {
+              const label = el.textContent.trim();
+              if (ARROW.test(label.at(0) ?? '') || ARROW.test(label.at(-1) ?? '')) found.push(`${where(el)} の文字に矢印：${label}`);
+            }
+            // 等幅の書体は、コマンドの全文（.command）だけ
+            const hasText = [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim()) || el.matches('input:not([type=checkbox]):not([type=radio]), select, textarea, button');
+            if (!hasText || el.closest('.command') || el.getClientRects().length === 0) continue;
+            const first = getComputedStyle(el).fontFamily.split(',')[0].trim().replace(/["']/g, '');
+            if (first !== 'IBM Plex Sans JP') found.push(`${where(el)} の書体が ${first}`);
+          }
+          return found;
+        });
+        assert.deepEqual(problems, [], `${name}の画面`);
+        assert.ok((await page.locator('.phase, .flow-node').count()) > 0 || name === '準備中', '図の箱も調べた');
+        if (name === '実行中') {
+          // コマンドの全文は、等幅の書体になる（試験が空振りでない）
+          const command = await page.locator('.command').first().evaluate((el) => getComputedStyle(el).fontFamily);
+          assert.match(command, /monospace/);
+        }
+      });
+    }
+  });
 
   test('REQ-030 状態の札（色の違う全種類）と、押せないボタンも、色の差が 4.5:1 以上', async () => {
     const state = richFinished();

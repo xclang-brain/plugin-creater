@@ -1,18 +1,51 @@
 /* Web管理画面の見た目。どの生成プラグインでも同じ構成と見た目にする（REQ-030）。
+   設計図風：工程のループ図・エージェント構成の図と同じ描き方にする。
+   - 区画は方眼の下地、中の箱は白い四角（角は 3px）。箱と箱をつなぐ矢印は、文字ではなく線と三角で描く。
+   - 色は図と同じ4つだけ：灰＝終わった・対象、青＝いま、黄＝判断待ち（と、確かめてほしいこと）、赤＝エラー（失敗、止まっていない）。
+   - 書体は、同梱の IBM Plex Sans JP（fonts/ibm-plex-sans-jp/。標準と太字の2つ）。等幅の書体は、コマンドの全文だけに使う。
    文字と背景の色の差は 4.5:1 以上（WCAG 2.2）。大きさは rem で決め、文字を大きくしても崩れないようにする。 */
 
 :root {
   color-scheme: light;
-  --bg: #f4f6f8;
-  --surface: #ffffff;
-  --text: #1f2933;
-  --muted: #52606d;
-  --line: #d9e2ec;
-  --border: #7b8794;
-  --primary: #0b5cad;
-  --danger: #a61b1b;
-  --focus: #1d4ed8;
-  --radius: 0.5rem;
+  --bg: #e9edf1;
+  --sheet: #f6f8fa;
+  --grid: #e4e9ee;
+  --box: #ffffff;
+  --text: #26303a;
+  --muted: #55606c;
+  --stroke: #5f6b78;   /* 図の線 */
+  --thin: #b7c0ca;
+  --done: #e1e6eb;     /* 終わった工程 */
+  --now: #1565c0;      /* いまの工程 */
+  --ask: #f2c14e;      /* 判断待ち */
+  --err: #c62828;      /* エラー */
+  --ok-text: #1e5a32;
+  --focus: #1565c0;
+  --radius: 3px;
+  /* 前の名前。ほかのファイル（クリエイターの画面の creator.css など）が使う */
+  --surface: var(--box);
+  --line: var(--thin);
+  --border: var(--stroke);
+  --primary: var(--now);
+  --danger: var(--err);
+}
+
+/* 書体：同梱の IBM Plex Sans JP（IBM の配っている WOFF2 をそのまま使う。ライセンスは同じフォルダの OFL.txt）。
+   ファイルの URL にも合言葉を付ける（サーバーが、CSS の中の差し込み口を今の合言葉にする） */
+@font-face {
+  font-family: 'IBM Plex Sans JP';
+  src: url('fonts/ibm-plex-sans-jp/IBMPlexSansJP-Regular.woff2?k=%%K%%') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans JP';
+  src: url('fonts/ibm-plex-sans-jp/IBMPlexSansJP-Bold.woff2?k=%%K%%') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
 }
 
 *,
@@ -30,11 +63,12 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: system-ui, -apple-system, 'Hiragino Sans', 'Noto Sans JP', 'Yu Gothic UI', Meiryo, sans-serif;
-  font-size: 1rem;
-  line-height: 1.6;
+  font-family: 'IBM Plex Sans JP', 'Hiragino Sans', 'Yu Gothic UI', Meiryo, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.55;
   /* 区切りのない長い文字（長いコマンドや場所）も、入れ物の中で折り返す */
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
 }
 
 .page {
@@ -55,23 +89,27 @@ dd {
 }
 
 h1 {
-  font-size: 1.375rem;
+  font-size: 1.25rem;
+  font-weight: 700;
   line-height: 1.3;
 }
 
+/* 区画の見出しは、図の表題のように左上に置く */
 h2 {
-  font-size: 1.125rem;
+  font-size: 1rem;
+  font-weight: 700;
   line-height: 1.4;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.6rem;
 }
 
 h3 {
-  font-size: 1rem;
+  font-size: 0.9375rem;
+  font-weight: 700;
   line-height: 1.4;
 }
 
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -82,7 +120,7 @@ h3 {
 }
 
 .help {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .text-block {
@@ -90,14 +128,14 @@ h3 {
   margin: 0.25rem 0;
 }
 
-/* ---- 見出し（状態の札と止めるボタン） ---- */
+/* ---- 見出し ---- */
 
 .top {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem 1rem;
-  padding: 0.75rem 0;
+  padding: 0.9rem 0 0.6rem;
 }
 
 .top h1 {
@@ -116,72 +154,85 @@ h3 {
   flex-basis: 100%;
 }
 
-/* ---- 札（状態は色だけでなく文字でも示す） ---- */
+/* ---- 状態の札：図の凡例と同じ色の四角（状態は色だけでなく文字でも示す） ---- */
 
 .badge {
   display: inline-block;
-  padding: 0.1rem 0.6rem;
-  border-radius: 62.5rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1.5;
-  background: #e4e7eb;
-  color: #1f2933;
+  padding: 0 0.5rem;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.55;
+  background: var(--box);
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 
-.badge-running,
+.badge-running {
+  background: var(--now);
+  border-color: var(--now);
+  color: #ffffff;
+}
+
 .badge-info {
-  background: #d6e8fb;
-  color: #0a3d7a;
+  border-color: var(--now);
+  color: #0f4c94;
 }
 
 .badge-waiting,
 .badge-warn {
-  background: #fdecc8;
-  color: #5c3a00;
+  background: var(--ask);
+  border-color: #b8860b;
+  color: #2e2100;
 }
 
 .badge-completed {
-  background: #d3f0dc;
-  color: #0a4d24;
+  background: var(--done);
+  border-color: var(--stroke);
+  color: var(--ok-text);
 }
 
 .badge-failed,
 .badge-unstopped {
-  background: #fbd9d9;
-  color: #7a1414;
+  background: var(--err);
+  border-color: #8e1b1b;
+  color: #ffffff;
 }
 
 .badge-unstopped {
-  border: 2px solid #7a1414;
+  outline: 2px solid #8e1b1b;
+  outline-offset: 1px;
 }
 
 /* ---- ボタン ---- */
 
 .btn {
-  min-height: 2.5rem;
-  padding: 0.4rem 1.1rem;
-  border: 2px solid transparent;
+  min-height: 2.25rem;
+  padding: 0.3rem 1rem;
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
   font: inherit;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .btn-primary {
-  background: var(--primary);
+  background: var(--now);
+  border-color: #0d4a8f;
   color: #ffffff;
 }
 
 .btn-danger {
-  background: var(--danger);
-  color: #ffffff;
+  background: var(--box);
+  border: 2px solid var(--err);
+  color: #a31f1f;
 }
 
 .btn:disabled {
-  background: #d9e2ec;
-  color: #3e4c59;
+  background: var(--done);
+  border-color: var(--thin);
+  color: #4a5561;
   cursor: not-allowed;
 }
 
@@ -189,26 +240,27 @@ h3 {
   margin-top: 0.75rem;
 }
 
-/* ---- 注意・案内 ---- */
+/* ---- 注意・案内：図の中の注記のような破線の枠 ---- */
 
 .alert,
 .note {
-  padding: 0.5rem 0.9rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px dashed var(--stroke);
   border-radius: var(--radius);
-  border-left: 0.35rem solid transparent;
   margin: 0.5rem 0;
+  background: var(--box);
 }
 
 .alert-error {
-  background: #fbd9d9;
-  color: #7a1414;
-  border-left-color: var(--danger);
+  background: #fdf1f1;
+  color: #8e1b1b;
+  border: 1px solid var(--err);
 }
 
 .alert-info {
-  background: #e0ecfa;
-  color: #0a3d7a;
-  border-left-color: var(--primary);
+  background: var(--box);
+  color: #0f3f78;
+  border-color: var(--now);
 }
 
 .alert ol,
@@ -216,83 +268,103 @@ h3 {
   padding-left: 1.5rem;
 }
 
-.note {
-  background: var(--surface);
-  border-left-color: var(--border);
-}
-
 .note-warn {
-  background: #fdecc8;
-  color: #5c3a00;
-  border-left-color: #b45309;
+  background: #fff8e1;
+  color: #4a3500;
+  border: 1px dashed #b8860b;
 }
 
-/* ---- 区画 ---- */
+/* ---- 区画：方眼の下地 ---- */
 
 .main {
   display: block;
 }
 
 .panel {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 0.75rem 1rem;
+  background-color: var(--sheet);
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 1.25rem 1.25rem;
+  border: 1px solid var(--thin);
+  border-radius: 0;
+  padding: 0.8rem 1rem;
   margin: 0 0 0.75rem;
 }
 
-/* ---- フェーズ・試行・エージェントの枠・受け渡しの図 ---- */
+/* ---- フェーズ：矢印でつないだ箱 ---- */
 
 .steps-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 1.25rem;
-  margin-bottom: 0.75rem;
+  gap: 0.5rem 1.5rem;
+  margin-bottom: 0.9rem;
 }
 
 .phases {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.5rem 1.6rem;
   padding: 0;
   list-style: none;
 }
 
 .phase {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.3rem 0.9rem;
-  border: 2px solid var(--border);
+  padding: 0.25rem 1rem;
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
-  background: var(--surface);
-  font-weight: 600;
+  background: var(--box);
+  font-weight: 700;
+}
+
+/* 箱と箱のあいだの矢印。文字ではなく、線（::before）と三角（::after）で描く */
+.phase + .phase::before {
+  content: '';
+  position: absolute;
+  left: -1.35rem;
+  top: 50%;
+  width: 0.85rem;
+  border-top: 1px solid var(--stroke);
+}
+
+.phase + .phase::after {
+  content: '';
+  position: absolute;
+  left: -0.55rem;
+  top: calc(50% - 0.25rem + 0.5px);
+  border-left: 0.4rem solid var(--stroke);
+  border-top: 0.25rem solid transparent;
+  border-bottom: 0.25rem solid transparent;
 }
 
 .phase.is-active,
 .flow-node.is-active {
-  background: var(--primary);
-  border-color: var(--primary);
+  background: var(--now);
+  border-color: #0d4a8f;
   color: #ffffff;
 }
 
 .phase-no {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .now {
-  font-weight: 600;
+  font-weight: 700;
   margin-left: 0.25rem;
 }
 
 .trial {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .trial-help {
   display: block;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   font-weight: 400;
 }
 
@@ -300,36 +372,20 @@ h3 {
   color: var(--muted);
 }
 
+/* ---- エージェント：構成図の箱。上の帯の色が状態 ---- */
+
 .agents {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
-  gap: 0.75rem;
+  gap: 1rem;
 }
 
 .agent {
   min-width: 0;
-  padding: 0.6rem 0.8rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-top: 0.4rem solid var(--border);
+  padding: 0 0.75rem 0.6rem;
+  background: var(--box);
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
-}
-
-.agent-running {
-  border-top-color: var(--primary);
-}
-
-.agent-waiting {
-  border-top-color: #b45309;
-}
-
-.agent-completed {
-  border-top-color: #1f7a3d;
-}
-
-.agent-failed,
-.agent-unstopped {
-  border-top-color: var(--danger);
 }
 
 .agent-head {
@@ -337,11 +393,58 @@ h3 {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0 0.5rem;
+  margin: 0 -0.75rem 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.agent-running {
+  border-color: #0d4a8f;
+}
+
+.agent-running .agent-head {
+  background: var(--now);
+  border-bottom-color: #0d4a8f;
+  color: #ffffff;
+}
+
+.agent-running .agent-label {
+  color: #ffffff;
+}
+
+.agent-waiting .agent-head {
+  background: var(--ask);
+  color: #2e2100;
+}
+
+.agent-waiting .agent-label {
+  color: #2e2100;
+}
+
+.agent-completed .agent-head {
+  background: var(--done);
+}
+
+.agent-failed,
+.agent-unstopped {
+  border-color: #8e1b1b;
+}
+
+.agent-failed .agent-head,
+.agent-unstopped .agent-head {
+  background: var(--err);
+  border-bottom-color: #8e1b1b;
+  color: #ffffff;
+}
+
+.agent-failed .agent-label,
+.agent-unstopped .agent-label {
+  color: #ffffff;
 }
 
 .agent-label {
   color: var(--muted);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .agent-status {
@@ -350,7 +453,7 @@ h3 {
 
 .facts,
 .kv {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 /* 見出しと値は横に並べる。幅が足りないときは、値が見出しの下に回る（文字が1字ずつ折れない） */
@@ -361,7 +464,7 @@ h3 {
 }
 
 .fact dt {
-  flex: 1 1 8.5rem;
+  flex: 1 1 8rem;
   min-width: 0;
   color: var(--muted);
 }
@@ -372,7 +475,7 @@ h3 {
 }
 
 .facts.wide {
-  font-size: 1rem;
+  font-size: 0.9375rem;
 }
 
 .facts.wide .fact {
@@ -385,19 +488,23 @@ h3 {
 
 .reply-summary {
   margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--thin);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
+/* ---- データの受け渡し：図の矢印 ---- */
+
 .flow-wrap {
-  margin-top: 0.75rem;
+  margin-top: 0.9rem;
 }
 
 .flow-title {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 
@@ -411,61 +518,100 @@ h3 {
 }
 
 .flow-node {
-  padding: 0.15rem 0.7rem;
-  border: 2px solid var(--border);
+  padding: 0.1rem 0.7rem;
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
-  font-weight: 600;
+  background: var(--box);
+  font-weight: 700;
 }
 
+/* 受け渡しの矢印。文字の下に、線（::before）と三角（::after）で描く */
 .flow-link {
-  font-size: 0.875rem;
+  position: relative;
+  padding: 0 0.6rem 0.55rem 0.1rem;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 
+.flow-link::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0.45rem;
+  bottom: 0.2rem;
+  border-top: 1px solid var(--stroke);
+}
+
 .flow-link::after {
-  content: ' →';
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: calc(0.2rem - 0.25rem + 0.5px);
+  border-left: 0.5rem solid var(--stroke);
+  border-top: 0.25rem solid transparent;
+  border-bottom: 0.25rem solid transparent;
 }
 
 .flow-link.is-active {
-  color: #0a3d7a;
+  color: #0f4c94;
   font-weight: 700;
-  text-decoration: underline;
+}
+
+.flow-link.is-active::before {
+  border-top: 2px solid var(--now);
+  bottom: calc(0.2rem - 0.5px);
+}
+
+.flow-link.is-active::after {
+  border-left-color: var(--now);
 }
 
 /* ---- 確認の待ち・止まっていないエージェント ---- */
 
 #s-waits {
-  border-left: 0.4rem solid #b45309;
+  border: 2px solid #b8860b;
 }
 
 .wait {
   margin-top: 0.75rem;
   padding-top: 0.5rem;
-  border-top: 1px solid var(--line);
+  border-top: 1px dashed var(--thin);
 }
 
 .command {
   margin: 0;
-  padding: 0.4rem 0.6rem;
-  background: #f0f4f8;
-  border: 1px solid var(--line);
-  border-radius: 0.25rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--box);
+  border: 1px solid var(--thin);
+  border-radius: var(--radius);
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
 }
 
 .warning-text {
-  font-weight: 600;
-  color: #7a1414;
+  font-weight: 700;
+  color: #8e1b1b;
 }
 
 .plain-list {
   padding-left: 1.25rem;
 }
 
+/* 人の判断待ち：確認の待ちと同じ黄（判断待ち）の枠 */
+#s-human {
+  border: 2px solid #b8860b;
+}
+
+#s-human .wait {
+  padding: 0.45rem 0.8rem 0.5rem;
+  background: var(--box);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+}
+
 #s-unstopped {
-  border-left: 0.4rem solid var(--danger);
+  border: 2px solid var(--err);
 }
 
 .unstopped-list {
@@ -480,38 +626,55 @@ h3 {
 
 .fold > summary {
   cursor: pointer;
-  color: var(--primary);
-  font-weight: 600;
-  font-size: 0.875rem;
+  color: #0f4c94;
+  font-weight: 700;
+  font-size: 0.8125rem;
 }
 
 .fold-body {
   padding: 0.25rem 0 0.25rem 0.75rem;
-  border-left: 3px solid var(--line);
+  border-left: 1px dashed var(--stroke);
 }
 
 /* ---- 開始前の設定 ---- */
 
 .group {
-  border: 1px solid var(--line);
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
-  padding: 0.5rem 1rem 0.75rem;
-  margin: 0 0 0.75rem;
+  background: var(--box);
+  padding: 0.4rem 1rem 0.75rem;
+  margin: 0 0 0.9rem;
   min-width: 0;
 }
 
 .group legend {
-  padding: 0 0.4rem;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--box);
+  font-size: 0.875rem;
   font-weight: 700;
 }
 
+/* エージェントごとの思考の深さ：エージェントが多くても縦に長くならないよう、欄を横に並べる */
+#effort-settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
+  column-gap: 1rem;
+}
+
+#effort-settings > .help {
+  grid-column: 1 / -1;
+}
+
 .field {
-  margin: 0.75rem 0;
+  margin: 0.6rem 0;
 }
 
 .field label {
   display: block;
-  font-weight: 600;
+  font-size: 0.875rem;
+  font-weight: 700;
 }
 
 .field input[type='text'],
@@ -520,14 +683,20 @@ h3 {
   display: block;
   width: 100%;
   max-width: 32rem;
-  min-height: 2.5rem;
+  min-height: 2.1rem;
   margin-top: 0.2rem;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: var(--surface);
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--box);
   color: var(--text);
   font: inherit;
+}
+
+/* 入力欄の例の文字。ブラウザーの決まりの色は薄いことがあるので、補足の文字と同じ色にする（4.5:1 以上） */
+.field input::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 
 .field-check label {
@@ -537,24 +706,25 @@ h3 {
 }
 
 .field-check input {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.1rem;
+  height: 1.1rem;
 }
 
 .required {
   margin-left: 0.25rem;
-  color: var(--danger);
-  font-size: 0.875rem;
-  font-weight: 600;
+  color: #a31f1f;
+  font-size: 0.8125rem;
+  font-weight: 700;
 }
 
 /* ---- 試行ごとの評価基準と合否 ---- */
 
 .iteration,
 .issue {
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.8rem;
   margin: 0.6rem 0;
-  border: 1px solid var(--line);
+  background: var(--box);
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
 }
 
@@ -576,12 +746,11 @@ h3 {
   align-items: baseline;
   gap: 0.25rem 0.6rem;
   padding: 0.4rem 0;
-  border-top: 1px solid var(--line);
+  border-top: 1px dashed var(--thin);
 }
 
 .criterion-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 
@@ -605,9 +774,15 @@ h3 {
 
 .display {
   min-width: 0;
-  padding: 0.5rem 0.8rem;
-  border: 1px solid var(--line);
+  padding: 0.45rem 0.75rem 0.6rem;
+  background: var(--box);
+  border: 1px solid var(--stroke);
   border-radius: var(--radius);
+}
+
+.display > h3 {
+  font-size: 0.875rem;
+  margin-bottom: 0.3rem;
 }
 
 .table-wrap {
@@ -616,21 +791,25 @@ h3 {
   overflow-wrap: normal; /* 表は、入れ物の中で横に動かせる */
 }
 
+/* 表も白い箱にする（方眼の下地の上に直に置いても、罫線と方眼が混ざらない） */
 table {
   border-collapse: collapse;
   min-width: 100%;
+  background: var(--box);
+  font-size: 0.8125rem;
 }
 
 th,
 td {
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--line);
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--thin);
   text-align: left;
   vertical-align: top;
 }
 
 th {
-  background: #f0f4f8;
+  background: var(--done);
+  font-weight: 700;
 }
 
 .progress {
@@ -643,34 +822,34 @@ th {
 .progress progress {
   flex: 1 1 10rem;
   max-width: 24rem;
-  height: 1.25rem;
+  height: 1rem;
 }
 
 .display-image {
   display: block;
   max-width: 100%;
   height: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--thin);
 }
 
 .file-link {
-  color: var(--primary);
-  font-weight: 600;
+  color: #0f4c94;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 /* ---- Issue の案 ---- */
 
 .issue-meta {
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 
 .issue-reason {
-  color: #7a1414;
+  color: #8e1b1b;
   overflow-wrap: anywhere;
 }
 
 a {
-  color: var(--primary);
+  color: #0f4c94;
 }

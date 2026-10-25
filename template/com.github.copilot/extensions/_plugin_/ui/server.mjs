@@ -5,7 +5,7 @@
 // - 127.0.0.1 だけで待ち受ける。いつもの番号がふさがっていたら、OS に空いている番号を選ばせる。
 // - 起動ごとに乱数の合言葉を作り、URL に入れる（?k=<合言葉>）。
 // - 全部の問い合わせで、合言葉と Host（127.0.0.1 か localhost と番号）を確かめる。画面の部品（静的ファイル）も同じ。
-// - 全部の応答に、スクリプトを自分のサーバーのものだけにする CSP と nosniff を付ける。
+// - 全部の応答に、スクリプトを自分のサーバーのものだけにする CSP と nosniff を付ける。フォントも自分のサーバーのもの（同梱の書体）だけにする。
 // - ファイルの窓口の確かめは serveFile() に持つ。生成プラグインの routes から使う。
 //
 // 外部の npm パッケージは使わない（Node.js の標準の部品だけ）。
@@ -21,7 +21,7 @@ const MAX_FILE_BYTES = 50 * 1024 * 1024;
 // 自分のサーバーのスクリプトだけを動かす。エージェントが書いた文字の中のスクリプトは動かない（6.3）。
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
-    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer', // URL の合言葉をほかへ漏らさない
   'Cache-Control': 'no-store',
@@ -35,6 +35,7 @@ const STATIC_TYPES = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
 };
 
 // 画像として返す種類は、これだけ（SVG と HTML は含めない。6.3）
@@ -110,6 +111,7 @@ function readBody(req) {
   });
 }
 
+// 置き場所の中の入れ子のフォルダ（fonts/… など）のファイルも出す。. と .. を含むパスと、置き場所の外は出さない
 async function readStatic(staticDirs, relativePath) {
   if (!/^[\w.-]+(\/[\w.-]+)*$/.test(relativePath) || relativePath.split('/').some((p) => p === '.' || p === '..')) {
     return null;
@@ -194,9 +196,11 @@ export async function startServer({ preferredPort = 0, staticDir, routes = {}, o
       const name = pathname === '/' ? 'index.html' : pathname.slice(1);
       const found = await readStatic(staticDirs, name);
       if (found) {
-        const type = STATIC_TYPES[path.extname(found.file).toLowerCase()] ?? 'application/octet-stream';
-        // 画面の部品の中の合言葉の差し込み口を、今の合言葉にする（静的ファイルの問い合わせにも合言葉を付けるため）
-        const data = name === 'index.html' ? found.data.toString('utf8').replaceAll('%%K%%', token) : found.data;
+        const ext = path.extname(found.file).toLowerCase();
+        const type = STATIC_TYPES[ext] ?? 'application/octet-stream';
+        // 画面の部品の中の合言葉の差し込み口を、今の合言葉にする（静的ファイルの問い合わせにも合言葉を付けるため）。
+        // index.html（スクリプトと CSS の URL）と CSS（フォントの URL）だけ。ほかのファイル（フォントなど）は、バイトのまま返す
+        const data = name === 'index.html' || ext === '.css' ? found.data.toString('utf8').replaceAll('%%K%%', token) : found.data;
         return send(res, 200, { 'Content-Type': type }, data);
       }
     }

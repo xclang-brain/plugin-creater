@@ -141,7 +141,8 @@ describe('クリエイターの画面のサーバー', () => {
       const templateStatic = path.join(TEMPLATE_EXTENSION_DIR, 'ui', 'static');
       for (const name of ['render.js', 'style.css']) {
         const served = await (await api(url, `/${name}`)).text();
-        assert.equal(served, fs.readFileSync(path.join(templateStatic, name), 'utf8'), `${name} がひな形と違う`);
+        // 合言葉の差し込み口（style.css の中のフォントの URL）だけは、今の合言葉になる
+        assert.equal(served, fs.readFileSync(path.join(templateStatic, name), 'utf8').replaceAll('%%K%%', token), `${name} がひな形と違う`);
         assert.equal(fs.existsSync(path.join(EXTENSION_DIR, 'ui', 'static', name)), false, `${name} の写しを持っている`);
       }
       assert.equal((await api(url, '/creator.js')).status, 200);

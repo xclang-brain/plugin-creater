@@ -1,4 +1,5 @@
-/* クリエイターの画面だけの見た目。基本の見た目は、ひな形の style.css（生成プラグインの Web管理画面と同じ部品）を使う。
+/* クリエイターの画面だけの見た目。基本の見た目は、ひな形の style.css（生成プラグインの Web管理画面と同じ部品・書体）を使う。
+   区画（方眼の下地）の中の箱は、ひな形と同じく白い四角にする。
    文字と背景の色の差は 4.5:1 以上。大きさは rem で決める。 */
 
 .stage-line {
@@ -17,7 +18,8 @@
 .item-column {
   min-width: 0;
   padding: 0.5rem 0.8rem;
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
@@ -53,7 +55,8 @@
 }
 
 .result-file {
-  border: 1px solid var(--line);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 0.5rem 0.8rem;
   margin: 0.5rem 0;
@@ -73,7 +76,7 @@
 }
 
 .failure-test {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .raw {

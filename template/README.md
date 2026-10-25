@@ -145,3 +145,12 @@ python3 tests/run.py
 - {{plugin_name}} を直した後も、同じコマンドで試験をやり直せます。
 
 EVAL（実際のモデルで課題を実行して採点する試験）は、plugin-creator を入れた Copilot CLI で、{{plugin_name}} の試験を頼むと行われます。`tests/eval/` の課題と合否の基準を使います。AI クレジットを使うので、始める前に、実行の回数と使う AI クレジットの見込みが示されます。よいと答えてから始まります。
+
+## 同梱しているフォント
+
+Web管理画面の文字は、同梱の IBM Plex Sans JP（標準と太字）で表示します。
+
+- 場所：`com.github.copilot/extensions/{{plugin_name}}/ui/static/fonts/ibm-plex-sans-jp/`
+- 著作権：Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
+- ライセンス：SIL Open Font License 1.1。全文は、同じ場所の `OFL.txt` にあります。
+- フォントのファイルは、IBM が配っているもの（npm の `@ibm/plex-sans-jp` 3.0.0）を、変えずに入れています。

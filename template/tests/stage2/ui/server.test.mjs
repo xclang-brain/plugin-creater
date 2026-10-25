@@ -258,6 +258,7 @@ describe('応答の決まり（REQ-006）', () => {
         const csp = response.headers['content-security-policy'] ?? '';
         assert.match(csp, /script-src 'self'/, `${method} ${p} の CSP`);
         assert.match(csp, /default-src 'none'/);
+        assert.match(csp, /font-src 'self'/, `${method} ${p} の CSP（フォントは自分のサーバーのものだけ）`);
         assert.ok(!csp.includes('unsafe-inline') && !csp.includes('unsafe-eval'), 'インラインのスクリプトを許さない');
         assert.equal(response.headers['x-content-type-options'], 'nosniff', `${method} ${p} の nosniff`);
       }
@@ -374,14 +375,44 @@ describe('画面の部品の窓口', () => {
     });
   });
 
+  test('REQ-030 入れ子のフォルダのフォントが、font/woff2 の種類で、バイトのまま出る。CSS の中の合言葉の差し込み口は、今の合言葉になる', async () => {
+    const dir = staticFixture();
+    fs.writeFileSync(path.join(dir, 'style.css'), "@font-face { font-family: 'X'; src: url('fonts/x/X-Regular.woff2?k=%%K%%') format('woff2'); }");
+    fs.mkdirSync(path.join(dir, 'fonts', 'x'), { recursive: true });
+    // フォントの中に、差し込み口と同じ並びや、UTF-8 として読めないバイトがあっても、変えずに返す
+    const font = Buffer.concat([Buffer.from('wOF2'), Buffer.from([0, 0xff, 0xfe, 0x80]), Buffer.from('%%K%%'), Buffer.from([0xc3, 0x28])]);
+    fs.writeFileSync(path.join(dir, 'fonts', 'x', 'X-Regular.woff2'), font);
+    await withServer({ staticDir: dir }, async ({ port, token }) => {
+      const css = await raw({ port, path: `/style.css?k=${token}` });
+      assert.equal(css.status, 200);
+      assert.equal(css.body.toString('utf8'), `@font-face { font-family: 'X'; src: url('fonts/x/X-Regular.woff2?k=${token}') format('woff2'); }`);
+      const response = await raw({ port, path: `/fonts/x/X-Regular.woff2?k=${token}` });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers['content-type'], 'font/woff2');
+      assert.equal(response.headers['x-content-type-options'], 'nosniff');
+      assert.equal(response.headers['cache-control'], 'no-store');
+      assert.match(response.headers['content-security-policy'], /font-src 'self'/);
+      assert.ok(response.body.equals(font), 'バイトが変わっている');
+      // 合言葉がなければ、フォントも出さない
+      assert.equal((await raw({ port, path: '/fonts/x/X-Regular.woff2' })).status, 403);
+      // フォルダそのものは出さない
+      for (const p of ['/fonts', '/fonts/', '/fonts/x', '/fonts/x/']) {
+        assert.equal((await raw({ port, path: `${p}?k=${token}` })).status, 404, p);
+      }
+    });
+  });
+
   test('REQ-006 画面の部品の置き場所の外のファイルは出さない', async () => {
     const parent = tempDir();
     fs.writeFileSync(path.join(parent, 'secret.txt'), 'secret');
     const dir = path.join(parent, 'static');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'index.html'), 'ok');
+    fs.mkdirSync(path.join(dir, 'fonts', 'x'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fonts', 'x', 'a.woff2'), 'font');
     await withServer({ staticDir: dir }, async ({ port, token }) => {
-      for (const p of ['/../secret.txt', '/%2e%2e/secret.txt', '/..%2fsecret.txt', '/static/../../secret.txt', '/%00', '/a\\..\\secret.txt', '//secret.txt', `/${dir}/index.html`]) {
+      const nested = ['/fonts/../../secret.txt', '/fonts/x/../../../secret.txt', '/fonts/%2e%2e/%2e%2e/secret.txt', '/fonts/..%2f..%2fsecret.txt', '/fonts/x/%2e%2e%2f%2e%2e%2f%2e%2e%2fsecret.txt', '/fonts/./x/a.woff2', '/fonts//x/a.woff2', '/fonts\\..\\..\\secret.txt'];
+      for (const p of ['/../secret.txt', '/%2e%2e/secret.txt', '/..%2fsecret.txt', '/static/../../secret.txt', '/%00', '/a\\..\\secret.txt', '//secret.txt', `/${dir}/index.html`, ...nested]) {
         const response = await raw({ port, path: `${p}?k=${token}` });
         assert.ok([400, 404].includes(response.status), `${p} は出さない（${response.status}）`);
         assert.ok(!response.body.toString('utf8').includes('secret'));
@@ -615,6 +646,22 @@ describe('生成プラグインの窓口（app.mjs。設計書 6.3 の窓口の�
     assert.equal((await fetch(`http://127.0.0.1:${app.port}/app.js`)).status, 403);
   });
 
+  test('REQ-030 style.css が使う同梱のフォントが、font/woff2 の種類で出る（中身はファイルのまま）', async () => {
+    const css = await (await call('/style.css')).text();
+    assert.ok(!css.includes('%%K%%'), 'CSS の中に差し込み口が残っている');
+    const urls = [...css.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)].map((m) => m[1]);
+    assert.ok(urls.length >= 2, 'フォントを読み込んでいない');
+    for (const url of urls) {
+      const [file, query] = url.split('?');
+      assert.equal(query, `k=${app.token}`, `${url} に今の合言葉が付いていない`);
+      const response = await fetch(`http://127.0.0.1:${app.port}/${url}`);
+      assert.equal(response.status, 200, url);
+      assert.equal(response.headers.get('content-type'), 'font/woff2', url);
+      const body = Buffer.from(await response.arrayBuffer());
+      assert.ok(body.equals(fs.readFileSync(path.join(uiDir, 'static', ...file.split('/')))), `${url} の中身がファイルと違う`);
+    }
+  });
+
   test('REQ-005 POST /api/start は、画面から送った設定をそのまま中心の処理に渡す（1回の送信で1回）', async () => {
     const settings = { models: { orchestrator: 'a', worker: 'b', verifier: 'c' }, maxIterations: 2, task: { week: '2026-W42', items: 7, attach: true } };
     const before = core.callsOf('start').length;
@@ -714,6 +761,13 @@ describe('画面の部品の決まり（ソースの検査）', () => {
     assert.doesNotMatch(html, /\sstyle\s*=/i, 'インラインの style がある');
     const css = read('style.css');
     assert.doesNotMatch(css, /@import|url\(\s*["']?(https?:)?\/\//i, 'style.css が外部を読み込んでいる');
+    // CSS が読み込むのは、同じ置き場所の中のフォント（WOFF2）だけ。フォントの隣には、ライセンスの文を置く
+    for (const [, url] of css.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g)) {
+      const file = url.split('?')[0];
+      assert.match(file, /^fonts\/[\w.-]+\/[\w.-]+\.woff2$/, `style.css が ${url} を読み込んでいる`);
+      assert.ok(fs.existsSync(path.join(staticDir, ...file.split('/'))), `${file} がない`);
+      assert.ok(fs.existsSync(path.join(staticDir, path.dirname(file), 'OFL.txt')), `${path.dirname(file)} にライセンスの文（OFL.txt）がない`);
+    }
     for (const name of ['app.js', 'render.js']) {
       const source = withoutComments(read(name));
       assert.doesNotMatch(source, /\bimport\s*\(|^\s*import\s/m, `${name} がモジュールを読み込んでいる`);
