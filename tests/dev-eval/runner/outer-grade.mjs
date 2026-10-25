@@ -20,6 +20,8 @@
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
 // 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
 //   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
+// 採点しない観点（notGraded。続きから始めた実行で、前の会話を確かに読み直せなかったときなど）は、grades に入れず、理由を notGraded に残す。
+//   点数と合否には入らない。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -417,10 +419,15 @@ export function gradeModels({ use, generatedCount }) {
  * @param {string} args.model クリエイターのモデルの ID
  * @param {'with'|'without'|'control'} args.arm
  * @param {'user-role'|'human'} [args.answerer] 答えた人。human（開発者が答えた。testing.md 6.7）なら、ユーザー役の誤りを確かめず、会話例の候補にしない
+ * @param {Object<string, string>} [args.notGraded] 採点しない観点の id → 理由
  */
-export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role' }) {
+export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role', notGraded = {} }) {
   const grades = [];
-  const add = (id, ok, detail, req) => grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  const skipped = [];
+  const add = (id, ok, detail, req) => {
+    if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
+    else grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  };
   const exchanges = exchangesOf(items);
   const hashed = personaFileHashes(personaFiles);
   const scope = scopes(generatedFiles ?? [], hashed);
@@ -479,9 +486,11 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
     trace,
     faults,
     counts: countRecorded({ items, toolEvents, state }),
-    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired },
+    // 採点しなかった観点があるときは、合否が一部の観点だけのものだと分かるように、partial と、その観点を付ける
+    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...(skipped.length ? { partial: true, notGraded: skipped.map((g) => g.id) } : {}) },
     // 会話例の候補（6.6）：採点の観点にすべて合格し、ユーザー役の誤りがない。最後は全文を読んで確かめる
     // 開発者が答えた会話は、会話例にしない（6.6）
-    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0,
+    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0,
+    ...(skipped.length ? { notGraded: skipped } : {}),
   };
 }

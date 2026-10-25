@@ -6,6 +6,8 @@
 //   3. 生成プラグインができたら、1・2段目の試験と、内側の EVAL を動かし、6.5 の観点で採点する（outer-grade.mjs）。
 //   4. 会話の全文と採点を、記録（record.json）に残す（6.6）。
 // 開発者が答えるとき（6.7）は、ユーザー役の代わりに、中継（human-relay.mjs）を作る関数を引数 createAnswerer で渡し、answerer を human にする。
+// 止まった実行を続きから始めるとき（outer.mjs --resume）は、引数 resume で、前の実行のフォルダとクリエイターへの最初の発言を渡す。
+// 前の会話の記録は、クリエイターのセッションの記録から読み直す（outer-resume.mjs）。
 // 実際のモデルを使うのは、query（Agent SDK）を渡さないときだけ。試験では偽物の query を渡す。
 // 統括がユーザーの承認をとってから、実際のモデルで動かすこと。
 
@@ -20,6 +22,10 @@ import { readConversionReport } from './model-map.mjs';
 import { collectGeneratedFiles, gradeOuter } from './outer-grade.mjs';
 import { createCreatorToolkit, REPO_ROOT } from './creator-tools.mjs';
 import { createUserRole, loadQuery } from './user-role.mjs';
+import { conversationOf, createMessageRecorder, createRecorder, questionItemData } from './outer-record.mjs';
+import { abandonedQuestionOf, checkReplayAgainstRelay, findSessionTranscript, NO_TEXT_QUESTION, readResumes, replayTranscript, resumeQuestionItem, runDirsOf, writeResumes } from './outer-resume.mjs';
+
+export { conversationOf, createRecorder };
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DEV_EVAL = path.resolve(HERE, '..');
@@ -41,12 +47,6 @@ export const HUMAN_ENV = Object.freeze({ ENABLE_PROMPT_CACHING_1H: '1', CLAUDE_C
 
 /** 利用枠の上限のエラーの文（agent-sdk-eval.md） */
 export const LIMIT_PATTERN = /hit your (session|usage|weekly)? ?limit|usage limit|rate limit|limit reached|resets at|quota/i;
-
-const CLIP = { toolInput: 1500, toolResult: 1500 };
-const clip = (text, max) => {
-  const chars = [...String(text ?? '')];
-  return chars.length <= max ? String(text ?? '') : `${chars.slice(0, max).join('')}…（以下${chars.length - max}文字を省略）`;
-};
 
 // ---- 置き換え --------------------------------------------------------------------------------------------
 
@@ -160,36 +160,8 @@ export async function runGeneratedStages(pluginDir, { python = 'python3', env = 
   }
 }
 
-// ---- 記録 ----------------------------------------------------------------------------------------------------
-
-/** 会話と呼び出しの記録。順番の印（seq）は 1 つの連番で、記録のツールの呼び出しとも共通 */
-export function createRecorder(now = Date.now) {
-  let seq = 0;
-  const items = [];
-  return {
-    items,
-    next: () => (seq += 1),
-    add(kind, data = {}) {
-      const item = { seq: (seq += 1), at: now(), kind, ...data };
-      items.push(item);
-      return item;
-    },
-  };
-}
-
-/** 会話の全文（6.6）。クリエイターの発言（質問、生成前の確認、できたことの説明）とユーザー役の答え */
-export function conversationOf(items) {
-  const out = [];
-  for (const i of items) {
-    if (i.kind === 'user.request') out.push({ seq: i.seq, role: 'user', via: 'request', text: i.text });
-    else if (i.kind === 'creator.text') out.push({ seq: i.seq, role: 'creator', via: 'text', text: i.text, turn: i.turn });
-    else if (i.kind === 'creator.question') out.push({ seq: i.seq, role: 'creator', via: 'AskUserQuestion', header: i.header, question: i.question, options: i.options, multiSelect: i.multiSelect });
-    else if (i.kind === 'user.answer') out.push({ seq: i.seq, role: 'user', via: i.via, text: i.answer, index: i.index, signal: i.signal });
-  }
-  return out;
-}
-
-const textOfContent = (content) => (Array.isArray(content) ? content.map((c) => c?.text ?? '').join('\n') : String(content ?? ''));
+/** 続きから始めたとき、読み直しが確かでなければ採点しない観点（会話の全体にもとづく観点） */
+export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generation-before-approval']);
 
 // ---- 1 回の実行 ---------------------------------------------------------------------------------------------
 
@@ -213,6 +185,11 @@ const textOfContent = (content) => (Array.isArray(content) ? content.map((c) => 
  *   省くとユーザー役（createUserRole）。開発者が答えるときは、中継（human-relay.mjs の createHumanRelay）を作る関数を渡す（testing.md 6.7）
  * @param {'user-role'|'human'} [o.answerer] 答える人の種類。human なら、記録・採点・内側の EVAL を開発者が答える形にする（testing.md 6.7）
  * @param {number} [o.innerRuns] 内側の EVAL の、あり・なしそれぞれの回数（省くと 1）
+ * @param {{ runDir: string, prompt: string, sessionId?: string, relayDir?: string, fromRelayId?: string|null, abandoned?: string[] }} [o.resume]
+ *   止まった実行を続きから始める（開発者が答えるときだけ。testing.md 6.7）。runDir は前の実行のフォルダ（その中の work などを使い、
+ *   示すファイルは置き直さない）。prompt は、続けるセッションに送る最初の発言。sessionId を省くと、agent-home のセッションの記録から探す。
+ *   relayDir は、読み直した答えを突き合わせる中継のフォルダ（省くと、答えるものの relayDir）。fromRelayId と abandoned は、
+ *   続きから始めた時点の最後の問いの id と、待たない印を置いた問いの id（記録の resumed に残す）
  */
 export async function runOuterOnce(o) {
   const {
@@ -239,8 +216,15 @@ export async function runOuterOnce(o) {
   } = o;
   // 開発者が答える（testing.md 6.7）。ナレッジの観点・ユーザー役の誤りの確かめをせず、内側の EVAL は生成プラグインの課題で、点数に入れずに別に示す
   const human = answererKind === 'human';
+  const resume = o.resume ?? null;
   if (!['with', 'control', 'without'].includes(arm)) throw new Error(`arm は with・control・without のどれかです：${arm}`);
-  const { persona, files: personaFiles } = loaded;
+  if (resume) {
+    if (!human) throw new Error('続きから始める（resume）のは、開発者が答えるとき（answerer が human）だけです。');
+    if (typeof resume.prompt !== 'string' || resume.prompt.trim() === '') throw new Error('続きから始めるときは、最初の発言（resume.prompt）が要ります。');
+    if (!resume.runDir || !fs.existsSync(path.join(resume.runDir, 'work'))) throw new Error(`続きから始める実行のフォルダがありません（${resume.runDir}）。`);
+  }
+  let { persona } = loaded;
+  const { files: personaFiles } = loaded;
   if (!persona.styles?.[styleName]) throw new Error(`話し方「${styleName}」は、模擬ユーザー ${persona.id} にありません。`);
   if (sandbox) {
     const status = (o.sandboxCheck ?? sandboxStatus)();
@@ -253,17 +237,18 @@ export async function runOuterOnce(o) {
   const runConvert = o.convert ?? convertPlugin;
   const runStages = o.runStages ?? runGeneratedStages;
 
-  fs.mkdirSync(runRoot, { recursive: true });
-  const runDir = fs.mkdtempSync(path.join(runRoot, `outer-${persona.id}-${arm}-`));
-  const dirs = {
-    work: path.join(runDir, 'work'),
-    agentHome: path.join(runDir, 'agent-home'),
-    copilotHome: path.join(runDir, 'copilot-home'),
-    userHome: path.join(runDir, 'user-home'),
-    converted: path.join(runDir, 'converted'),
-  };
+  // 続きから始めるときは、前の実行のフォルダをそのまま使う（記録のツールの記録の置き場所も、フォルダの名前から決まるので同じになる）
+  let runDir;
+  if (resume) runDir = path.resolve(resume.runDir);
+  else {
+    fs.mkdirSync(runRoot, { recursive: true });
+    runDir = fs.mkdtempSync(path.join(runRoot, `outer-${persona.id}-${arm}-`));
+  }
+  const dirs = runDirsOf(runDir);
   for (const d of [dirs.work, dirs.agentHome, dirs.copilotHome, dirs.userHome]) fs.mkdirSync(d, { recursive: true });
-  placePersonaFiles(dirs.work, personaFiles);
+  if (!resume) placePersonaFiles(dirs.work, personaFiles);
+  // 続きから始めるときのセッションの番号と、その記録（ここで探せなければ、何も動かさずに断る）
+  const transcript = resume ? findSessionTranscript(dirs.agentHome, resume.sessionId) : null;
 
   const startedAt = new Date(clock.now()).toISOString();
   const recorder = createRecorder(() => clock.now());
@@ -274,14 +259,17 @@ export async function runOuterOnce(o) {
   const results = [];
   const initInfo = [];
   let agentCostUsd = 0;
-  let sessionId;
+  let sessionId = transcript?.sessionId;
   let stopped = null;
+  const messageRecorder = createMessageRecorder({ recorder, models, subagents, skills });
 
   // クリエイターの置き換え（置き換えた版と、エクステンションの代わりの MCP サーバー）
   let converted = null;
   let conversion = null;
+  // 続きから始めるときは、実行のフォルダの中の置き換えた版があれば、それを使う（前の実行と同じクリエイターで続ける）
+  const keptConverted = resume ? path.join(dirs.converted, path.basename(creatorRoot)) : null;
   if (arm !== 'without') {
-    converted = o.convertedCreator ?? (() => {
+    converted = o.convertedCreator ?? (keptConverted && fs.existsSync(path.join(keptConverted, '.eval', 'conversion-report.json')) ? keptConverted : null) ?? (() => {
       const r = runConvert(creatorRoot, path.join(dirs.converted, path.basename(creatorRoot)));
       conversion = { warnings: r.report?.warnings ?? [], extensionTools: r.report?.extension_tools ?? [] };
       return r.root;
@@ -342,8 +330,9 @@ export async function runOuterOnce(o) {
       await new Promise((resolve) => setImmediate(resolve));
       let notes = unreadNotes.splice(0);
       for (const q of questions) {
-        const options = (q.options ?? []).map((opt) => ({ label: String(opt.label ?? ''), description: String(opt.description ?? '') }));
-        recorder.add('creator.question', { header: q.header ?? '', question: q.question, options, multiSelect: Boolean(q.multiSelect), group, groupSize: questions.length });
+        const item = questionItemData(q, group, questions.length);
+        const { options } = item;
+        recorder.add('creator.question', item);
         // 1 回の呼び出しの問いの欄の番号と数は、別の答えるもの（開発者の中継）にだけ渡す（ユーザー役の答えの記録を変えないため）
         const meta = { header: q.header ?? '', multiSelect: Boolean(q.multiSelect), ...(createAnswerer ? { group, groupSize: questions.length } : {}) };
         const entry = await userRole.answer(q.question, options, 'AskUserQuestion', meta, notes);
@@ -358,7 +347,7 @@ export async function runOuterOnce(o) {
 
     let turnNumber = 0;
     /** query() を 1 回動かす（クリエイターが手番を終えるまで） */
-    async function runTurn(prompt, resume) {
+    async function runTurn(prompt, resumeSessionId) {
       turnNumber += 1;
       const abortController = new AbortController();
       const onAbort = () => abortController.abort();
@@ -380,7 +369,7 @@ export async function runOuterOnce(o) {
         // 開発者が答えるときは、答えを待つ間に切れないようにする：質問の待ちの期限なし（0）と、プロンプトのキャッシュを 1 時間保つ（testing.md 6.7）
         envExtra: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1', ...(arm === 'control' ? { CONTROL_SCAFFOLD: CONTROL_SCAFFOLD_PATH } : {}), ...(human ? HUMAN_ENV : {}), ...envExtra },
         maxTurns,
-        resume,
+        resume: resumeSessionId,
         abortController,
       });
       if (maxBudgetUsd !== undefined) options.maxBudgetUsd = maxBudgetUsd;
@@ -390,26 +379,14 @@ export async function runOuterOnce(o) {
           sessionId = m.session_id ?? sessionId;
           if (m.type === 'system' && m.subtype === 'init') {
             initInfo.push({ plugins: (m.plugins ?? []).map((p) => p.name), mcp: (m.mcp_servers ?? []).map((s) => `${s.name}:${s.status}`), model: m.model });
-          } else if (m.type === 'assistant') {
-            const owner = m.parent_tool_use_id ?? 'main';
-            if (m.message?.model && !(models[owner] ??= []).includes(m.message.model)) models[owner].push(m.message.model);
-            for (const c of m.message?.content ?? []) {
-              if (c.type === 'text' && owner === 'main' && c.text?.trim()) {
-                recorder.add('creator.text', { text: c.text, turn: turnNumber });
-                unreadNotes.push(c.text.trim());
-                turn.lastText = c.text;
-              } else if (c.type === 'tool_use') {
-                if (c.name === 'AskUserQuestion') continue; // onQuestion が問いと答えを記録する
-                if (c.name === 'Agent' || c.name === 'Task') subagents[c.id] = { type: c.input?.subagent_type ?? '(general)', description: c.input?.description ?? '' };
-                if (c.name === 'Skill') skills.push(c.input?.skill);
-                recorder.add('tool.use', { owner, id: c.id, name: c.name, input: shrinkInput(c.input) });
-              }
-            }
-          } else if (m.type === 'user') {
-            const owner = m.parent_tool_use_id ?? 'main';
-            for (const c of Array.isArray(m.message?.content) ? m.message.content : []) {
-              if (c.type === 'tool_result') recorder.add('tool.result', { owner, id: c.tool_use_id, isError: c.is_error === true, text: clip(textOfContent(c.content), CLIP.toolResult) });
-            }
+          } else if (m.type === 'assistant' || m.type === 'user') {
+            messageRecorder.handle(m, {
+              turn: turnNumber,
+              onText: (text) => {
+                unreadNotes.push(text.trim());
+                turn.lastText = text;
+              },
+            });
           } else if (m.type === 'result') {
             turn.result = m;
             agentCostUsd = m.total_cost_usd ?? agentCostUsd; // 続きの会話の total_cost_usd は、それまでの分を含む合計
@@ -430,9 +407,53 @@ export async function runOuterOnce(o) {
       return arm === 'with' && readState()?.stage !== 'generate' ? 'generated_without_approval' : 'generated';
     };
 
-    recorder.add('user.request', { text: persona.request });
     let prompt = persona.request;
     let exchanges = 0;
+    let replay = null;
+    let resumes = [];
+    if (resume) {
+      // 止まった実行の会話を、セッションの記録から読み直す。記録のツールの呼び出しは、新しい部品の events の前に置く
+      const previous = readResumes(runDir);
+      const r = replayTranscript({ file: transcript.file, recorder, messageRecorder, resumes: previous.filter((x) => typeof x?.prompt === 'string'), ...(toolkit ? { serverName: toolkit.serverName } : {}) });
+      // 質問のツールの呼び出しの番号は、読み直した呼び出しの続きにする（1 回の呼び出しの問いの数を、正しく数えるため）
+      askGroup = r.askGroups;
+      const relayDir = resume.relayDir ?? userRole.relayDir ?? null;
+      const relayCheck = relayDir ? checkReplayAgainstRelay({ items: recorder.items, relayDir }) : null;
+      const reliable = r.problems.length === 0 && (relayCheck === null || relayCheck.ok);
+      replay = {
+        transcript: transcript.file,
+        sessionId,
+        reliable,
+        problems: [...r.problems, ...(relayCheck?.problems ?? [])],
+        warnings: r.warnings,
+        counts: r.counts,
+        relayCheck,
+        toolEvents: r.toolEvents,
+        pendingAsks: r.pendingAsks,
+      };
+      if (r.request !== null) persona = { ...persona, request: r.request };
+      if (r.lastCost !== null) agentCostUsd = r.lastCost; // 続きの会話の total_cost_usd は、それまでの分を含む合計
+      turnNumber = r.turns;
+      exchanges = r.turns;
+      // 前のプロセスが答えを待っていた問いへの答えは、統括が最初の発言に入れる。続きの最初の発言を、その問いへの答えとして記録する。
+      // 待っていた問いは、質問のツールなら、読み直した答えのない問い。文章の問いなら、中継のフォルダの、待たない印を置いた問い
+      // （文章の問いは、セッションの記録には問いとして残らない。また続きから始めたときのために、resumes.json にも残す）
+      const pending = r.pendingAsks.at(-1);
+      const relayQuestion = relayDir ? abandonedQuestionOf(relayDir, resume.abandoned ?? []) : null;
+      const waited = pending
+        ? { via: 'AskUserQuestion', question: pending.question, header: pending.header }
+        : relayQuestion ? { via: relayQuestion.via, question: relayQuestion.question, header: relayQuestion.header } : null;
+      resumes = [...previous, { at: new Date(clock.now()).toISOString(), sessionId, fromRelayId: resume.fromRelayId ?? null, abandoned: resume.abandoned ?? [], prompt: resume.prompt, question: waited }];
+      writeResumes(runDir, resumes);
+      const asked = pending ? { question: pending.question, header: pending.header } : resumeQuestionItem(recorder, waited, turnNumber);
+      recorder.add('run.resumed', { sessionId, fromRelayId: resume.fromRelayId ?? null, abandoned: resume.abandoned ?? [], reliable });
+      recorder.add('user.answer', { index: null, via: 'resume', question: asked.question, header: asked.header, choices: [], answer: resume.prompt, rawAnswer: resume.prompt, signal: false });
+      toolkit?.recordPrompt(resume.prompt);
+      onProgress({ phase: 'resumed', sessionId, reliable, counts: r.counts });
+      prompt = resume.prompt;
+    } else {
+      recorder.add('user.request', { text: persona.request });
+    }
     let lastCreatorText = ''; // クリエイターの最後の発言（開発者が答えるとき、終わりの状態に載せる）
     try {
       for (; exchanges < maxExchanges; exchanges += 1) {
@@ -449,7 +470,7 @@ export async function runOuterOnce(o) {
         const finished = finishedReason();
         if (finished) { stopped = { reason: finished }; break; }
         // 文章で質問して手番を終えたときも、ユーザー役の答えを次の発言として返す（6.1）
-        const question = text || '（クリエイターの発言がありませんでした）';
+        const question = text || NO_TEXT_QUESTION;
         recorder.add('creator.question-text', { text: question, turn: turn.number });
         // 手番の最後の文は問いそのもの。それより前に書いた文だけを、前の文として渡す
         const notes = unreadNotes.splice(0).filter((n) => n !== question.trim());
@@ -511,7 +532,11 @@ export async function runOuterOnce(o) {
     }
 
     const state = readState();
-    const toolEvents = toolkit ? toolkit.events : [];
+    const toolEvents = [...(replay?.toolEvents ?? []), ...(toolkit ? toolkit.events : [])];
+    // 続きから始めて、前の会話を確かに読み直せなかったときは、会話の全体にもとづく観点を、一部の記録で採点しない
+    const notGraded = replay && !replay.reliable
+      ? Object.fromEntries(CONVERSATION_GRADES.map((id) => [id, `続きから始めた実行で、前の会話を確かに読み直せなかったので採点しない（${replay.problems.slice(0, 3).join(' / ')}）`]))
+      : {};
     const modelUse = {
       requested: model,
       main: models.main ?? [],
@@ -534,6 +559,7 @@ export async function runOuterOnce(o) {
       model,
       arm,
       answerer: answererKind,
+      notGraded,
     });
     if (human) grading.innerSeparate = innerResult;
 
@@ -553,6 +579,12 @@ export async function runOuterOnce(o) {
       stopped,
       exchanges,
       sessionId: sessionId ?? null,
+      ...(resume
+        ? {
+            resumed: resumes.map((x) => ({ at: x.at, sessionId: x.sessionId, fromRelayId: x.fromRelayId, abandoned: x.abandoned ?? [] })),
+            replay: { transcript: replay.transcript, reliable: replay.reliable, problems: replay.problems, warnings: replay.warnings, counts: replay.counts, relayCheck: replay.relayCheck, pendingAsks: replay.pendingAsks },
+          }
+        : {}),
       initInfo,
       skills: skills.filter(Boolean),
       subagents: Object.entries(subagents).map(([id, s]) => ({ ...s, model: models[id]?.[0] ?? null, models: models[id] ?? [] })),
@@ -579,7 +611,8 @@ export async function runOuterOnce(o) {
     record.recordFile = file;
 
     await toolkit?.shutdown();
-    if (!keepHomes) {
+    // 開発者が答えるときは、クリエイターのセッションの記録を消さない（止まったときに、続きから始められるように）
+    if (!keepHomes && !human) {
       fs.rmSync(path.join(dirs.agentHome, '.claude'), { recursive: true, force: true });
     }
     finishInfo = {
@@ -589,6 +622,8 @@ export async function runOuterOnce(o) {
       score: grading.score,
       verdictOk: grading.verdict.ok,
       failed: grading.verdict.failed,
+      // 採点しなかった観点（合否は残りの観点だけで決めた。続きから始めて、前の会話を確かに読み直せなかったときなど）
+      ...(grading.notGraded?.length ? { notGraded: grading.notGraded.map((g) => g.id) } : {}),
       inner: innerResult,
       recordFile: file,
     };
@@ -614,14 +649,6 @@ export function readConvertedAgentModel(convertedRoot, agentName) {
   } catch {
     return null;
   }
-}
-
-/** 記録に残す tool_use の入力。書き込みの中身などの長い文字は切る（場所は残す） */
-function shrinkInput(input) {
-  if (input === null || typeof input !== 'object') return input;
-  const out = {};
-  for (const [k, v] of Object.entries(input)) out[k] = typeof v === 'string' ? clip(v, CLIP.toolInput) : v;
-  return out;
 }
 
 function creatorVersion(creatorRoot, arm) {

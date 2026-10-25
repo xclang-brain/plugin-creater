@@ -7,7 +7,10 @@
 //     status.json          { state: starting|running|waiting|finished|stopped, pid, pidNs, runDir, workDir, pending, updatedAt, heartbeatAt, phase?, result? }
 //     questions/<id>.json  { id, index, via, header, question, options, multiSelect, notes, group, groupSize, askedAt }
 //     answers/<id>.json    { answer }（統括が書く。必ず下のコマンドの answer で書く。じかに書くと、形の誤りに気づけない）
-//   id は 0001 からの連番。中継の状態はファイルに残すので、統括がコンパクションの後に試験の仕組みを動かし直さずに続けられる。
+//     abandoned/<id>.json  { id, abandonedAt, reason }（試験の仕組みを続きから始めた（outer.mjs --resume）ときに、答えのないまま残った問いの印。
+//                          この問いは待たない。wait は返さず、answer は断る。答えは、統括が続きの最初の発言（--resume-prompt-file）に入れる）
+//   id は 0001 からの連番。続きから始めたときも、いちばん大きい id の次から続ける。
+//   中継の状態はファイルに残すので、統括がコンパクションの後に試験の仕組みを動かし直さずに続けられる。
 // - 終わりの状態（finished・stopped）は、結果（記録のファイルなど）を書き終えてから 1 回だけ書く。中断されても、採点が終わるまでは
 //   state を変えずに phase を stopping にする（統括が、書きかけの結果を読まないように）。
 // - 試験の仕組みは、動いている間、数秒ごとに heartbeatAt を書き直す。wait は、これが古くなったら（既定 10 分）プロセスがないとみなす。
@@ -60,6 +63,7 @@ export const relayPaths = (relayDir) => ({
   status: path.join(relayDir, 'status.json'),
   questions: path.join(relayDir, 'questions'),
   answers: path.join(relayDir, 'answers'),
+  abandoned: path.join(relayDir, 'abandoned'),
 });
 
 let tmpCounter = 0;
@@ -153,8 +157,29 @@ export function listQuestionIds(relayDir) {
 
 const answerFile = (relayDir, id) => path.join(relayPaths(relayDir).answers, `${id}.json`);
 const questionFile = (relayDir, id) => path.join(relayPaths(relayDir).questions, `${id}.json`);
+const abandonedFile = (relayDir, id) => path.join(relayPaths(relayDir).abandoned, `${id}.json`);
+
+/** 問いの id の次の番号（いちばん大きい id の次。問いがなければ 1） */
+export function nextQuestionNumber(relayDir) {
+  return listQuestionIds(relayDir).reduce((max, id) => Math.max(max, Number(id)), 0) + 1;
+}
+
+/** 続きから始めたときに、答えのないまま残した問いの id の一覧（連番の順） */
+export function abandonedIds(relayDir) {
+  try {
+    return fs.readdirSync(relayPaths(relayDir).abandoned).map((n) => QUESTION_FILE.exec(n)?.[1]).filter(Boolean).sort();
+  } catch {
+    return [];
+  }
+}
+
+const isAbandoned = (relayDir, id) => fs.existsSync(abandonedFile(relayDir, id));
 
 /** 答えのファイルの答え。ない・形が違うときは null（試験の仕組みは待ち続ける） */
+export function readRelayAnswer(relayDir, id) {
+  return readAnswer(relayDir, id);
+}
+
 function readAnswer(relayDir, id) {
   const json = readJson(answerFile(relayDir, id));
   return typeof json?.answer === 'string' && json.answer.trim() !== '' ? json.answer : null;
@@ -173,6 +198,7 @@ function invalidAnswerReason(relayDir, id) {
  */
 export function pendingQuestion(relayDir) {
   for (const id of listQuestionIds(relayDir)) {
+    if (isAbandoned(relayDir, id)) continue; // 続きから始めたときに残した問いは、もう待たない
     if (!fs.existsSync(answerFile(relayDir, id))) return readJson(questionFile(relayDir, id));
     const invalid = invalidAnswerReason(relayDir, id);
     if (invalid) return { ...readJson(questionFile(relayDir, id)), invalidAnswer: invalid };
@@ -199,6 +225,7 @@ export function pidAlive(pid) {
 export function answerQuestion(relayDir, id, text) {
   if (!ID_PATTERN.test(String(id ?? ''))) throw new RelayError('usage', `問いの id は数字で書いてください（例：0001）：${id}`);
   if (!fs.existsSync(questionFile(relayDir, id))) throw new RelayError('no_question', `問い ${id} はありません（${relayPaths(relayDir).questions}）。`);
+  if (isAbandoned(relayDir, id)) throw new RelayError('abandoned', `問い ${id} は、試験の仕組みを続きから始めたときに、答えを待たないことにした問いです（${abandonedFile(relayDir, id)}）。答えは、続きの最初の発言に入れてください。`);
   const invalid = invalidAnswerReason(relayDir, id) !== null;
   if (!invalid && fs.existsSync(answerFile(relayDir, id))) throw new RelayError('already_answered', `問い ${id} には、もう答えています。`);
   if (typeof text !== 'string' || text.trim() === '') throw new RelayError('empty_answer', '答えが空です。開発者の答えを渡してください。');
@@ -219,6 +246,25 @@ export function answerQuestion(relayDir, id, text) {
     fs.rmSync(tmp, { force: true });
   }
   return { ok: true };
+}
+
+/**
+ * 続きから始める（outer.mjs --resume）ときに、答えのない問い（答えのファイルがない・形が誤っている）に、待たない印を置く。
+ * 前のプロセスは、もうその答えを読まない。印を置いた id の一覧を返す（もう印のあるものは含めない）
+ */
+export function abandonUnanswered(relayDir, { reason = 'resumed', now = () => new Date().toISOString() } = {}) {
+  const marked = [];
+  for (const id of listQuestionIds(relayDir)) {
+    if (isAbandoned(relayDir, id) || readAnswer(relayDir, id) !== null) continue;
+    writeJsonAtomic(abandonedFile(relayDir, id), { id, abandonedAt: now(), reason });
+    marked.push(id);
+  }
+  return marked;
+}
+
+/** 答えのある問いの数（印のある問いは除く）。続きから始めたときの、次の答えの番号（index）の始まり */
+export function answeredCount(relayDir) {
+  return listQuestionIds(relayDir).filter((id) => !isAbandoned(relayDir, id) && readAnswer(relayDir, id) !== null).length;
 }
 
 // ---- 試験の仕組みの側 ----------------------------------------------------------------------------------
@@ -249,7 +295,9 @@ export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = proces
   fs.mkdirSync(paths.answers, { recursive: true });
   const history = [];
   const answers = [];
-  let seq = listQuestionIds(relayDir).length;
+  // 続きから始めたときは、前の問いの id と答えの番号の続きにする（新しい中継のフォルダでは、どちらも 0 から）
+  let seq = nextQuestionNumber(relayDir) - 1;
+  const indexBase = answeredCount(relayDir);
   let chain = Promise.resolve();
 
   const setStatus = (patch) => writeRelayStatus(relayDir, patch);
@@ -288,7 +336,7 @@ export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = proces
     }
     seq += 1;
     const id = String(seq).padStart(4, '0');
-    const index = answers.length;
+    const index = indexBase + answers.length;
     const noteList = (Array.isArray(notes) ? notes : [notes]).map((n) => String(n ?? '').trim()).filter(Boolean);
     const noteText = joinNotes(noteList);
     const options = normalizeChoices(choices);
