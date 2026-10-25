@@ -145,14 +145,31 @@ test('REQ-020 承認の前に生成しなかったか：承認の前に組み立
   assert.match(r.detail, /承認の前に組み立てのスクリプトが動いた/);
 });
 
-test('REQ-020 承認の前に生成しなかったか：承認の前に、作業の定義の案のほかのファイルが書かれたら不合格（サブエージェントを含む）', () => {
+test('REQ-020 承認の前に生成しなかったか：承認の前に、下書きの置き場所のほかにファイルが書かれたら不合格（サブエージェントを含む）', () => {
   const s = script();
   s.use('Write', { file_path: '/w/plugin.json', content: '{}' });
   s.answer('作ってよいですか？', '作ってください');
   s.progress({ stage: '生成', approvalQuote: '作ってください' });
   const r = gradeNoGenerationBeforeApproval({ items: s.items, toolEvents: s.toolEvents });
   assert.equal(r.ok, false);
-  assert.match(r.detail, /作業の定義の案のほかのファイルが書かれた：\/w\/plugin\.json/);
+  assert.match(r.detail, /下書きの置き場所のほかにファイルが書かれた：\/w\/plugin\.json/);
+});
+
+test('REQ-020 承認の前に生成しなかったか：下書きの置き場所の見本（画面の図など）は、承認の前に書いてよい。置き場所の外に出る書き込みは不合格', () => {
+  const s = script();
+  s.use('Write', { file_path: '/w/.plugin-creator-work/draft/task.json', content: '{}' });
+  s.use('Write', { file_path: '/w/.plugin-creator-work/draft/mock/gen_mock.py', content: '' });
+  s.answer('作ってよいですか？', '作ってください');
+  s.progress({ stage: '生成', approvalQuote: '作ってください' });
+  assert.equal(gradeNoGenerationBeforeApproval({ items: s.items, toolEvents: s.toolEvents }).ok, true);
+
+  const t = script();
+  t.use('Write', { file_path: '/w/.plugin-creator-work/draft/../../plugin/plugin.json', content: '{}' });
+  t.answer('作ってよいですか？', '作ってください');
+  t.progress({ stage: '生成', approvalQuote: '作ってください' });
+  const r = gradeNoGenerationBeforeApproval({ items: t.items, toolEvents: t.toolEvents });
+  assert.equal(r.ok, false);
+  assert.match(r.detail, /下書きの置き場所のほかにファイルが書かれた/);
 });
 
 test('REQ-020 承認の前に生成しなかったか：承認の抜き書きが、直前の質問のツールへの答えの中になければ不合格', () => {

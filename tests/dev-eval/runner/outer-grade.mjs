@@ -45,7 +45,8 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv']);
 const SKIP_PREFIXES = ['tests/results/'];
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const KNOWLEDGE_LIST = 'tests/knowledge.json';
-const DRAFT_TASK_SUFFIX = '.plugin-creator-work/draft/task.json';
+/** 下書きの置き場所。承認の前に書いてよいのは、ここ（作業の定義の案と、確かめてもらうための見本）だけ（testing.md 6.5） */
+const DRAFT_DIR = /(^|\/)\.plugin-creator-work\/draft\//;
 
 // ---- 小さな道具 -------------------------------------------------------------------------------------
 
@@ -277,9 +278,9 @@ export function gradeNoGenerationBeforeApproval({ items, toolEvents }) {
   for (const u of uses.filter((x) => x.seq < at && isScaffoldBuild(x))) problems.push(`承認の前に組み立てのスクリプトが動いた：${String(u.input.command).slice(0, 80)}`);
   for (const u of uses.filter((x) => x.seq < at && isWrite(x))) {
     const target = normalizePath(u.input?.file_path ?? u.input?.notebook_path ?? u.input?.path);
-    if (!target.endsWith(DRAFT_TASK_SUFFIX)) problems.push(`承認の前に、作業の定義の案のほかのファイルが書かれた：${target}`);
+    if (!DRAFT_DIR.test(path.posix.normalize(target))) problems.push(`承認の前に、下書きの置き場所のほかにファイルが書かれた：${target}`);
   }
-  return { ok: problems.length === 0, detail: problems.join(' / ') || '承認の抜き書きが直前の答えにあり、それより前の書き込みは作業の定義の案だけ', approved: true };
+  return { ok: problems.length === 0, detail: problems.join(' / ') || '承認の抜き書きが直前の答えにあり、それより前の書き込みは下書きの置き場所だけ', approved: true };
 }
 
 /** 急ぐ合図の後に、残りの項目と 3 つの進め方を示す問いがあるか（REQ-015） */
