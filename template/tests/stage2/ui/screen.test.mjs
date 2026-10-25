@@ -941,7 +941,21 @@ describe('開始前の設定（REQ-005、REQ-007、REQ-031）', () => {
       }
       assert.match(await textOf(page, '#s-setup'), /統括エージェントのモデル/);
       assert.match(await textOf(page, '#s-setup'), /最初は、統括と検証に思考力の高いモデル、作業に費用の低いモデルが選ばれています/);
-      assert.equal(await textOf(page, '#override-notice'), '実行が終わると、このチャットでほかのエージェントに設定したモデルの指定も消えます。', '上書きを外すと、ほかも消えること（中心の処理の文をそのまま出す）');
+      assert.equal(await textOf(page, '#override-notice'), '実行が終わると、このチャットでほかのエージェントに設定したモデルと思考の深さの指定も消えます。', '上書きを外すと、ほかも消えること（中心の処理の文をそのまま出す）');
+    });
+  });
+
+  test('REQ-007 エージェントごとの思考の深さを選べ、初めの値は「変えない」', async () => {
+    await withScreen({ state: prepState() }, async ({ page }) => {
+      for (const agent of ['orchestrator', 'worker', 'verifier']) {
+        assert.equal(await page.inputValue(`#setting-effort-${agent}`), '', '初めは変えない');
+        const options = await page.locator(`#setting-effort-${agent} option`).evaluateAll((els) => els.map((el) => [el.value, el.textContent]));
+        assert.deepEqual(options, [['', '変えない'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']]);
+      }
+      const text = await textOf(page, '#effort-settings');
+      assert.match(text, /統括の思考の深さ/);
+      assert.match(text, /作業（週報を書く係）の思考の深さ/);
+      assert.match(text, /検証の思考の深さ/);
     });
   });
 
@@ -985,6 +999,8 @@ describe('開始前の設定（REQ-005、REQ-007、REQ-031）', () => {
       await page.selectOption('#setting-model-orchestrator', 'gpt-6-luna');
       await page.selectOption('#setting-model-worker', 'claude-opus-5-5');
       await page.selectOption('#setting-model-verifier', 'claude-haiku-5-5');
+      await page.selectOption('#setting-effort-orchestrator', 'high');
+      await page.selectOption('#setting-effort-worker', 'low');
       await page.fill('#setting-maxIterations', '2');
       await page.fill('#setting-week', '2026-W43');
       await page.fill('#setting-items', '7');
@@ -998,6 +1014,7 @@ describe('開始前の設定（REQ-005、REQ-007、REQ-031）', () => {
       assert.equal(calls.length, 1, '2回押しても1回');
       assert.deepEqual(calls[0].args[0], {
         models: { orchestrator: 'gpt-6-luna', worker: 'claude-opus-5-5', verifier: 'claude-haiku-5-5' },
+        efforts: { orchestrator: 'high', worker: 'low', verifier: '' },
         maxIterations: 2,
         task: { week: '2026-W43', items: 7, tone: 'だ・である調', attach: true, folder: '/tmp/out' },
       });
@@ -1013,6 +1030,7 @@ describe('開始前の設定（REQ-005、REQ-007、REQ-031）', () => {
       await eventually(() => core.callsOf('start').length === 1, '開始が届かない');
       assert.deepEqual(core.callsOf('start')[0].args[0], {
         models: { orchestrator: 'claude-opus-5-5', worker: 'claude-haiku-5-5', verifier: 'claude-opus-5-5' },
+        efforts: { orchestrator: '', worker: '', verifier: '' },
         maxIterations: 3,
         task: { week: '2026-W42', items: 5, tone: 'です・ます調', attach: false, folder: '' },
       });

@@ -30,9 +30,28 @@ test('REQ-008 作業が 2 体以上のとき、作業ごとのモデルの上書
   const h = await makeHarness(t, { task: TWO_WORKERS });
   await h.begin();
   assert.deepEqual(h.port.overrides, {
-    [`${PLUGIN}:worker`]: 'gpt-6-luna',
-    [`${PLUGIN}:worker-review`]: 'gpt-6-luna',
-    [`${PLUGIN}:verifier`]: 'claude-opus-5-5',
+    [`${PLUGIN}:worker`]: { model: 'gpt-6-luna' },
+    [`${PLUGIN}:worker-review`]: { model: 'gpt-6-luna' },
+    [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' },
+  });
+});
+
+test('REQ-007 作業が 2 体以上のとき、思考の深さは作業エージェントごとに選べる', async (t) => {
+  const h = await makeHarness(t, { task: TWO_WORKERS });
+  await h.core.open({ requestText: 'x' });
+  assert.deepEqual(h.state().setup.effortAgents, [
+    { agent: 'orchestrator', label: '統括' },
+    { agent: 'worker', label: '作業（下書きを書く係）' },
+    { agent: 'worker-review', label: '作業（見直す係）' },
+    { agent: 'verifier', label: '検証' },
+  ]);
+  const p = h.core.start(h.settings({ efforts: { 'worker-review': 'xhigh', verifier: 'max' } }));
+  await h.settle();
+  await p;
+  assert.deepEqual(h.port.overrides, {
+    [`${PLUGIN}:worker`]: { model: 'gpt-6-luna' },
+    [`${PLUGIN}:worker-review`]: { model: 'gpt-6-luna', effort: 'xhigh' },
+    [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5', effort: 'max' },
   });
 });
 
@@ -189,10 +208,13 @@ test('REQ-007 開始前の設定の初めの値は、エージェントの定義
   // 統括と検証は思考力の高いモデル、作業は費用の低いモデル（定義の model の最初に選べるもの）
   assert.deepEqual(setup.defaults, { orchestrator: 'claude-opus-5-5', worker: 'claude-haiku-5-5', verifier: 'claude-opus-5-5' });
   assert.equal(setup.maxIterationsDefault, 3);
+  // 思考の深さの選択肢は、公式の --effort の値。統括・作業・検証のそれぞれに選ぶ
+  assert.deepEqual(setup.effortLevels, ['low', 'medium', 'high', 'xhigh', 'max']);
+  assert.deepEqual(setup.effortAgents.map((a) => a.agent), ['orchestrator', 'worker', 'verifier']);
   assert.deepEqual(setup.taskSettings.map((s) => s.key), ['week', 'items', 'tone', 'attach']);
   assert.equal(setup.isAuto, false);
   assert.equal(setup.autoNotice, null);
-  assert.match(setup.overrideNotice, /このチャットでほかのエージェントに設定したモデルの指定も消えます/);
+  assert.match(setup.overrideNotice, /このチャットでほかのエージェントに設定したモデルと思考の深さの指定も消えます/);
   assert.doesNotMatch(setup.overrideNotice, /セッション|サブエージェント/, '説明のない言葉を使わない（REQ-025）');
 });
 
@@ -233,7 +255,7 @@ test('REQ-007 モデルが Auto のときも、同じ手順で開始し、「効
   await p;
   // 選んだモデルで統括を起動し、作業・検証の上書きもする
   assert.equal(h.port.argsOf('startAgent')[0].model, 'claude-opus-5-5');
-  assert.deepEqual(h.port.overrides, { [`${PLUGIN}:worker`]: 'gpt-6-luna', [`${PLUGIN}:verifier`]: 'claude-opus-5-5' });
+  assert.deepEqual(h.port.overrides, { [`${PLUGIN}:worker`]: { model: 'gpt-6-luna' }, [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' } });
   assert.equal(h.run().isAuto, true);
   h.root = h.port.tasks[0].agentId;
   await h.event({ type: 'agent.started', agentId: h.root, agentType: `${PLUGIN}:orchestrator`, model: 'gpt-6-luna', executionMode: 'background' });

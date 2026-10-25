@@ -21,7 +21,7 @@ test('REQ-012 実行が終わると、残っている統括が取り消され、
   assert.equal(run.summary, '週報を1回で作りました');
   assert.equal(h.port.overrides, null, '実行が終わったら、上書きを外す');
   const methods = h.port.calls.map((c) => c.method);
-  assert.equal(methods.at(-1), 'setSubagentModels');
+  assert.equal(methods.at(-1), 'setSubagentSettings');
   // 終わった実行の木のエージェントは、拒む一覧に入る
   for (const id of [h.root, ...h.port.tasks.map((x) => x.agentId)]) {
     assert.equal(h.core.preToolUse({ agentId: id, toolName: 'edit' }).deny, true, id);

@@ -62,17 +62,24 @@ describe('窓口 port の呼び出しの形（REQ-007、REQ-009）', () => {
     }
   });
 
-  test('REQ-007 setSubagentModels は updateSubagentSettings を { subagents: { agents: { <プラグイン>:<エージェント>: { model } } } } で呼ぶ。null で外す', async () => {
+  test('REQ-007 setSubagentSettings は updateSubagentSettings を { subagents: { agents: { <プラグイン>:<エージェント>: { model, effortLevel } } } } で呼ぶ。null で外す', async () => {
     const p = await startPlugin();
-    await p.port.setSubagentModels({ [`${PLUGIN}:worker`]: 'gpt-6-luna', [`${PLUGIN}:verifier`]: 'claude-opus-5-5' });
-    assert.deepEqual(p.fake.callsOf('tools.updateSubagentSettings').at(-1).args, {
-      subagents: { agents: { [`${PLUGIN}:worker`]: { model: 'gpt-6-luna' }, [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' } } },
+    await p.port.setSubagentSettings({
+      [`${PLUGIN}:orchestrator`]: { effort: 'high' },
+      [`${PLUGIN}:worker`]: { model: 'gpt-6-luna', effort: 'low' },
+      [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' },
     });
-    assert.deepEqual(p.fake.overrides, { agents: { [`${PLUGIN}:worker`]: { model: 'gpt-6-luna' }, [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' } } });
-    await p.port.setSubagentModels(null);
+    const agents = {
+      [`${PLUGIN}:orchestrator`]: { effortLevel: 'high' },
+      [`${PLUGIN}:worker`]: { model: 'gpt-6-luna', effortLevel: 'low' },
+      [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' },
+    };
+    assert.deepEqual(p.fake.callsOf('tools.updateSubagentSettings').at(-1).args, { subagents: { agents } });
+    assert.deepEqual(p.fake.overrides, { agents });
+    await p.port.setSubagentSettings(null);
     assert.deepEqual(p.fake.callsOf('tools.updateSubagentSettings').at(-1).args, { subagents: null });
     assert.equal(p.fake.overrides, null);
-    await p.port.setSubagentModels(undefined);
+    await p.port.setSubagentSettings(undefined);
     assert.deepEqual(p.fake.callsOf('tools.updateSubagentSettings').at(-1).args, { subagents: null });
   });
 
@@ -124,8 +131,8 @@ describe('窓口 port の呼び出しの形（REQ-007、REQ-009）', () => {
       ['tasks.startAgent', () => p.port.startAgent({ agentType: 'x', name: 'n', prompt: 'p' })],
       ['tasks.cancel', () => p.port.cancelAgent('ag-1')],
       ['tasks.list', () => p.port.listTasks()],
-      ['tools.updateSubagentSettings', () => p.port.setSubagentModels({ a: 'b' })],
-      ['tools.updateSubagentSettings', () => p.port.setSubagentModels(null)],
+      ['tools.updateSubagentSettings', () => p.port.setSubagentSettings({ a: { model: 'b' } })],
+      ['tools.updateSubagentSettings', () => p.port.setSubagentSettings(null)],
       ['model.getCurrent', () => p.port.getCurrentModel()],
       ['model.list', () => p.port.listModels()],
       ['session.log', () => p.port.log('x')],

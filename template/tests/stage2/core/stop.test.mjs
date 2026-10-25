@@ -241,7 +241,7 @@ test('REQ-013 ユーザーが止めたときは、エージェントを動かさ
   await h.core.stop();
   await h.settle();
   const methods = h.port.calls.slice(before).map((c) => c.method);
-  assert.deepEqual([...new Set(methods)].sort(), ['cancelAgent', 'listTasks', 'setSubagentModels']);
+  assert.deepEqual([...new Set(methods)].sort(), ['cancelAgent', 'listTasks', 'setSubagentSettings']);
   assert.ok(!methods.includes('startAgent'));
 });
 

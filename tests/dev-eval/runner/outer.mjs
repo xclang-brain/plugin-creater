@@ -33,6 +33,8 @@
 //     3. 問いと、問いの前の文（notes）を言い換えずに開発者に示し、答えを変えずに
 //        node tests/dev-eval/runner/human-relay.mjs answer --relay <中継のフォルダ> --id <id> --text <答え> で返す。2 に戻る。
 //        答えのファイルは、じかに書かない（answer のコマンドだけで書く）。
+//        問いの JSON に images があれば、その画像（path）を問いといっしょに開発者に送る。開発者は、試験の容器の中にしかない
+//        画面の URL（http://127.0.0.1:…）やファイルを開けないためである。imageErrors があれば、写せなかったものと理由も示す。
 //     4. wait が終了コード 3（終わった）で返ったら、<out>/outer-report.json と status.json の result を見る。終わりの状態は、
 //        記録と outer-report.json を書き終えてから書く。中断の後も、採点が終わるまでは終わりにならない（phase が stopping）。
 //        4（プロセスがない）で返ったら、結果は書かれていない。heartbeatAt が古くなった（既定 10 分）ときにも 4 になる。

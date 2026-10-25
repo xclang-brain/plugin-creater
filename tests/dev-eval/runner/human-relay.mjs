@@ -5,7 +5,13 @@
 //   答えの記録（entry）の形も同じにする（outer-run.mjs と outer-grade.mjs がそのまま使えるように）。
 // - 中継のフォルダ（JSON、UTF-8。書き込みは一時ファイルを書いてから名前を変える）:
 //     status.json          { state: starting|running|waiting|finished|stopped, pid, pidNs, runDir, workDir, pending, updatedAt, heartbeatAt, phase?, result? }
-//     questions/<id>.json  { id, index, via, header, question, options, multiSelect, notes, group, groupSize, askedAt }
+//     questions/<id>.json  { id, index, via, header, question, options, multiSelect, notes, group, groupSize, askedAt, images?, imageErrors? }
+//                          問いの文と notes に、容器の中の画面の URL（http://127.0.0.1:…、http://localhost:…）か、容器の中にある .html のファイルの場所が
+//                          出たときは、問いのファイルを書く前に画像にし（relay-images.mjs）、images に [{ source, view, path }] を書く。
+//                          view は page（ページ全体）、running（「開始する」を押した後）、finished（続けて「止める」を押した後）。
+//                          写せなかったものは imageErrors に [{ source, error }] で書く（中継は止めない）。開発者は容器の中を開けないので、
+//                          統括が画像を問いといっしょに送る
+//     images/<id>-<n>[-running|-finished].png  その画像
 //     answers/<id>.json    { answer }（統括が書く。必ず下のコマンドの answer で書く。じかに書くと、形の誤りに気づけない）
 //     abandoned/<id>.json  { id, abandonedAt, reason }（試験の仕組みを続きから始めた（outer.mjs --resume）ときに、答えのないまま残った問いの印。
 //                          この問いは待たない。wait は返さず、answer は断る。答えは、統括が続きの最初の発言（--resume-prompt-file）に入れる）
@@ -34,6 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { captureLocalImages } from './relay-images.mjs';
 import { joinNotes, normalizeChoices } from './user-role.mjs';
 
 /** 試験の仕組みが終わった状態（wait は終了コード 3 で返す） */
@@ -287,8 +294,10 @@ const abortError = () => {
  * @param {number} [args.heartbeatMs] heartbeatAt を書き直す間隔（0 で書かない。入口の outer.mjs が自分で書くとき）
  * @param {boolean} [args.deferTerminal] true なら、finish は結果だけを書き、終わりの状態は入口が finalizeRelayStatus で書く
  *   （記録のファイルと outer-report.json を書き終えてから終わりにするため）
+ * @param {Function|null} [args.captureImages] 問いに出た容器の中の画面とファイルを画像にする関数（relay-images.mjs の captureLocalImages と
+ *   同じ形。試験で差し替える。null で写さない）
  */
-export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = process.pid, runDir, workDir, heartbeatMs = HEARTBEAT_MS, deferTerminal = false }) {
+export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = process.pid, runDir, workDir, heartbeatMs = HEARTBEAT_MS, deferTerminal = false, captureImages = captureLocalImages }) {
   if (typeof relayDir !== 'string' || relayDir === '') throw new Error('createHumanRelay には中継のフォルダ（relayDir）が要ります。');
   const paths = relayPaths(relayDir);
   fs.mkdirSync(paths.questions, { recursive: true });
@@ -329,6 +338,17 @@ export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = proces
     });
   }
 
+  /** 問いに容器の中の画面かファイルが出ていれば、画像にする。出ていなければ null。写せなくても、中継は止めない */
+  async function captureFor(id, texts) {
+    if (!captureImages) return null;
+    try {
+      const r = await captureImages({ texts, outDir: path.join(relayDir, 'images'), id, ...(workDir ? { baseDir: workDir } : {}) });
+      return r && r.sources?.length ? { images: r.images ?? [], errors: r.errors ?? [] } : null;
+    } catch (error) {
+      return { images: [], errors: [{ source: '', error: `画像にできませんでした：${error?.message ?? error}` }] };
+    }
+  }
+
   async function answerNow(question, choices, via, meta, notes) {
     if (signal?.aborted) {
       markStopping();
@@ -340,6 +360,11 @@ export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = proces
     const noteList = (Array.isArray(notes) ? notes : [notes]).map((n) => String(n ?? '').trim()).filter(Boolean);
     const noteText = joinNotes(noteList);
     const options = normalizeChoices(choices);
+    const shots = await captureFor(id, [question, ...noteList]);
+    if (signal?.aborted) {
+      markStopping();
+      throw abortError();
+    }
     writeJsonAtomic(path.join(paths.questions, `${id}.json`), {
       id,
       index,
@@ -352,6 +377,7 @@ export function createHumanRelay({ relayDir, signal, pollMs = 1000, pid = proces
       group: meta.group ?? null,
       groupSize: meta.groupSize ?? null,
       askedAt: new Date().toISOString(),
+      ...(shots ? { images: shots.images, imageErrors: shots.errors } : {}),
     });
     setStatus({ state: 'waiting', pending: id });
     const text = await waitForAnswer(id);

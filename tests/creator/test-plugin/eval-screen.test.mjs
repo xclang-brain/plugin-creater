@@ -87,6 +87,7 @@ describe('画面の操作', () => {
 
       assert.deepEqual(core.callsOf('start')[0].args[0], {
         models: { orchestrator: 'claude-opus-5-5', worker: 'claude-haiku-5-5', verifier: 'claude-opus-5-5' },
+        efforts: { orchestrator: '', worker: '', verifier: '' },
         maxIterations: 2,
         task: { week: '2026-W42', items: 7, tone: 'だ・である調', attach: true, folder: '' },
       });

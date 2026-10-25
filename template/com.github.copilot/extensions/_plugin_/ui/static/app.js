@@ -108,7 +108,7 @@
     version: null,
     connected: true,
     open: new Set(), // 開いている畳み
-    draft: { models: {}, maxIterations: null, task: {} }, // 開始前の設定の入力中の値
+    draft: { models: {}, efforts: {}, maxIterations: null, task: {} }, // 開始前の設定の入力中の値
     startPending: false,
     startMessage: '',
     stopPending: false,
@@ -476,6 +476,7 @@
   function collectSettings(fields) {
     return {
       models: Object.fromEntries(MODEL_ROLES.map((role) => [role, fields.models[role].read()])),
+      efforts: Object.fromEntries(fields.efforts.map(([agent, field]) => [agent, field.read()])),
       maxIterations: fields.max.read(),
       task: Object.fromEntries(fields.task.map(([def, field]) => [def.key, field.read()])),
     };
@@ -490,7 +491,7 @@
     update('setup', [prep, setup, ui.startPending, startMessage], () => {
       if (!prep) return null;
       const models = (setup.models ?? []).map((m) => ({ value: m.id, label: m.name || m.id }));
-      const fields = { models: {}, task: [], max: null };
+      const fields = { models: {}, efforts: [], task: [], max: null };
       const modelFields = MODEL_ROLES.map((role) => {
         const chosen = ui.draft.models[role] ?? setup.defaults?.[role] ?? models[0]?.value ?? '';
         const options = models.some((m) => m.value === chosen) || !chosen ? models : [{ value: chosen, label: chosen }, ...models];
@@ -502,6 +503,20 @@
           },
         );
         fields.models[role] = field;
+        return field.el;
+      });
+      // 思考の深さは、エージェントごと。初めは「変えない」（上書きしない。設計書 4.6）
+      const effortOptions = [{ value: '', label: '変えない' }, ...(setup.effortLevels ?? []).map((level) => ({ value: level, label: level }))];
+      const effortFields = (setup.effortAgents ?? []).map(({ agent, label }) => {
+        const chosen = ui.draft.efforts[agent] ?? '';
+        const field = settingField(
+          { key: `effort-${agent}`, label: `${label}の思考の深さ`, type: 'select', options: effortOptions, default: chosen },
+          chosen,
+          (_k, value) => {
+            ui.draft.efforts[agent] = value;
+          },
+        );
+        fields.efforts.push([agent, field]);
         return field.el;
       });
       fields.max = settingField(
@@ -568,6 +583,15 @@
           // 上書きを外すと、ほかのエージェントのモデルの指定も消えること（設計書 4.6）。文は中心の処理が決める
           setup.overrideNotice ? h('p', { class: 'help', id: 'override-notice' }, setup.overrideNotice) : null,
         ),
+        effortFields.length
+          ? h(
+              'fieldset',
+              { class: 'group', id: 'effort-settings' },
+              h('legend', null, 'エージェントごとの思考の深さ'),
+              h('p', { class: 'help' }, '「変えない」のときは、エージェントの定義のとおりに動きます。選んだモデルが受け付けない深さは使われません。'),
+              effortFields,
+            )
+          : null,
         h('fieldset', { class: 'group' }, h('legend', null, '繰り返し'), fields.max.el),
         taskFields.length ? h('fieldset', { class: 'group', id: 'task-settings' }, h('legend', null, '作業ごとの設定'), taskFields) : null,
         message,

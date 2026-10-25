@@ -6,13 +6,14 @@ import {
   BUSY_NOTICE,
   CHAT_CONFIRM_NOTICE,
   CLEAR_NOTICE,
+  EFFORT_LEVELS,
   LIMITS,
   OVERRIDE_NOTICE,
 } from './constants.mjs';
 import { realClock } from './clock.mjs';
 import { SerialQueue } from './queue.mjs';
 import { createStore } from './store.mjs';
-import { loadTaskFile, normalizeTask, pickDefaultModel, readAgentModels } from './task-def.mjs';
+import { effortAgents, loadTaskFile, normalizeTask, pickDefaultModel, readAgentModels } from './task-def.mjs';
 import { buildToolDefinitions } from './tools.mjs';
 import { callWithTimeout, clone } from './util.mjs';
 import { viewRun } from './run.mjs';
@@ -67,6 +68,8 @@ async function refreshSetup(ctx) {
   ctx.setup = {
     models,
     defaults,
+    effortLevels: [...EFFORT_LEVELS],
+    effortAgents: effortAgents(ctx.task),
     maxIterationsDefault: ctx.task.maxIterationsDefault,
     taskSettings: clone(ctx.task.settings),
     taskDisplays: clone(ctx.task.displays),
@@ -107,6 +110,8 @@ function buildState(ctx) {
   const setup = ctx.setup ?? {
     models: [],
     defaults: { orchestrator: '', worker: '', verifier: '' },
+    effortLevels: [...EFFORT_LEVELS],
+    effortAgents: effortAgents(ctx.task),
     maxIterationsDefault: ctx.task.maxIterationsDefault,
     taskSettings: clone(ctx.task.settings),
     taskDisplays: clone(ctx.task.displays),

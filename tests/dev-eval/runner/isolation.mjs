@@ -149,13 +149,14 @@ export async function usageLimitPrefixes(sdk) {
  * @param {Array} [args.refused] 断った書き込みを入れる配列
  * @param {object} [args.envExtra] 環境変数に足すもの
  * @param {number} [args.maxTurns]
+ * @param {string} [args.effort] 思考の深さ（low・medium・high・xhigh・max）。なければ渡さない
  * @param {string} [args.resume] 続けるセッションの番号
  * @param {AbortController} [args.abortController]
  * @param {object} [args.base] 環境変数のもと（試験用）
  */
 export function makeQueryOptions({
   cwd, home, model, plugins = [], mcpServers, mcpTools = [], hooks, agent, systemPromptAppend, sandbox = false,
-  onQuestion, refused = [], envExtra = {}, maxTurns, resume, abortController, base = process.env,
+  onQuestion, refused = [], envExtra = {}, maxTurns, effort, resume, abortController, base = process.env,
 }) {
   if (!cwd || !home || !model) throw new Error('makeQueryOptions には cwd・home・model が要ります。');
   const options = {
@@ -175,6 +176,7 @@ export function makeQueryOptions({
   const sandboxOptions = makeSandboxOptions({ enabled: sandbox });
   if (sandboxOptions) options.sandbox = sandboxOptions;
   if (maxTurns !== undefined) options.maxTurns = maxTurns;
+  if (effort) options.effort = effort;
   if (resume) options.resume = resume;
   if (abortController) options.abortController = abortController;
   return options;

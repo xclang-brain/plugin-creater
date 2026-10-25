@@ -26,6 +26,15 @@ export function normalizeTask(raw, pluginName = '') {
   };
 }
 
+// 思考の深さを選ぶエージェント（4.6）：統括、作業エージェントのそれぞれ、検証。label は画面と断りの文に出す呼び名
+export function effortAgents(task) {
+  return [
+    { agent: 'orchestrator', label: '統括' },
+    ...task.workers.map((w) => ({ agent: w.agent, label: w.label === '作業' ? '作業' : `作業（${w.label}）` })),
+    { agent: 'verifier', label: '検証' },
+  ];
+}
+
 export function loadTaskFile(path, pluginName) {
   let raw;
   try {
