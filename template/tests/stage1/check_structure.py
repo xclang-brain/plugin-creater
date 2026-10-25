@@ -68,6 +68,7 @@ CATALOG: Dict[str, Tuple[List[str], str]] = {
     "knowledge": ([], "ナレッジの番号がそれぞれの置き場所にある（設計書 7章）"),
     "agent-tools": (["REQ-010"], "統括・作業・検証の定義がそろい、作業と検証に tools があり、統括に tools がなく、検証エージェントに書き込みとコマンドがない"),
     "tool-names": (["REQ-010"], "記録のツールの名前の頭がプラグインの名前"),
+    "marketplace": (["REQ-004"], "marketplace.json に名前・持ち主・プラグインの一覧があり、一覧のプラグインの名前が plugin.json と同じ"),
     "trace": (["REQ-003"], "要件の追跡の表がそろっている"),
 }
 
@@ -1176,6 +1177,39 @@ REQ_IN_NAME = re.compile(r"(?<![A-Za-z0-9])req[-_]?(\d+)(?!\d)", re.I)
 NODE_TEST_CALL = re.compile(r"""\b(?:test|it|describe|suite)(?:\.\w+)*\s*\(\s*(['"`])((?:\\.|(?!\1).)*?)\1""", re.S)
 
 
+MARKETPLACE_FILE = ".github/plugin/marketplace.json"
+
+
+def check_marketplace(ctx: Context, c: Check) -> None:
+    """README のインストールの手順（marketplace add → install <プラグイン>@<マーケットプレイス>）が読むファイル。
+    一覧のプラグインの名前が plugin.json と違うと、install が失敗する（設計書 10章）。"""
+    path = os.path.join(ctx.root, *MARKETPLACE_FILE.split("/"))
+    if not os.path.isfile(path):
+        c.error("%s がない（README のインストールの手順が、このファイルを読む）" % MARKETPLACE_FILE)
+        return
+    data = read_json_file(path, MARKETPLACE_FILE, c)
+    if data is None:
+        return
+    if not isinstance(data, dict):
+        c.error("%s: JSON のオブジェクトにする" % MARKETPLACE_FILE)
+        return
+    if not is_text(data.get("name")):
+        c.error("%s: マーケットプレイスの名前（name）がない" % MARKETPLACE_FILE)
+    owner = data.get("owner")
+    if not isinstance(owner, dict) or not is_text(owner.get("name")):
+        c.error("%s: 持ち主の名前（owner.name）がない" % MARKETPLACE_FILE)
+    plugins = data.get("plugins")
+    if not isinstance(plugins, list) or not plugins:
+        c.error("%s: プラグインの一覧（plugins）がない" % MARKETPLACE_FILE)
+        return
+    names = [p.get("name") for p in plugins if isinstance(p, dict)]
+    if len(names) != len(plugins) or not all(is_text(n) for n in names):
+        c.error("%s: plugins のどれかに、プラグインの名前（name）がない" % MARKETPLACE_FILE)
+    if ctx.plugin_name and ctx.plugin_name not in names:
+        c.error("%s: plugins に plugin.json の名前「%s」がない（今は %s）。名前が違うと、copilot plugin install が失敗する"
+                % (MARKETPLACE_FILE, ctx.plugin_name, "、".join("「%s」" % n for n in names if is_text(n)) or "なし"))
+
+
 def req_number(digits: str) -> str:
     return "REQ-%03d" % int(digits)
 
@@ -1337,6 +1371,7 @@ def run_checks(root: str, kind: str = "generated") -> Report:
         check_knowledge(ctx, report.new("knowledge"))
         check_agent_tools(ctx, report.new("agent-tools"))
         check_tool_names(ctx, report.new("tool-names"))
+        check_marketplace(ctx, report.new("marketplace"))
         check_trace(ctx, report.new("trace"))
     return report
 

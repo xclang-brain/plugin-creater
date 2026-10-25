@@ -809,6 +809,7 @@ stateDiagram-v2
 - 作業・検証の `tools` に `skill` がなく、統括に `tools` がない（4.7）。
 - シンボリックリンクがない（調べないのは、道具を入れる `tests/.venv` と `tests/node_modules` の2つだけ）。
 - 記録のツールの名前の頭がプラグインの名前。
+- `.github/plugin/marketplace.json` に、マーケットプレイスの名前（`name`）、持ち主の名前（`owner.name`）、プラグインの一覧（`plugins`）があり、一覧のプラグインの名前が `plugin.json` の `name` と同じ。README のインストールの手順（`copilot plugin install <プラグイン>@<マーケットプレイス>`）は、名前が違うと失敗するため。
 - 追跡の表（8章）
 
 **2段目 部品の試験（中心の処理）**（要件：REQ-005、REQ-008〜REQ-013、REQ-031）
