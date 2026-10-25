@@ -36,14 +36,34 @@ test('REQ-005 開始すると、選んだモデルで統括が起動され、指
   assert.ok(start.prompt.includes('文体（tone）：desu'));
   assert.ok(start.prompt.includes('前回の週報をつける（attach）：はい'));
   // 作業・検証のモデルは、キーが <プラグイン>:<エージェント> の形で上書きされる
-  assert.deepEqual(h.port.overrides, { [`${PLUGIN}:worker`]: 'claude-haiku-5-5', [`${PLUGIN}:verifier`]: 'claude-opus-5-5' });
+  assert.deepEqual(h.port.overrides, { [`${PLUGIN}:worker`]: { model: 'claude-haiku-5-5' }, [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' } });
   // 実行の根は統括の番号
   assert.equal(run.agents.find((a) => a.slot === 'orchestrator').agentId, 'orch-1');
   assert.equal(run.maxIterations, 4);
   assert.deepEqual(run.settings.models, { orchestrator: 'gpt-6-luna', worker: 'claude-haiku-5-5', verifier: 'claude-opus-5-5' });
+  // 思考の深さを選ばないときは、どのエージェントも上書きしない（定義のまま）
+  assert.deepEqual(run.settings.efforts, { orchestrator: '', worker: '', verifier: '' });
   // 上書きしてから起動する順
   const order = h.port.calls.map((c) => c.method);
-  assert.ok(order.indexOf('setSubagentModels') < order.indexOf('startAgent'));
+  assert.ok(order.indexOf('setSubagentSettings') < order.indexOf('startAgent'));
+});
+
+test('REQ-007 エージェントごとに選んだ思考の深さが、モデルと同じ上書きで渡る。統括の深さも上書きで渡す', async (t) => {
+  const h = await makeHarness(t);
+  await h.core.open({ requestText: 'x' });
+  const p = h.core.start(h.settings({ efforts: { orchestrator: 'high', worker: 'low' } }));
+  await h.settle();
+  await p;
+  assert.deepEqual(h.port.overrides, {
+    [`${PLUGIN}:orchestrator`]: { effort: 'high' },
+    [`${PLUGIN}:worker`]: { model: 'gpt-6-luna', effort: 'low' },
+    [`${PLUGIN}:verifier`]: { model: 'claude-opus-5-5' },
+  });
+  assert.deepEqual(h.run().settings.efforts, { orchestrator: 'high', worker: 'low', verifier: '' });
+  // 統括のモデルは起動のときに渡す
+  assert.equal(h.port.argsOf('startAgent')[0].model, 'claude-opus-5-5');
+  const order = h.port.calls.map((c) => c.method);
+  assert.ok(order.indexOf('setSubagentSettings') < order.indexOf('startAgent'));
 });
 
 test('REQ-031 作業ごとの設定の値を変えて開始すると、変えた値で実行される', async (t) => {
@@ -75,7 +95,7 @@ test('REQ-005 開始中か実行中に届いた開始は断る。統括は 1 体
   assert.equal(h.port.callsOf('startAgent').length, 1);
 });
 
-test('REQ-005 開始のとき、設定を確かめる（必須の項目、上限の回数、選んだモデル）', async (t) => {
+test('REQ-005 開始のとき、設定を確かめる（必須の項目、上限の回数、選んだモデル、思考の深さ）', async (t) => {
   const h = await makeHarness(t);
   await h.core.open({ requestText: 'x' });
   const bad = [
@@ -83,6 +103,7 @@ test('REQ-005 開始のとき、設定を確かめる（必須の項目、上限
     [h.settings({ maxIterations: 0 }), /1 以上の整数/],
     [h.settings({ maxIterations: 2.5 }), /1 以上の整数/],
     [h.settings({ models: { orchestrator: 'unknown-model' } }), /選べるモデルにありません/],
+    [h.settings({ efforts: { worker: 'huge' } }), /作業（週報を書く係）の思考の深さ「huge」は、選べる値にありません/],
     [h.settings({ task: { items: 'たくさん' } }), /数で入力/],
     [h.settings({ task: { tone: 'unknown' } }), /選べる値/],
   ];
@@ -91,7 +112,7 @@ test('REQ-005 開始のとき、設定を確かめる（必須の項目、上限
     assert.match(message, pattern);
   }
   assert.equal(h.port.callsOf('startAgent').length, 0);
-  assert.equal(h.port.callsOf('setSubagentModels').length, 0);
+  assert.equal(h.port.callsOf('setSubagentSettings').length, 0);
   assert.equal(h.run(), null, '準備中のまま');
 });
 
@@ -104,7 +125,7 @@ test('REQ-005 起動に失敗すると、上書きが外れ、準備中に戻っ
   const message = await refusal;
   assert.match(message, /このモデルは使えません/);
   const methods = h.port.calls.map((c) => c.method);
-  assert.equal(methods.filter((m) => m === 'setSubagentModels').length, 2);
+  assert.equal(methods.filter((m) => m === 'setSubagentSettings').length, 2);
   assert.equal(h.port.overrides, null, '上書きが外れている');
   assert.equal(h.run(), null);
   assert.match(h.state().startError.message, /このモデルは使えません/);
@@ -122,7 +143,7 @@ test('REQ-005 モデルの上書きに失敗すると、統括は起動せず、
   const h = await makeHarness(t);
   await h.core.open({ requestText: 'x' });
   let calls = 0;
-  h.port.behave('setSubagentModels', { value: () => { calls += 1; if (calls === 1) throw new Error('設定できません'); } });
+  h.port.behave('setSubagentSettings', { value: () => { calls += 1; if (calls === 1) throw new Error('設定できません'); } });
   const refusal = expectRefusal(h.core.start(h.settings()));
   await h.settle();
   await refusal;

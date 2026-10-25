@@ -69,6 +69,38 @@ describe('課題の読み込み', () => {
     assert.equal(out.tasks.length, 0);
   });
 
+  test('REQ-038 入力のままで当てはまってしまう採点と、入力に当てはまらない unchanged は誤りにする', () => {
+    const criterion = (check) => [{ id: 'C-01', text: 'ヘッダーを変えない', grading: 'program', check }];
+    const line = '#define DBG_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)';
+    const dir = plugin({
+      'tests/eval/T-01/eval.json': evalJson(sampleTask({ inputs: ['inputs'], criteria: criterion({ type: 'contains', file: 'inputs/src/dbg_log.h', text: line }) })),
+      'tests/eval/T-02/eval.json': evalJson(sampleTask({ id: 'T-02', inputs: ['inputs'], criteria: criterion({ type: 'unchanged', file: 'src/dbg_log.h' }) })),
+      'tests/eval/T-03/eval.json': evalJson(sampleTask({ id: 'T-03', inputs: ['inputs'], criteria: criterion({ type: 'unchanged', file: 'inputs/src/dbg_log.h' }) })),
+      'tests/eval/T-01/inputs/src/dbg_log.h': `${line}\n`,
+      'tests/eval/T-02/inputs/src/dbg_log.h': `${line}\n`,
+      'tests/eval/T-03/inputs/src/dbg_log.h': `${line}\n`,
+    });
+    const out = tasks.loadTasks(dir);
+    const text = out.problems.join('\n');
+    assert.match(text, /tests\/eval\/T-01\/eval\.json\.criteria\[0\]\.check は、課題の入力のファイルがもとのままでも合格してしまう.*unchanged（file）で確かめる/);
+    assert.match(text, /tests\/eval\/T-02\/eval\.json\.criteria\[0\]\.check\.file「src\/dbg_log\.h」が、課題の入力のファイルのどれにも当てはまらない/);
+    assert.deepEqual(out.tasks.map((t) => t.id), ['T-03']);
+  });
+
+  test('REQ-041 入力のファイルの一覧（listInputFiles）は、作業フォルダに写すファイルと同じ', () => {
+    const dir = plugin({
+      'tests/eval/T-01/eval.json': evalJson(sampleTask({ inputs: ['./inputs/a.txt', 'refs/', 'refs/sub/b.md'] })),
+      'tests/eval/T-01/inputs/a.txt': 'A',
+      'tests/eval/T-01/refs/r.md': 'R',
+      'tests/eval/T-01/refs/sub/b.md': 'B',
+    });
+    const [task] = tasks.loadTasks(dir).tasks;
+    const listed = tasks.listInputFiles(task.dir, task.json.inputs);
+    const { inputs } = tasks.prepareWorkDir({ task, dir: path.join(makeTemp(), 'w') });
+    assert.deepEqual(listed.map((f) => f.path), [...inputs.keys()].sort());
+    assert.deepEqual(listed.map((f) => f.size), [1, 1, 1]);
+  });
+
   test('REQ-040 基準の数を、プログラムで採点するものとモデルが判定するものに分けて数える', () => {
     const task = sampleTask();
     task.criteria.push({ id: 'C-03', text: '読みやすい', grading: 'model' });
@@ -108,5 +140,27 @@ describe('作業フォルダ', () => {
     assert.equal(inputs.size, 0);
     fs.writeFileSync(path.join(workDir, 'x'), '1');
     assert.throws(() => tasks.prepareWorkDir({ task, dir: workDir }), /作業フォルダが空ではない/);
+  });
+});
+
+describe('unchanged の採点と、入力の名前の正規化', () => {
+  test('REQ-041 入力のフォルダの中のファイルの名前が NFD でも、unchanged は写した入力を見つける', async () => {
+    const nfd = 'がいど.md'.normalize('NFD');
+    const dir = plugin({
+      'tests/eval/T-01/eval.json': evalJson(
+        sampleTask({ inputs: ['inputs'], criteria: [{ id: 'C-01', text: '手引きを変えない', grading: 'program', check: { type: 'unchanged', file: 'inputs/*.md' } }] }),
+      ),
+      [`tests/eval/T-01/inputs/${nfd}`]: '手引き\n',
+    });
+    const out = tasks.loadTasks(dir);
+    assert.deepEqual(out.problems, []);
+    const [task] = out.tasks;
+    const { workDir, inputs } = tasks.prepareWorkDir({ task, dir: path.join(makeTemp(), 'w') });
+    const first = await grade.gradeRun({ task: task.json, workDir, inputs });
+    assert.deepEqual(first.results.map((r) => [r.pass, r.reason]), [[true, '課題の入力のファイルは、もとのまま（inputs/がいど.md）']]);
+    fs.appendFileSync(path.join(workDir, 'inputs', nfd), '足した\n');
+    const second = await grade.gradeRun({ task: task.json, workDir, inputs });
+    assert.equal(second.results[0].pass, false);
+    assert.match(second.results[0].reason, /中身が変わっている：inputs\/がいど\.md/);
   });
 });

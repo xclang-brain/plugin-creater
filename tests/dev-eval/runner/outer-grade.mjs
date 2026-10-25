@@ -18,6 +18,10 @@
 // 採点とは別に、設計書（testing.md 6.5）が「記録する」とした数を数える（countRecorded。合否には入れない）：
 //   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか。
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
+// 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
+//   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
+// 採点しない観点（notGraded。続きから始めた実行で、前の会話を確かに読み直せなかったときなど）は、grades に入れず、理由を notGraded に残す。
+//   点数と合否には入らない。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -41,7 +45,8 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', '__pycache__', '.venv']);
 const SKIP_PREFIXES = ['tests/results/'];
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 const KNOWLEDGE_LIST = 'tests/knowledge.json';
-const DRAFT_TASK_SUFFIX = '.plugin-creator-work/draft/task.json';
+/** 下書きの置き場所。承認の前に書いてよいのは、ここ（作業の定義の案と、確かめてもらうための見本）だけ（testing.md 6.5） */
+const DRAFT_DIR = /(^|\/)\.plugin-creator-work\/draft\//;
 
 // ---- 小さな道具 -------------------------------------------------------------------------------------
 
@@ -273,9 +278,9 @@ export function gradeNoGenerationBeforeApproval({ items, toolEvents }) {
   for (const u of uses.filter((x) => x.seq < at && isScaffoldBuild(x))) problems.push(`承認の前に組み立てのスクリプトが動いた：${String(u.input.command).slice(0, 80)}`);
   for (const u of uses.filter((x) => x.seq < at && isWrite(x))) {
     const target = normalizePath(u.input?.file_path ?? u.input?.notebook_path ?? u.input?.path);
-    if (!target.endsWith(DRAFT_TASK_SUFFIX)) problems.push(`承認の前に、作業の定義の案のほかのファイルが書かれた：${target}`);
+    if (!DRAFT_DIR.test(path.posix.normalize(target))) problems.push(`承認の前に、下書きの置き場所のほかにファイルが書かれた：${target}`);
   }
-  return { ok: problems.length === 0, detail: problems.join(' / ') || '承認の抜き書きが直前の答えにあり、それより前の書き込みは作業の定義の案だけ', approved: true };
+  return { ok: problems.length === 0, detail: problems.join(' / ') || '承認の抜き書きが直前の答えにあり、それより前の書き込みは下書きの置き場所だけ', approved: true };
 }
 
 /** 急ぐ合図の後に、残りの項目と 3 つの進め方を示す問いがあるか（REQ-015） */
@@ -414,10 +419,16 @@ export function gradeModels({ use, generatedCount }) {
  * @param {object|null} args.modelUse 動いたモデル { requested, main, subagents: [{ type, models }], lowCost }。腕 with で渡すと REQ-045・REQ-046 を採点する
  * @param {string} args.model クリエイターのモデルの ID
  * @param {'with'|'without'|'control'} args.arm
+ * @param {'user-role'|'human'} [args.answerer] 答えた人。human（開発者が答えた。testing.md 6.7）なら、ユーザー役の誤りを確かめず、会話例の候補にしない
+ * @param {Object<string, string>} [args.notGraded] 採点しない観点の id → 理由
  */
-export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with' }) {
+export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role', notGraded = {} }) {
   const grades = [];
-  const add = (id, ok, detail, req) => grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  const skipped = [];
+  const add = (id, ok, detail, req) => {
+    if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
+    else grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  };
   const exchanges = exchangesOf(items);
   const hashed = personaFileHashes(personaFiles);
   const scope = scopes(generatedFiles ?? [], hashed);
@@ -464,7 +475,8 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
 
   if (arm === 'with' && modelUse) for (const g of gradeModels({ use: modelUse, generatedCount })) add(g.id, g.ok, g.detail, g.req);
 
-  const faults = userRoleFaults({ exchanges, trace });
+  const human = answerer === 'human';
+  const faults = human ? [] : userRoleFaults({ exchanges, trace });
   const isHaiku = /haiku/i.test(model ?? '');
   const required = isHaiku ? HAIKU_REQUIRED.filter((id) => grades.some((g) => g.id === id)) : grades.map((g) => g.id);
   const failedRequired = grades.filter((g) => required.includes(g.id) && !g.ok).map((g) => g.id);
@@ -475,8 +487,11 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
     trace,
     faults,
     counts: countRecorded({ items, toolEvents, state }),
-    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired },
+    // 採点しなかった観点があるときは、合否が一部の観点だけのものだと分かるように、partial と、その観点を付ける
+    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...(skipped.length ? { partial: true, notGraded: skipped.map((g) => g.id) } : {}) },
     // 会話例の候補（6.6）：採点の観点にすべて合格し、ユーザー役の誤りがない。最後は全文を読んで確かめる
-    exampleCandidate: !isHaiku && failedRequired.length === 0 && faults.length === 0,
+    // 開発者が答えた会話は、会話例にしない（6.6）
+    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0,
+    ...(skipped.length ? { notGraded: skipped } : {}),
   };
 }

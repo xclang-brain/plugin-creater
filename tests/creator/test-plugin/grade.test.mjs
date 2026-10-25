@@ -56,16 +56,19 @@ describe('課題と基準の確かめ（eval.json）', () => {
     assert.deepEqual(grade.validateTask(withModel), []);
   });
 
-  test('REQ-038 program の4種類の check が、それぞれ受け付けられる', () => {
+  test('REQ-038 program の5種類の check が、それぞれ受け付けられる', () => {
     for (const check of [
       { type: 'file_exists', file: 'out/*.md' },
       { type: 'contains', file: 'out/*.md', text: '52万円' },
       { type: 'not_contains', file: 'out/*.md', text: '個人名' },
       { type: 'regex', file: 'out/*.md', pattern: '\\d+万円', flags: 'iu' },
+      { type: 'unchanged', file: 'inputs/*.h' },
     ]) {
       assert.deepEqual(grade.validateCheck(check), [], JSON.stringify(check));
     }
-    assert.deepEqual(Object.keys(grade.CHECK_TYPES), ['file_exists', 'contains', 'not_contains', 'regex']);
+    assert.deepEqual(Object.keys(grade.CHECK_TYPES), ['file_exists', 'contains', 'not_contains', 'regex', 'unchanged']);
+    assert.match(grade.validateCheck({ type: 'unchanged' }, 'C').join(' / '), /file がない（unchanged には要る）/);
+    assert.match(grade.validateCheck({ type: 'unchanged', file: 'a', text: 'x' }, 'C').join(' / '), /unchanged では使わない項目「text」/);
   });
 
   test('REQ-038 check の誤りが、どこが誤りかの文で返る', () => {
@@ -269,6 +272,112 @@ describe('program の採点', () => {
     assert.equal((await program({ type: 'file_exists', file: 'inputs/*.md' }, dir, inputs)).pass, false);
     fs.writeFileSync(path.join(dir, 'inputs/前回の週報.md'), '売上は52万円（書き換えた）');
     assert.equal((await program(check, dir, inputs)).pass, true, '書き換えた入力は数える');
+  });
+});
+
+describe('unchanged の採点', () => {
+  // 作業フォルダに入力を写し、写したときの { 相対の場所 → sha256 } を作る（tasks.mjs の prepareWorkDir と同じ）
+  const withInputs = (inputFiles, otherFiles = {}) => {
+    const workDir = tempWith({ ...inputFiles, ...otherFiles });
+    const inputs = new Map(Object.keys(inputFiles).map((rel) => [rel, grade.sha256OfFile(path.join(workDir, rel))]));
+    return { workDir, inputs };
+  };
+  const unchanged = (file, { workDir, inputs }) => grade.gradeProgram({ type: 'unchanged', file }, listOf(workDir, inputs), { inputs, workDir });
+  const header = { 'inputs/src/dbg_log.h': '#define DBG_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)\n', 'inputs/src/main.c': 'int main(void) { return 0; }\n' };
+
+  test('REQ-041 unchanged：当てはまる入力がすべてもとのままなら合格。入力でないファイルは見ない', async () => {
+    const run = withInputs(header, { 'inputs/src/new.h': '作業が作ったファイル' });
+    const out = await unchanged('inputs/src/*.h', run);
+    assert.equal(out.pass, true, out.reason);
+    assert.match(out.reason, /inputs\/src\/dbg_log\.h/);
+    assert.doesNotMatch(out.reason, /new\.h/);
+  });
+
+  test('REQ-041 unchanged：中身を変えた入力があれば不合格で、そのファイルが理由に出る', async () => {
+    const run = withInputs(header);
+    fs.writeFileSync(path.join(run.workDir, 'inputs/src/dbg_log.h'), '#define DBG_LOG(...)\n');
+    const out = await unchanged('inputs/src/**', run);
+    assert.equal(out.pass, false);
+    assert.match(out.reason, /中身が変わっている：inputs\/src\/dbg_log\.h/);
+    assert.doesNotMatch(out.reason, /main\.c/);
+  });
+
+  test('REQ-041 unchanged：消した入力があれば不合格で、そのファイルが理由に出る', async () => {
+    const run = withInputs(header);
+    fs.rmSync(path.join(run.workDir, 'inputs/src/dbg_log.h'));
+    const out = await unchanged('inputs/src/dbg_log.h', run);
+    assert.equal(out.pass, false);
+    assert.match(out.reason, /なくなっている：inputs\/src\/dbg_log\.h/);
+  });
+
+  test('REQ-041 unchanged：当てはまる入力がなければ不合格（入力でないファイルが当てはまっても数えない）', async () => {
+    const run = withInputs(header, { 'out/a.h': 'x' });
+    const out = await unchanged('out/*.h', run);
+    assert.equal(out.pass, false);
+    assert.match(out.reason, /当てはまる課題の入力のファイルがない/);
+  });
+
+  test('REQ-041 gradeRun は、写した入力を unchanged の採点に渡す', async () => {
+    const run = withInputs(header, { 'out/report.md': '直した' });
+    const task = sampleTask({ criteria: [{ id: 'C-01', text: 'ヘッダーを変えない', grading: 'program', check: { type: 'unchanged', file: 'inputs/src/dbg_log.h' } }] });
+    assert.deepEqual((await grade.gradeRun({ task, ...run })).results.map((r) => r.pass), [true]);
+    fs.appendFileSync(path.join(run.workDir, 'inputs/src/dbg_log.h'), '// 足した\n');
+    assert.deepEqual((await grade.gradeRun({ task, ...run })).results.map((r) => r.pass), [false]);
+  });
+});
+
+describe('課題の入力と突き合わせる確かめ（inputCheckProblems）', () => {
+  const inputDir = (files) => {
+    const dir = tempWith(files);
+    return Object.keys(files).sort().map((rel) => ({ path: rel, absPath: path.join(dir, rel), size: fs.statSync(path.join(dir, rel)).size }));
+  };
+  const problemsOf = (check, files) =>
+    grade.inputCheckProblems(sampleTask({ criteria: [{ id: 'C-01', text: '基準', grading: 'program', check }] }), inputDir(files), 'T').join('\n');
+  const header = { 'inputs/src/dbg_log.h': '#define DBG_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)\n' };
+
+  test('REQ-038 入力にもともとある文字を contains で確かめる基準は、unchanged を使うよう示して断る', () => {
+    const text = problemsOf({ type: 'contains', file: 'inputs/src/dbg_log.h', text: '#define DBG_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)' }, header);
+    assert.match(text, /T\.criteria\[0\]\.check は、課題の入力のファイルがもとのままでも合格してしまう/);
+    assert.match(text, /inputs\/src\/dbg_log\.h/);
+    assert.match(text, /unchanged（file）で確かめる/);
+  });
+
+  test('REQ-038 file_exists・not_contains・regex も、入力のままで当てはまれば断る', () => {
+    assert.match(problemsOf({ type: 'file_exists', file: 'inputs/**' }, header), /もとのままでも合格してしまう/);
+    assert.match(problemsOf({ type: 'not_contains', file: 'inputs/src/*.h', text: 'TODO' }, header), /もとのままでも合格してしまう/);
+    assert.match(problemsOf({ type: 'regex', file: 'inputs/src/*.h', pattern: '^#define\\s+DBG_LOG', flags: 'm' }, header), /もとのままでも合格してしまう/);
+  });
+
+  test('REQ-038 入力のままでは当てはまらない基準と、入力に当てはまらない基準は通す', () => {
+    assert.equal(problemsOf({ type: 'contains', file: 'inputs/src/dbg_log.h', text: 'DBG_LEVEL' }, header), '');
+    assert.equal(problemsOf({ type: 'not_contains', file: 'inputs/src/*.h', text: 'printf' }, header), '');
+    assert.equal(problemsOf({ type: 'regex', file: 'inputs/src/*.h', pattern: 'DBG_LEVEL' }, header), '');
+    assert.equal(problemsOf({ type: 'contains', file: 'out/*.md', text: '#define' }, header), '');
+    assert.equal(problemsOf({ type: 'file_exists', file: 'inputs/*.md' }, { 'inputs/empty.md': '' }), '', '空の入力は file_exists に当てはまらない');
+  });
+
+  test('REQ-038 unchanged は、file が課題の入力のファイルに当てはまらなければ断る', () => {
+    assert.equal(problemsOf({ type: 'unchanged', file: 'inputs/src/dbg_log.h' }, header), '');
+    assert.match(problemsOf({ type: 'unchanged', file: 'out/*.h' }, header), /file「out\/\*\.h」が、課題の入力のファイルのどれにも当てはまらない/);
+    assert.match(
+      grade.inputCheckProblems(sampleTask({ inputs: [], criteria: [{ id: 'C-01', text: 'x', grading: 'program', check: { type: 'unchanged', file: '**' } }] }), [], 'T').join(''),
+      /どれにも当てはまらない/,
+      '入力のない課題の unchanged も断る',
+    );
+  });
+
+  test('REQ-038 docx・xlsx・pptx と文字にできない入力は、中身が分からないので文字では断らない（file_exists は大きさで断る）', () => {
+    const files = { 'inputs/前回.docx': sampleDocx(), 'inputs/data.bin': Buffer.from([0x41, 0x00, 0x42]) };
+    assert.equal(problemsOf({ type: 'contains', file: 'inputs/*.docx', text: '金曜日' }, files), '', '採点では docx の文字を読むが、1段目に合わせてここでは読まない');
+    assert.equal(problemsOf({ type: 'contains', file: 'inputs/*.bin', text: 'A' }, files), '');
+    assert.equal(problemsOf({ type: 'not_contains', file: 'inputs/*', text: 'Z' }, files), '', '分からない入力があれば、not_contains は断らない');
+    assert.match(problemsOf({ type: 'file_exists', file: 'inputs/*.docx' }, files), /もとのままでも合格してしまう/);
+  });
+
+  test('REQ-038 node_modules と .git の中の入力は、採点が見ないので、成果物の候補として数えない', () => {
+    const files = { 'inputs/node_modules/p/a.txt': 'x' };
+    assert.equal(problemsOf({ type: 'file_exists', file: 'inputs/**' }, files), '');
+    assert.equal(problemsOf({ type: 'unchanged', file: 'inputs/**' }, files), '', 'unchanged は写したすべての入力に当てはめる');
   });
 });
 

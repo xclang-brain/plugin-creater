@@ -96,7 +96,7 @@ port = {
   startAgent({ agentType, name, model, prompt }) -> Promise<{ agentId }>,
   cancelAgent(agentId) -> Promise<void>,
   listTasks() -> Promise<[{ agentId, displayName, status, executionMode, agentType, parentAgentId }]>,
-  setSubagentModels(map | null) -> Promise<void>,   // { "<plugin>:worker": "gpt-6-luna", ... }。null で外す
+  setSubagentSettings(map | null) -> Promise<void>, // { "<plugin>:worker": { model: "gpt-6-luna", effort: "low" }, ... }。値の項目はどちらも省ける。null で外す
   getCurrentModel() -> Promise<{ model, isAuto }>,
   listModels() -> Promise<[{ id, name }]>,
   log(text) -> Promise<void>,
@@ -143,6 +143,7 @@ startServer({ preferredPort, staticDir, routes, onListen }) -> Promise<{ url, po
   plugin: { name, title },       // title は作業の定義の name
   setup: {                       // 準備中の画面
     models: [{ id, name }], defaults: { orchestrator, worker, verifier }, maxIterationsDefault,
+    effortLevels: [...], effortAgents: [{ agent, label }],   // 思考の深さの選択肢と、選ぶエージェント（4.6）
     taskSettings: [...],         // 作業の定義の settings
     isAuto, autoNotice,          // Auto のときの注意（4.6）
     overrideNotice,              // 上書きを外すとほかのサブエージェントの上書きも消えること（4.6）
@@ -150,7 +151,7 @@ startServer({ preferredPort, staticDir, routes, onListen }) -> Promise<{ url, po
   run: null | {
     id, status,                  // preparing|starting|running|summarizing|stopping|finished
     endReason: null | { kind, detail, unstoppable },   // kind: all_passed|max_iterations|user_stopped|aborted
-    settings: { models: { orchestrator, worker, verifier }, maxIterations, task: { <key>: value } },
+    settings: { models: { orchestrator, worker, verifier }, efforts: { <エージェント>: 深さか '' }, maxIterations, task: { <key>: value } },
     isAuto, phase, iteration, maxIterations,           // phase: plan|do|study|null
     agents: [{ slot, role, label, status, task, selectedModel, actualModel, lastActiveAt, replySummary, agentId }],
       // role: orchestrator|worker|verifier。status: standby|running|waiting|completed|failed|stopped|unstopped

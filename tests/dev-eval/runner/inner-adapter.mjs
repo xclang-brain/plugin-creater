@@ -7,6 +7,7 @@
 //                                   エージェントの定義の tools と本文のツール名は、変換スクリプトが mcp__<サーバー名>__<ツール名> にしてある。
 //   統括を起動する（port.startAgent）… 置き換えた版の統括を、別の query()（Agent SDK の実行）で始める。agent: '<プラグイン>:orchestrator'。
 //                                   作業・検証のモデルは、置き換えた版のコピーのエージェントの定義の model を、画面で選んだモデルに書き換えて効かせる。
+//                                   エージェントごとの思考の深さ（統括を含む）も、同じコピーの定義の effort に書いて効かせる（統括は query() の effort にも渡す）。
 //   統括の使えるツール … 生成プラグインの統括の定義には tools がない（Copilot CLI では、統括は全ツールを持ち、一覧にないツールを adapter.mjs の
 //                                   onPreToolUse が拒む）。このつなぎ口は、実行用のコピーの統括の定義に、同じ範囲の tools を書いて効かせる（下の orchestratorTools）。
 //   止める（port.cancelAgent）… 統括の query() だけを閉じる。メインの実行は中断しない（設計書 4.4 と同じ範囲）。
@@ -58,12 +59,18 @@ export function describeOpened({ url, notices }) {
   return lines.join('\n');
 }
 
-/** エージェントの定義（Markdown）のフロントマターの model を書き換える。なければ足す */
-export function rewriteModel(markdown, modelId) {
+/** エージェントの定義（Markdown）のフロントマターの1つの項目（1行で書くもの）を書き換える。なければ足す */
+export function rewriteField(markdown, key, value) {
   const match = /^(---\r?\n)([\s\S]*?)(\r?\n---)/.exec(markdown);
   if (!match) throw new Error('エージェントの定義にフロントマターがありません。');
-  const body = /^model:.*$/m.test(match[2]) ? match[2].replace(/^model:.*$/m, `model: ${modelId}`) : `${match[2]}\nmodel: ${modelId}`;
+  const line = new RegExp(`^${key}:.*$`, 'm');
+  const body = line.test(match[2]) ? match[2].replace(line, `${key}: ${value}`) : `${match[2]}\n${key}: ${value}`;
   return `${match[1]}${body}${match[3]}${markdown.slice(match[0].length)}`;
+}
+
+/** エージェントの定義（Markdown）のフロントマターの model を書き換える。なければ足す */
+export function rewriteModel(markdown, modelId) {
+  return rewriteField(markdown, 'model', modelId);
 }
 
 /**
@@ -278,7 +285,7 @@ export async function createInnerAdapter(options) {
     const agentId = input.agent_id;
     const launch = takePendingLaunch(input.agent_type);
     const parentAgentId = launch?.owner ?? root.id;
-    const selected = overrides?.[input.agent_type] ?? null;
+    const selected = overrides?.[input.agent_type]?.model ?? null;
     const description = launch?.input.description;
     agents.set(agentId, {
       agentId, parentAgentId, agentType: input.agent_type, displayName: description ?? input.agent_type, status: 'running',
@@ -371,26 +378,36 @@ export async function createInnerAdapter(options) {
   ];
 
   /**
-   * 置き換えた版のコピーを作り、エージェントの定義の model を画面で選んだものに書き換える。
+   * 置き換えた版のコピーを作り、エージェントの定義の model と effort を画面で選んだものに書き換える。
    * 統括の定義に tools がなければ、使ってよいツールだけを tools に書く（上の orchestratorTools）。作業・検証の tools は、統括の tools に絞られない。
    */
   function prepareRunPlugin(id, orchestratorCopilotName) {
     const dest = path.join(runDir, `plugin-${id}`);
     fs.cpSync(convertedRoot, dest, { recursive: true });
     const applied = {};
-    const rewrite = (agentName, copilotName) => {
+    const appliedEfforts = {};
+    const rewrite = (agentName, { model, effort } = {}) => {
       const entry = reportAgents.get(agentName);
       if (!entry) return;
-      const modelId = toClaudeModelId(modelMap, copilotName);
       const file = path.join(dest, entry.file);
-      fs.writeFileSync(file, rewriteModel(fs.readFileSync(file, 'utf8'), modelId));
-      applied[`${pluginName}:${agentName}`] = modelId;
+      let text = fs.readFileSync(file, 'utf8');
+      if (model) {
+        const modelId = toClaudeModelId(modelMap, model);
+        text = rewriteModel(text, modelId);
+        applied[`${pluginName}:${agentName}`] = modelId;
+      }
+      // 思考の深さは、Claude Code のエージェントの定義の effort（変換スクリプトが reasoningEffort を当てる先と同じ）
+      if (effort) {
+        text = rewriteField(text, 'effort', effort);
+        appliedEfforts[`${pluginName}:${agentName}`] = effort;
+      }
+      fs.writeFileSync(file, text);
     };
-    for (const [type, copilotName] of Object.entries(overrides ?? {})) {
+    for (const [type, settings] of Object.entries(overrides ?? {})) {
       const [plugin, ...rest] = type.split(':');
-      if (plugin === pluginName) rewrite(rest.join(':'), copilotName);
+      if (plugin === pluginName && type !== orchestratorType) rewrite(rest.join(':'), settings);
     }
-    rewrite('orchestrator', orchestratorCopilotName);
+    rewrite('orchestrator', { model: orchestratorCopilotName, effort: overrides?.[orchestratorType]?.effort });
     let tools = null;
     const orchestratorEntry = reportAgents.get('orchestrator');
     if (orchestratorEntry) {
@@ -403,7 +420,7 @@ export async function createInnerAdapter(options) {
         record({ t: 'orchestrator_tools', run: id, tools });
       }
     }
-    return { dest, applied, tools };
+    return { dest, applied, appliedEfforts, tools };
   }
 
   function cancelRoot(root) {
@@ -450,6 +467,7 @@ export async function createInnerAdapter(options) {
         options: makeQueryOptions({
           cwd: workDir, home, model: claudeId, plugins: [copy.dest], mcpServers: { [serverName]: buildToolServer(root) }, mcpTools: mcpTools(),
           hooks: makeHooks(root), agent: orchestratorType, sandbox, maxTurns: ORCHESTRATOR_MAX_TURNS, abortController: root.abort,
+          effort: copy.appliedEfforts[orchestratorType],
           // Agent は既定で裏で動く。前面で動かして終わるのを待つかは、統括の指示（run_in_background: false）に従うかで決まる。
           // 環境変数 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS で強制はしない（指示に従うかも試すため）
           envExtra,
@@ -471,8 +489,8 @@ export async function createInnerAdapter(options) {
       }));
     },
 
-    // map は { '<プラグイン>:worker': '<Copilot の名前>', ... }。null で外す。効かせるのは、次に統括を起動するとき
-    async setSubagentModels(map) {
+    // map は { '<プラグイン>:worker': { model?: '<Copilot の名前>', effort? }, ... }。null で外す。効かせるのは、次に統括を起動するとき
+    async setSubagentSettings(map) {
       overrides = map === null || map === undefined ? null : { ...map };
     },
 
@@ -523,7 +541,7 @@ export async function createInnerAdapter(options) {
     agents: () => [...agents.values()].map((a) => ({ ...a })),
     runs: () => [...runs.values()].map((r) => ({
       id: r.id, name: r.name, cancelled: r.cancelled, ended: r.ended, init: r.init, skillsUsed: [...r.skillsUsed], costUsd: r.costUsd,
-      numTurns: r.numTurns, lastText: r.lastText, appliedModels: r.plugin?.applied ?? {}, orchestratorTools: r.plugin?.tools ?? null,
+      numTurns: r.numTurns, lastText: r.lastText, appliedModels: r.plugin?.applied ?? {}, appliedEfforts: r.plugin?.appliedEfforts ?? {}, orchestratorTools: r.plugin?.tools ?? null,
     })),
     chatLog: () => [...chatLog],
     limitHit: () => state.limitHit,

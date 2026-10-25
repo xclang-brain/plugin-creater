@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { normalizeRelPath, sha256OfFile, validateTask } from './grade.mjs';
+import { inputCheckProblems, normalizeRelPath, sha256OfFile, validateTask } from './grade.mjs';
 
 /** 課題の入力（ファイルかフォルダ）を確かめる。シンボリックリンクは認めない（外のファイルを写さないため）。誤りの文の並びを返す */
 function inputProblems(taskDir, rel, label) {
@@ -28,6 +28,36 @@ function inputProblems(taskDir, rel, label) {
   };
   walk(source);
   return problems;
+}
+
+/**
+ * 課題の入力を作業フォルダに写したときのファイルの一覧（prepareWorkDir が写すのと同じもの）。
+ * 入力は課題のフォルダからの相対の場所で、作業フォルダの同じ相対の場所に写る。フォルダの入力は、中のファイルをすべて数える。
+ * inputProblems を通った入力にだけ使う（シンボリックリンクはたどらない）。
+ * @returns {Array<{ path: string, absPath: string, size: number }>} path は作業フォルダの根からの相対の場所。場所の順
+ */
+export function listInputFiles(taskDir, inputs = []) {
+  const found = new Map();
+  const walk = (abs, rel) => {
+    let stat;
+    try {
+      stat = fs.lstatSync(abs);
+    } catch {
+      return;
+    }
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(abs)) walk(path.join(abs, name), rel ? `${rel}/${name}` : name);
+    } else if (stat.isFile()) {
+      const key = normalizeRelPath(rel);
+      found.set(key, { path: key, absPath: abs, size: stat.size });
+    }
+  };
+  for (const item of inputs) {
+    // 写す先と同じく、path.join で「.」や重なった区切りを除いてから、相対の場所にする
+    const rel = path.posix.normalize(normalizeRelPath(item)).replace(/\/$/, '').replace(/^\.$/, '');
+    walk(path.join(taskDir, ...rel.split('/')), rel);
+  }
+  return [...found.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /**
@@ -61,6 +91,8 @@ export function loadTasks(pluginDir) {
     const own = validateTask(json, label);
     if (own.length === 0) {
       for (const rel of json.inputs ?? []) own.push(...inputProblems(dir, rel, label));
+      // 入力のままで当てはまってしまう採点や、入力に当てはまらない unchanged は、入力がそろっているときに確かめる
+      if (own.length === 0) own.push(...inputCheckProblems(json, listInputFiles(dir, json.inputs ?? []), label));
       if (seen.has(json.id)) own.push(`${label} の id「${json.id}」が、${seen.get(json.id)} と重なっている`);
       else seen.set(json.id, label);
     }

@@ -201,6 +201,7 @@ export async function makeHarness(t, options = {}) {
     settings(extra = {}) {
       return {
         models: { orchestrator: 'claude-opus-5-5', worker: 'gpt-6-luna', verifier: 'claude-opus-5-5', ...(extra.models ?? {}) },
+        ...(extra.efforts ? { efforts: extra.efforts } : {}),
         maxIterations: extra.maxIterations ?? 3,
         task: { week: '2026-W42', items: 4, tone: 'desu', attach: true, ...(extra.task ?? {}) },
       };

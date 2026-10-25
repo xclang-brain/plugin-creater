@@ -291,9 +291,11 @@ function createPort(session, converter) {
           parentAgentId: converter.parentOf(task.id),
         }));
     },
-    // map は { '<プラグイン>:worker': '<モデル>', ... }。null で、このセッションの上書きをすべて外す。
-    async setSubagentModels(map) {
-      const agents = map === null || map === undefined ? null : Object.fromEntries(Object.entries(map).map(([agent, model]) => [agent, { model }]));
+    // map は { '<プラグイン>:worker': { model?, effort? }, ... }。null で、このセッションの上書きをすべて外す。
+    // 思考の深さの項目は effortLevel（rpc.d.ts の SubagentSettingsEntry）。
+    async setSubagentSettings(map) {
+      const entryOf = (s) => ({ ...(s?.model ? { model: s.model } : {}), ...(s?.effort ? { effortLevel: s.effort } : {}) });
+      const agents = map === null || map === undefined ? null : Object.fromEntries(Object.entries(map).map(([agent, s]) => [agent, entryOf(s)]));
       await session.rpc.tools.updateSubagentSettings({ subagents: agents === null ? null : { agents } });
     },
     // Auto の選択は、モデルの番号が 'auto' になる（仮想のモデル auto。CurrentModel の説明）。実機で確かめる（設計書 11章 #7）。

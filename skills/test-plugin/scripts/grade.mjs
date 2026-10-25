@@ -8,12 +8,15 @@
 //   { id, text, grading: "program", check: {...} }   プログラムで採点する
 //   { id, text, grading: "model", check?: { files?: [グロブ] } }   モデルが判定する
 //
-// program の check.type（4種類。file は作業フォルダの根からの相対のグロブ）
+// program の check.type（5種類。file は作業フォルダの根からの相対のグロブ）
 //   file_exists   { type, file }                 file に当てはまる、空でないファイルがある
 //   contains      { type, file, text }           当てはまるファイルのどれかに、text という文字がある
 //   not_contains  { type, file, text }           当てはまるファイルが1つ以上あり、どれにも text がない
 //   regex         { type, file, pattern, flags? } 当てはまるファイルのどれかに、正規表現が合う（flags は i・m・s・u）
+//   unchanged     { type, file }                 file に当てはまる課題の入力のファイルが、すべてもとのまま残っている
 // 課題の入力として写したファイルのうち、中身が変わっていないものは「当てはまるファイル」に数えない（入力だけで合格しないため）。
+// そのため、unchanged のほかの4種類で、課題の入力のままで当てはまってしまうものは、課題の誤りにする（inputCheckProblems）。
+// 入力を変えていないことは unchanged で確かめる。unchanged の file は、課題の入力のファイルのどれかに当てはまらなければならない。
 // docx・xlsx・pptx は、中の文字を取り出して調べる（クリエイターの文書をテキストにする部品を使う）。
 
 import crypto from 'node:crypto';
@@ -28,6 +31,7 @@ export const CHECK_TYPES = {
   contains: { required: ['file', 'text'], optional: [] },
   not_contains: { required: ['file', 'text'], optional: [] },
   regex: { required: ['file', 'pattern'], optional: ['flags'] },
+  unchanged: { required: ['file'], optional: [] },
 };
 const REGEX_FLAGS = new Set(['i', 'm', 's', 'u']);
 const SKIP_DIRS = new Set(['node_modules', '.git']);
@@ -325,17 +329,27 @@ function decodeText(buffer) {
  */
 export async function readArtifactText(absPath, { maxChars = CHECK_MAX_CHARS } = {}) {
   const ext = path.extname(absPath).toLowerCase();
-  try {
-    if (OFFICE_EXTENSIONS.has(ext)) {
-      const documentText = await loadOfficeReader();
-      if (!documentText) return { kind: 'binary', text: null, truncated: false, note: '文書の中の文字を取り出す部品が見つからない' };
-      try {
-        const out = documentText(absPath, { maxChars });
-        return { kind: 'office', text: out.text, truncated: out.truncated };
-      } catch (error) {
-        return { kind: 'unreadable', text: null, truncated: false, note: error.message };
-      }
+  if (OFFICE_EXTENSIONS.has(ext)) {
+    const documentText = await loadOfficeReader();
+    if (!documentText) return { kind: 'binary', text: null, truncated: false, note: '文書の中の文字を取り出す部品が見つからない' };
+    try {
+      const out = documentText(absPath, { maxChars });
+      return { kind: 'office', text: out.text, truncated: out.truncated };
+    } catch (error) {
+      return { kind: 'unreadable', text: null, truncated: false, note: error.message };
     }
+  }
+  return readPlainText(absPath, { maxChars });
+}
+
+/**
+ * docx・xlsx・pptx でないファイルの中の文字を読む（同期）。docx・xlsx・pptx は読まずに kind を 'office'、text を null にする。
+ * 1段目（check_structure.py の input_text）も、同じ決まりで読む。
+ */
+export function readPlainText(absPath, { maxChars = CHECK_MAX_CHARS } = {}) {
+  const ext = path.extname(absPath).toLowerCase();
+  if (OFFICE_EXTENSIONS.has(ext)) return { kind: 'office', text: null, truncated: false, note: '文書の中の文字は取り出していない' };
+  try {
     const stat = fs.statSync(absPath);
     if (!TEXT_EXTENSIONS.has(ext) && stat.size > 0) {
       // 拡張子から決められないときは、先頭だけ見て、文字かどうかを決める
@@ -372,11 +386,102 @@ const namesOf = (files, max = 3) => {
  * program の基準を採点する。
  * @param {object} check 基準の check（validateCheck を通ったもの）
  * @param {Array} files listFiles の結果
+ * @param {object} [opts]
+ * @param {Map<string,string>} [opts.inputs] 写した入力の { 相対の場所 → sha256 }（unchanged に要る）
+ * @param {string} [opts.workDir] 作業フォルダ（unchanged に要る）
  * @returns {Promise<{ pass: boolean, reason: string }>}
  */
-export async function gradeProgram(check, files, { readText = readArtifactText } = {}) {
+export async function gradeProgram(check, files, { readText = readArtifactText, inputs = new Map(), workDir } = {}) {
+  if (check.type === 'unchanged') return gradeUnchanged(check, inputs, workDir);
   const matcher = globToRegExp(check.file);
   const matched = files.filter((f) => !f.unchangedInput && matcher.test(f.path));
+  if (check.type === 'file_exists') return decideProgram(check, matched, []);
+  const reads = [];
+  for (const file of matched) reads.push(await readText(file.absPath, { maxChars: CHECK_MAX_CHARS }));
+  return decideProgram(check, matched, reads);
+}
+
+/**
+ * unchanged の採点。file に当てはまる課題の入力のファイルが、作業フォルダにすべて残り、中身が写したときと同じなら合格。
+ * 入力でないファイルは、当てはまっても見ない。
+ */
+function gradeUnchanged(check, inputs, workDir) {
+  const matcher = globToRegExp(check.file);
+  const target = `「${check.file}」`;
+  const matched = [...inputs.keys()].filter((rel) => matcher.test(rel)).sort();
+  if (matched.length === 0) return { pass: false, reason: `${target}に当てはまる課題の入力のファイルがない` };
+  const missing = [];
+  const changed = [];
+  const listing = new Map();
+  for (const rel of matched) {
+    const abs = workDir ? findByNormalizedPath(workDir, rel, listing) : null;
+    let stat = null;
+    try {
+      stat = abs ? fs.lstatSync(abs) : null;
+    } catch {
+      stat = null;
+    }
+    if (!stat || !stat.isFile()) {
+      missing.push(rel);
+      continue;
+    }
+    let same = false;
+    try {
+      same = sha256OfFile(abs) === inputs.get(rel);
+    } catch {
+      // 読めなければ、もとのままとは言えない
+    }
+    if (!same) changed.push(rel);
+  }
+  const list = (rels) => namesOf(rels.map((p) => ({ path: p })));
+  if (missing.length === 0 && changed.length === 0) return { pass: true, reason: `課題の入力のファイルは、もとのまま（${list(matched)}）` };
+  const parts = [];
+  if (changed.length) parts.push(`中身が変わっている：${list(changed)}`);
+  if (missing.length) parts.push(`なくなっている：${list(missing)}`);
+  return { pass: false, reason: `${target}に当てはまる課題の入力のファイルが、もとのままではない（${parts.join('。')}）` };
+}
+
+/**
+ * 作業フォルダの根からの相対の場所（区切りが /、NFC）にあたる、実物の場所を探す。なければ null。
+ * 入力の場所は NFC にそろえてあるが、実物の名前は NFD のこともある（macOS で作った濁点のある名前など）。
+ * 正規化の形を区別するファイルシステムでも見つかるように、名前を1段ずつ、正規化をそろえて比べる。シンボリックリンクはたどらない。
+ * @param {Map<string,string[]>} listing 読んだフォルダの中の名前（同じフォルダを何度も読まないため）
+ */
+function findByNormalizedPath(root, rel, listing) {
+  const direct = path.join(root, ...rel.split('/'));
+  if (fs.existsSync(direct)) return direct;
+  let dir = root;
+  for (const part of rel.split('/')) {
+    if (!listing.has(dir)) {
+      let names = [];
+      try {
+        names = fs.readdirSync(dir);
+      } catch {
+        // 読めないフォルダの中は、ないものとする
+      }
+      listing.set(dir, names);
+    }
+    const name = listing.get(dir).find((n) => n.normalize('NFC') === part);
+    if (name === undefined) return null;
+    const next = path.join(dir, name);
+    let stat;
+    try {
+      stat = fs.lstatSync(next);
+    } catch {
+      return null;
+    }
+    if (stat.isSymbolicLink()) return null;
+    dir = next;
+  }
+  return dir;
+}
+
+/**
+ * file_exists・contains・not_contains・regex の合否を決める（読むのは呼ぶ側）。
+ * @param {Array<{ path: string, size: number }>} matched 当てはまるファイル
+ * @param {Array<{ text: string|null, note?: string }>} reads matched と同じ並びの、読んだ文字（file_exists では使わない）
+ */
+function decideProgram(check, matched, reads) {
   const target = `「${check.file}」`;
 
   if (check.type === 'file_exists') {
@@ -390,11 +495,11 @@ export async function gradeProgram(check, files, { readText = readArtifactText }
 
   const readable = [];
   const notReadable = [];
-  for (const file of matched) {
-    const read = await readText(file.absPath, { maxChars: CHECK_MAX_CHARS });
+  matched.forEach((file, i) => {
+    const read = reads[i];
     if (read.text === null) notReadable.push({ file, note: read.note });
     else readable.push({ file, text: unifyNewlines(read.text) });
-  }
+  });
   const checked = `調べたファイル：${namesOf(matched)}`;
   const unreadableNote = notReadable.length ? `。文字にできないので調べられなかったファイル：${namesOf(notReadable.map((n) => n.file))}` : '';
 
@@ -418,6 +523,53 @@ export async function gradeProgram(check, files, { readText = readArtifactText }
   const hit = readable.find((r) => re.test(r.text));
   if (hit) return { pass: true, reason: `「${hit.file.path}」に、パターン「${clip(check.pattern, 40)}」に合う箇所がある` };
   return { pass: false, reason: `パターン「${clip(check.pattern, 40)}」に合う箇所が見つからない（${checked}）${unreadableNote}` };
+}
+
+// ---- 課題の入力を知っていて初めてできる、基準の確かめ ------------------------------------------------------------
+
+const INPUT_CHECK_HINT =
+  '採点は、中身が変わっていない入力を成果物に数えないので、作業をする前の入力で合格してしまう確かめ方は使えない。' +
+  'file_exists・contains・not_contains・regex は、もとの入力のままでは合格せず、作業をして初めて合格するものにだけ使う（グロブを作業が作るファイルに絞る、作業が書き足す文字を確かめるなど）。' +
+  '入力のファイルを変えていないことは、確かめ方の種類 unchanged（file）で確かめる。作業が変える入力に、もとからある文字が残ることなどは、model で判定する';
+
+/**
+ * 課題の入力のファイルと突き合わせて、基準の check を確かめる。誤りの文の並びを返す（なければ空）。
+ * 1段目（template/tests/stage1/check_structure.py の input_check_problems）と同じ決まりにする。
+ * 2つがずれていないことは、tests/creator/stage1/ の試験（同じ例を両方に通す）が見張る。
+ *   - unchanged の file は、課題の入力のファイルのどれかに当てはまらなければならない。
+ *   - file_exists・contains・not_contains・regex は、課題の入力のファイル（もとの中身）だけを成果物とみなしたときに
+ *     合格してしまうなら誤り。採点は変わっていない入力を数えないので、入力を変えないと合格せず、変えれば中身にかかわらず合格に近づくため。
+ *   文字の読み方は採点と同じ（UTF-8、だめなら Shift_JIS。改行と Unicode の正規化をそろえる）。ただし、docx・xlsx・pptx の入力は
+ *   文字を取り出さず、文字にできない入力（0 のバイトがある、大きすぎる、文字コードが読めない）と同じく「中身が分からない」として扱う。
+ *   1段目の Python では文書の中の文字を採点と同じには取り出せないためで、分からない入力では、合格してしまうとは決めない
+ *   （contains・regex は文字にできた入力だけで決め、not_contains は分からない入力があれば誤りにしない）。
+ *   file_exists は中身を読まず、大きさだけで決めるので、文書や文字にできない入力も数える。
+ * @param {object} task validateTask を通った課題
+ * @param {Array<{ path: string, absPath: string, size: number }>} inputFiles 課題の入力を作業フォルダに写したときのファイル
+ *   （tasks.mjs の listInputFiles）。path は作業フォルダの根からの相対の場所
+ */
+export function inputCheckProblems(task, inputFiles, label = 'eval.json') {
+  const problems = [];
+  // 採点は node_modules と .git の中を見ないので、そこにある入力は成果物の候補にならない
+  const candidates = inputFiles.filter((f) => !f.path.split('/').some((part) => SKIP_DIRS.has(part)));
+  (task.criteria ?? []).forEach((c, i) => {
+    if (!isObject(c) || c.grading !== 'program' || !isObject(c.check)) return;
+    const where = `${label}.criteria[${i}].check`;
+    const check = c.check;
+    const matcher = globToRegExp(check.file);
+    if (check.type === 'unchanged') {
+      if (!inputFiles.some((f) => matcher.test(f.path))) {
+        problems.push(`${where}.file「${check.file}」が、課題の入力のファイルのどれにも当てはまらない（unchanged は、課題の入力を変えていないことを確かめる種類）`);
+      }
+      return;
+    }
+    const matched = candidates.filter((f) => matcher.test(f.path));
+    if (matched.length === 0) return;
+    const reads = check.type === 'file_exists' ? [] : matched.map((f) => readPlainText(f.absPath, { maxChars: CHECK_MAX_CHARS }));
+    const verdict = decideProgram(check, matched, reads);
+    if (verdict.pass) problems.push(`${where} は、課題の入力のファイルがもとのままでも合格してしまう（${verdict.reason}）。${INPUT_CHECK_HINT}`);
+  });
+  return problems;
 }
 
 // ---- model の判定 ---------------------------------------------------------------------------------------
@@ -522,13 +674,15 @@ export function parseJudgeReply(reply) {
  * @param {object} args.criterion 基準
  * @param {object} args.task 課題（id、prompt）
  * @param {Array} args.files listFiles の結果
+ * @param {Map<string,string>} [args.inputs] 写した入力の { 相対の場所 → sha256 }（unchanged の採点に要る）
+ * @param {string} [args.workDir] 作業フォルダ（unchanged の採点に要る）
  * @param {Function} [args.judge] model の基準を判定する関数 ({ criterion, task, artifacts }) => Promise<{ pass, reason }>
  */
-export async function gradeCriterion({ criterion, task, files, judge, readText = readArtifactText }) {
+export async function gradeCriterion({ criterion, task, files, judge, readText = readArtifactText, inputs = new Map(), workDir }) {
   const base = { id: criterion.id, text: criterion.text, grading: criterion.grading };
   try {
     if (criterion.grading === 'program') {
-      const out = await gradeProgram(criterion.check, files, { readText });
+      const out = await gradeProgram(criterion.check, files, { readText, inputs, workDir });
       return { ...base, pass: out.pass === true, reason: clip(out.reason, REASON_MAX_CHARS) };
     }
     if (typeof judge !== 'function') {
@@ -563,7 +717,7 @@ export async function gradeRun({ task, workDir, inputs = new Map(), judge, readT
   const files = listFiles(workDir, { inputs });
   const results = [];
   for (const criterion of task.criteria) {
-    results.push(await gradeCriterion({ criterion, task, files, judge, readText }));
+    results.push(await gradeCriterion({ criterion, task, files, judge, readText, inputs, workDir }));
   }
   const modelResults = results.filter((r) => r.grading === 'model');
   return {

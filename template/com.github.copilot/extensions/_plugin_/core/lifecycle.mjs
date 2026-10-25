@@ -1,4 +1,5 @@
-import { INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, UNSTOPPED_HOW_TO } from './constants.mjs';
+import { EFFORT_LEVELS, INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, UNSTOPPED_HOW_TO } from './constants.mjs';
+import { effortAgents } from './task-def.mjs';
 import { analyzeEntries, buildMechanicalSummary, numberIssues } from './analysis.mjs';
 import { logEntry } from './log.mjs';
 import { attachStopSignal, computePhase, createRun, roleForType, slotByName, syncSlot, viewRun } from './run.mjs';
@@ -16,7 +17,7 @@ function optionValue(o) {
   return typeof o === 'object' && o !== null ? o.value : o;
 }
 
-// 開始の設定を確かめる。合わなければ、平易な日本語の Error を投げる（必須の項目、上限の回数が 1 以上、選んだモデルが選択肢にあるか）。
+// 開始の設定を確かめる。合わなければ、平易な日本語の Error を投げる（必須の項目、上限の回数が 1 以上、選んだモデルと思考の深さが選択肢にあるか）。
 export function validateStart(ctx, input) {
   const setup = ctx.setup;
   if (!setup) throw new Error('先に画面を開いてください。');
@@ -29,6 +30,16 @@ export function validateStart(ctx, input) {
       throw new Error(`${ROLE_LABELS[role]}のモデル「${chosen}」は、選べるモデルにありません。`);
     }
     models[role] = chosen;
+  }
+  // 思考の深さは、エージェントごと。選ばない（''）ときは上書きしない（4.6）
+  const givenEfforts = input?.efforts ?? {};
+  const efforts = {};
+  for (const { agent, label } of effortAgents(ctx.task)) {
+    const chosen = typeof givenEfforts[agent] === 'string' ? givenEfforts[agent] : '';
+    if (chosen !== '' && !EFFORT_LEVELS.includes(chosen)) {
+      throw new Error(`${label}の思考の深さ「${chosen}」は、選べる値にありません。`);
+    }
+    efforts[agent] = chosen;
   }
   const rawMax = input?.maxIterations ?? ctx.task.maxIterationsDefault;
   const maxIterations = typeof rawMax === 'string' && rawMax.trim() !== '' ? Number(rawMax) : rawMax;
@@ -68,7 +79,7 @@ export function validateStart(ctx, input) {
         task[def.key] = String(raw);
     }
   }
-  return { models, maxIterations, task };
+  return { models, efforts, maxIterations, task };
 }
 
 function formatSettingValue(def, value) {
@@ -96,11 +107,21 @@ export function buildInstruction(ctx, run) {
   return lines.join('\n');
 }
 
-// 作業・検証のモデルの上書き（4.3）。キーは <プラグイン>:<エージェント>
-export function buildOverrideMap(ctx, models) {
+// 作業・検証のモデルと、エージェントごとの思考の深さの上書き（4.3、4.6）。キーは <プラグイン>:<エージェント>、値は { model?, effort? }。
+// 統括のモデルは起動のときに渡すので入れない。統括の思考の深さは、起動のときに渡せないので、ここに入れる。
+export function buildOverrideMap(ctx, settings) {
+  const models = settings?.models ?? {};
+  const efforts = settings?.efforts ?? {};
   const map = {};
-  if (models.worker) for (const w of ctx.task.workers) map[`${ctx.pluginName}:${w.agent}`] = models.worker;
-  if (models.verifier) map[`${ctx.pluginName}:verifier`] = models.verifier;
+  const put = (agent, model) => {
+    const entry = {};
+    if (model) entry.model = model;
+    if (efforts[agent]) entry.effort = efforts[agent];
+    if (Object.keys(entry).length > 0) map[`${ctx.pluginName}:${agent}`] = entry;
+  };
+  put('orchestrator', '');
+  for (const w of ctx.task.workers) put(w.agent, models.worker);
+  put('verifier', models.verifier);
   return map;
 }
 
@@ -187,7 +208,7 @@ function describeUnstopped(run, ids) {
 
 async function unsetOverrides(ctx, run) {
   if (!run.overridesTouched) return;
-  const r = await callWithTimeout(ctx.clock, () => ctx.port.setSubagentModels(null), LIMITS.CALL_TIMEOUT_MS);
+  const r = await callWithTimeout(ctx.clock, () => ctx.port.setSubagentSettings(null), LIMITS.CALL_TIMEOUT_MS);
   run.overridesTouched = false;
   if (r.status !== 'ok') {
     logEntry(ctx, run, { t: 'note', at: ctx.clock.now(), kind: 'override_not_removed', status: r.status });
@@ -264,14 +285,14 @@ async function startFlow(ctx, run) {
   const cur = await call(() => port.getCurrentModel());
   if (cur.status === 'ok' && cur.value) run.isAuto = Boolean(cur.value.isAuto);
 
-  // 1. 作業・検証のモデルの上書き
+  // 1. 作業・検証のモデルと、エージェントごとの思考の深さの上書き
   if (!run.stopRequested) {
-    const map = buildOverrideMap(ctx, run.settings.models);
+    const map = buildOverrideMap(ctx, run.settings);
     if (Object.keys(map).length > 0) {
       run.overridesTouched = true;
-      const r = await call(() => port.setSubagentModels(map));
-      if (r.status === 'error') failure = { message: `モデルを設定できませんでした：${errorMessage(r.error)}`, timedOut: false };
-      else if (r.status === 'timeout') failure = { message: 'モデルの設定が時間切れになりました。', timedOut: true };
+      const r = await call(() => port.setSubagentSettings(map));
+      if (r.status === 'error') failure = { message: `モデルと思考の深さを設定できませんでした：${errorMessage(r.error)}`, timedOut: false };
+      else if (r.status === 'timeout') failure = { message: 'モデルと思考の深さの設定が時間切れになりました。', timedOut: true };
     }
   }
 

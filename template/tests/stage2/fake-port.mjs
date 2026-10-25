@@ -15,7 +15,7 @@
 // 既定の動き（本物の Copilot CLI で確かめた形。設計書 11章 #4・#6）：
 //   startAgent は番号を返し、一覧に running で載る。
 //   cancelAgent は、そのエージェントと下のエージェントを一覧で cancelled にする。
-//   setSubagentModels(map) は overrides に覚え、null で外す。
+//   setSubagentSettings(map) は overrides に覚え、null で外す。
 
 export function createFakePort({ clock, idPrefix = '' } = {}) {
   const calls = [];
@@ -113,8 +113,8 @@ export function createFakePort({ clock, idPrefix = '' } = {}) {
       }
     });
   port.listTasks = () => invoke('listTasks', [], () => port.tasks.map((t) => ({ ...t })));
-  port.setSubagentModels = (map) =>
-    invoke('setSubagentModels', [map], () => {
+  port.setSubagentSettings = (map) =>
+    invoke('setSubagentSettings', [map], () => {
       port.overrides = map;
     });
   port.getCurrentModel = () => invoke('getCurrentModel', [], () => ({ ...port.currentModel }));

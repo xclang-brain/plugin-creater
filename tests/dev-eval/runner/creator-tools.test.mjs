@@ -160,6 +160,21 @@ test('REQ-049 起票は偽物の gh で受け、題と本文を残すだけ（�
   assert.equal(issues[0].title, '題');
 });
 
+test('REQ-049 偽物の gh は、起票ごとに違う Issue の URL を返し、返した URL も残す', async () => {
+  await withToolkit(async ({ toolkit }) => {
+    const first = await toolkit.callTool('issue', { title: '質問の改善案：一つ目', body: '本文一' });
+    const second = await toolkit.callTool('issue', { title: '質問の改善案：二つ目', body: '本文二' });
+    assert.match(first, /issues\/9001(\s|$)/);
+    assert.match(second, /issues\/9002(\s|$)/);
+    assert.equal(toolkit.issues.length, 2);
+    assert.deepEqual(toolkit.issues.map((i) => i.title), ['質問の改善案：一つ目', '質問の改善案：二つ目']);
+    assert.deepEqual(toolkit.issues.map((i) => i.url), [
+      'https://github.com/xclang-brain/plugin-creator/issues/9001',
+      'https://github.com/xclang-brain/plugin-creator/issues/9002',
+    ]);
+  });
+});
+
 test('REQ-015 MCP サーバーを通しても動く：同じプロセスのサーバーに、MCP のクライアントでつなぐと、ツールの結果と断りが返る', async () => {
   await withToolkit(async ({ toolkit, events }) => {
     const seen = [];

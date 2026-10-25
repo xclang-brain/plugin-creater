@@ -114,7 +114,7 @@ flowchart LR
 | --- | --- | --- |
 | 中心 → つなぎ口 | 統括を起動する | `session.rpc.tasks.startAgent` |
 | | エージェントを取り消す／動いているエージェントの一覧 | `session.rpc.tasks.cancel`、`session.rpc.tasks.list` |
-| | サブエージェントのモデルを上書きする／外す | `session.rpc.tools.updateSubagentSettings` |
+| | サブエージェントのモデルと思考の深さを上書きする／外す | `session.rpc.tools.updateSubagentSettings` |
 | | 今のモデルと、選べるモデルの一覧を返す | `session.rpc.model.getCurrent`、`session.rpc.model.list` |
 | | チャットに書く | `session.log` |
 | つなぎ口 → 中心 | 中立のイベント：エージェントの開始・設定・終わり（最後の返事、取り消されたか）・失敗 | `subagent.started`、`subagent.configured`、`subagent.completed`（`cancelled`）、`subagent.failed`、フック `onSubagentStop` の `response` |
@@ -215,8 +215,8 @@ flowchart LR
 
 ### 4.3 開始
 
-- 開始ボタンを押すと、中心の処理は実行を「開始中」にし、設定を確かめる（必須の項目、上限の回数が1以上、選んだモデルが選択肢にあるか）。つなぎ口が次を行う。
-  1. 作業・検証のモデルを、このセッションに限って上書きする（`updateSubagentSettings`）。キーは `<プラグイン>:<エージェント>` の形である（確かめた、11章 #5）。
+- 開始ボタンを押すと、中心の処理は実行を「開始中」にし、設定を確かめる（必須の項目、上限の回数が1以上、選んだモデルと思考の深さが選択肢にあるか）。つなぎ口が次を行う。
+  1. 作業・検証のモデルと、エージェントごとに選んだ思考の深さ（統括を含む。4.6）を、このセッションに限って上書きする（`updateSubagentSettings`）。キーは `<プラグイン>:<エージェント>` の形である（確かめた、11章 #5）。
   2. 統括を、選んだモデルで、裏で動くエージェントとして起動する（`tasks.startAgent`）。`agentType` は `<プラグイン>:<エージェント>` の形である。渡す名前（`name`。`tasks.list` の `displayName` に出る）に実行の番号を入れる。結果の番号（`agentId`）は、イベントの `agentId` と同じで、実行のエージェントの木の根にする（4.4）。統括は選んだモデルで動く（`modelSelectionSource` が `explicit_override`。確かめた、11章 #4）。
 - Copilot CLI のモデルが Auto のときも、同じ手順で行う（4.6）。
 - 起動できたら「実行中」にする。
@@ -281,7 +281,7 @@ flowchart LR
 - 代案の「サーバーから変化を送り続ける（SSE）」は、届くのは速いが、つなぎ直しと取り逃しの処理が要り、表示が止まる失敗の元になるので採らない。1秒の遅れは、人が見て監督するには十分短い。
 - 「統括にフェーズを申告させる」は、AI が申告を忘れると表示が実際とずれるので採らない。
 
-### 4.6 役割ごとのモデル
+### 4.6 役割ごとのモデルと、エージェントごとの思考の深さ
 
 - 統括は起動時のモデルの指定（4.3）、作業と検証はセッションに限った上書きで、画面で選んだモデルを効かせる。上書きは `settings.json` には書かれず、`/clear` の後は効かなくなる（確かめた、11章 #5）。
 - 実行が終わったら、上書きを外す（`null` を渡す）。
@@ -301,6 +301,16 @@ flowchart LR
   - Auto のとき、公式に書かれているのは、サブエージェントが定義の `model` に関係なくセッションのモデルを引き継ぐことだけである。起動時の指定と上書きが効くかは要確認（11章 #7）。
   - そこで、画面に「Auto のため、役割ごとのモデルが効かないことがあります」と示す（REQ-007）。
 - 実際に動いたモデル（`subagent.started` などのイベントの `model`）を、Auto のときも含めて、エージェントごとに画面に出す（REQ-007）。選んだモデルと違うときは、そのことを示し、課題の一覧にも入れる（4.10）。
+- 思考の深さ（Copilot CLI の reasoning effort）は、エージェントごとに画面で選ぶ（REQ-007）。
+  - 選ぶのは、統括、作業エージェントのそれぞれ（作業が2体以上なら、その数だけ）、検証である。モデルと違い、作業が2体以上でも、作業ごとに分ける。
+  - 選択肢は「変えない」と、`low`・`medium`・`high`・`xhigh`・`max` である（公式のコマンドリファレンスの `--effort` の値）。初めの値は「変えない」で、上書きに入れない。
+  - 「変えない」のエージェントは、定義に `reasoningEffort` があればその値、なければ親の値で動く（公式のコマンドリファレンス Custom agent frontmatter fields）。定義の `reasoningEffort` が効くことは、開発者が確かめた。
+  - 効かせ方は、作業・検証のモデルと同じ上書き（`updateSubagentSettings`）で、項目は `effortLevel` である（rpc.d.ts の `SubagentSettingsEntry`、公式の設定のリファレンスの `subagents.agents`）。
+  - 統括の思考の深さも、この上書きで渡す。統括の起動（`tasks.startAgent`）には、思考の深さの項目がない（Copilot CLI 1.0.103 の rpc.d.ts の `TasksStartAgentRequest`）。統括の上書きには `model` を入れないので、統括のモデルは起動時の指定のままである。
+  - 公式のコマンドリファレンスは、`task` で呼んだときも直接起動したときも、`subagents` の上書きが定義の `reasoningEffort` より先に効くとしている。上書きで効くか（とくに、`tasks.startAgent` で起動した統括）は、実機で確かめていない（11章 #29）。
+  - 選んだモデルが受け付けない深さは使われない。公式のコマンドリファレンスは、使えない深さは失敗にせず、セッションの値で動くとしている。更新履歴 1.0.88 も、定義の深さをモデルが受け付けないときは使わないとしている。そのことを、開始前の設定に示す。上書きの深さで同じになるかは、11章 #29 で確かめる。
+  - 選択肢をモデルごとに絞らないのは、選べるモデルの一覧の要素の形が決まっていない（11章 #26）ためである。
+  - 外すときは、モデルの上書きと一緒に外れる（`null`）。そのため、開始前の設定の注意の文は「モデルと思考の深さの指定も消えます」とする。
 
 | 代案 | 採らなかった理由 |
 | --- | --- |
@@ -804,6 +814,7 @@ stateDiagram-v2
 - 作業の定義が決まりの形に合う。
 - EVAL の課題の基準の写しが作業の定義と同じ。
 - EVAL の課題（eval.json）の採点のしかたを、EVAL の採点と同じ決まりで確かめる（確かめ方の種類と必須の項目、設定の値の型、設定の `key` が作業の定義にあること、必須で初めの値のない設定の値が課題にあること）。
+- 課題の入力のままで当てはまってしまうプログラムの採点（入力のファイルにもともとある文字を `contains` で確かめるなど）は、不合格にする。採点は、中身が変わっていない入力を成果物に数えないので、この採点は入力を変えないと合格せず、変えれば中身にかかわらず合格に近づくためである。入力のファイルを変えていないことは、確かめ方の種類 `unchanged`（`file`）で確かめる。`unchanged` の `file` は、課題の入力のファイルに当てはまらなければならない。
 - ナレッジの番号が種類ごとの置き場所にある（6.4）。
 - 検証エージェントの `tools` に書き込みとコマンドがない。
 - 作業・検証の `tools` に `skill` がなく、統括に `tools` がない（4.7）。
@@ -818,6 +829,7 @@ stateDiagram-v2
 
 - 開始
   - 開始すると、選んだモデルで統括が起動され、指示文に基準と作業ごとの設定の値がすべて入る。
+  - エージェントごとに選んだ思考の深さが、統括を含めて上書きで渡る。「変えない」のエージェントは上書きに入らない。
   - 開始中に止めても、起動が時間切れになった後に遅れて起動しても、統括が残らない。
   - 開始中に止めても、押してから10秒のうちに終了の表示になる。
   - 起動に失敗するか時間切れになると、上書きが外れる。
@@ -899,6 +911,7 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 - 返事や表示の値に HTML を入れても、スクリプトが動かない。
 - フェーズとエージェントの状態が、スクロールせずに見える。
 - Auto のとき「Auto のため、役割ごとのモデルが効かないことがあります」と出て、役割ごとのモデルを選べ、エージェントごとに実際に動いたモデルが出る。
+- エージェントごとの思考の深さを選べ、初めの値は「変えない」である。選んだ値が開始の設定に入る。
 - 途中で切れた実行の後に画面を開くと、「途中で終わった（途中で切れた）」と出る。実行中は `/clear` しないことが出る。
 - 終わった後に準備中に戻っても、同じセッションの前の結果と承認していない Issue の案を開ける。
 - 幅を変えても崩れない。
@@ -956,6 +969,7 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 | 26 | 選べるモデルの一覧（`session.rpc.model.list()`）の要素の形 | 3.2、4.6 | 確かめてから決める |
 | 27 | Copilot CLI のモデルが Auto であることを、どう見分けるか | 4.6 | 確かめてから決める |
 | 28 | ログインしたアカウントで、利用の上限のイベントがどう届くかと、費用 | 4.8、4.14 | 確かめてから決める |
+| 29 | `updateSubagentSettings` の `effortLevel` が、`task` で呼んだ作業・検証と、`tasks.startAgent` で起動した統括に効くか。モデルが受け付けない深さのとき、失敗せずにセッションの値で動くか。どの深さで動いたかがイベント（`subagent.configured` の `reasoningEffort` など）に出るか | 4.3、4.6 | 確かめてから決める |
 
 注：
 
@@ -996,12 +1010,14 @@ Playwright で、偽物のつなぎ口からイベントを流して、次を確
 
 - [About extensions for GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-cli-extensions)（試験的な機能であること、置き場所、入口のファイル名。`/extensions mode` は、今はこのページになく、コマンドリファレンスの Extension modes に移った）
 - [Creating an extension for GitHub Copilot CLI](https://docs.github.com/en/copilot/tutorials/create-an-extension)（`skipPermission`、`--allow-tool='extension-permission-access(...)'`）
-- [GitHub Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)（Custom agent frontmatter fields の `model`・`models`・`modelPolicy`・`reasoningEffort`・`include-custom-instructions`、Extension modes（`/extensions mode` の Load & Augment、Load Only、Disabled と戻し方）、試験的機能の有効にしかた（`--experimental`、`/settings experimental on`）、Custom agent locations の同じ ID のエージェントの扱い、`--allow-tool` でツールを前もって許可するしかた、`task` の呼び出しごとのモデル、モデルが決まる順、サブエージェントの深さの上限、MCP の時間切れ）
+- [GitHub Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)（Custom agent frontmatter fields の `model`・`models`・`modelPolicy`・`reasoningEffort`・`include-custom-instructions`、モデルと思考の深さが決まる順（呼び出しごとの値 → `subagents` の上書き → 定義 → 親）、`--effort` の値（`low`・`medium`・`high`・`xhigh`・`max`）、Extension modes（`/extensions mode` の Load & Augment、Load Only、Disabled と戻し方）、試験的機能の有効にしかた（`--experimental`、`/settings experimental on`）、Custom agent locations の同じ ID のエージェントの扱い、`--allow-tool` でツールを前もって許可するしかた、`task` の呼び出しごとのモデル、モデルが決まる順、サブエージェントの深さの上限、MCP の時間切れ）
+- [GitHub Copilot CLI configuration directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)（`subagents.agents` の `model`・`effortLevel`・`contextTier`）
 - [GitHub Copilot CLI plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference)（`com.github.copilot/` の中、`PLUGIN_ROOT`・`PLUGIN_DATA`。`com.github.copilot/` の表に `extensions/` はなく、置けることの根拠は更新履歴 1.0.79・1.0.80-0 と実測）
 - [GitHub Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-configuration)（フックの時間切れは通す側、コマンドのフックのエラーは拒む側に倒れること）
 - [Configuring local sandbox settings](https://docs.github.com/en/copilot/how-tos/cloud-and-local-sandboxes/configuring-local-sandbox-settings)（サンドボックスの対象、ローカルネットワークの許可）
 - [Copilot CLI changelog](https://github.com/github/copilot-cli/blob/main/changelog.md)（1.0.6 エクステンションのツールと許可、1.0.18 `preToolUse` のフックが許可すると、ツールの許可の確認が出ない、1.0.55 1つの実行ファイルで動かすときのエクステンションの起動、1.0.57 インストールしたプラグインに `.git` が残らない・`preToolUse` のフックのエラーで拒む、1.0.62 プラグインがエクステンションを同梱できる、1.0.67 フックの時間切れで通す、1.0.71 サブエージェントの深さの既定を4に下げた、1.0.72 サブエージェントにメッセージを送り続けられる、1.0.79（`com.github.copilot/extensions/` にエクステンションを置ける）、1.0.80-0（パッケージの changelog.json にある先行版。Agent Plugins の形式では `com.github.copilot/` の中だけを読む）、1.0.85 `allowManagedHooksOnly` がエクステンションのフックも止める、1.0.92 裏で動くエージェントへのメッセージが手番を導く、1.0.67・1.0.68 サブエージェントのツールが親の `tools` の範囲に絞られる、1.0.86 カスタムエージェントが `include-custom-instructions: true` でリポジトリの指示ファイルを受け取れる、1.0.100 カスタムエージェントの別名 `search`・`web` にツールが渡る・サンドボックスの既定がローカルネットワークを許す、1.0.101 macOS のサンドボックスの中から localhost の TCP につながる・エクステンションの読み込みの確認が必ず人に出る、1.0.102 サブエージェントが親のセッションで承認したエクステンションと MCP のツールの許可を引き継ぐ）
 - [Agent Plugins Specification 1.0.0](https://github.com/agentplugins/agent-plugins-spec/blob/main/spec/1.0.0.md)（マニフェストの `repository`、ベンダーのフォルダ、`PLUGIN_DATA`）
 - Copilot CLI 1.0.98 の npm パッケージ（`@github/copilot`）に含まれるプログラム：`copilot-sdk/docs/extensions.md`・`agent-author.md`（エクステンションの起動と終了、`/clear` での読み込み直し、ツールとフックの登録）、`copilot-sdk/types.d.ts`・`extension.d.ts`・`docs/examples.md`（`JoinSessionConfig` の `onPermissionRequest`、`ToolInvocation.agentId`、フックの入力の `agentId`・`parentAgentId`、`requestExtensions`、`requestedEnvironmentVariables` を断るとエクステンションが読み込まれないこと）、`copilot-sdk/generated/rpc.d.ts`（`tasks.startAgent`・`cancel`・`list`、`TasksStartAgentRequest.name` と `displayName`、`TaskStatus` の `idle`、`TaskShellInfo`、`tools.updateSubagentSettings` と `SubagentSettings`・`UpdateSubagentSettingsRequest`、`cancelAllBackgroundAgents`、`model.getCurrent`、`models.list`）、`copilot-sdk/generated/session-events.d.ts`（`subagent.*` と `cancelled`・`executionMode`、`permission.requested` と許可の求めの `PermissionRequestShell`・`requestSandboxBypass`・`extension-permission-access`、`permission.completed`、`user_input.*` と質問の `question`、`session_limits_exhausted.*` と待ちの終わりの `response.action`、`system.notification` の `agent_idle` のイベント）、`schemas/api.schema.json`（`hooks.invoke`）、`preloads/extension_bootstrap.mjs`（親のプロセスの見張り）、`cli-main.js`（エクステンションを読み込む条件、`launcherProgram`、読み込みのときの `extension-permission-access` の確認と断ったときの扱い）、`index.js`・`extension.js`（起動用のファイルの読み込み、許可の求めをすべての相手に届けて最初の答えを使う `_handleBroadcastEvent`）、`definitions/explore.agent.yaml`（`model` のリスト）、`runtime.node`（`model` のリストを求める文字列、`model-policy`、`task` の `mode` と `agent_type`）
+- Copilot CLI 1.0.103 の npm パッケージ（`@github/copilot-linux-x64`）に含まれるプログラム：`copilot-sdk/generated/rpc.d.ts`（`SubagentSettingsEntry` の `effortLevel`、`TasksStartAgentRequest` に思考の深さの項目がないこと）、`changelog.json`（1.0.62 サブエージェントのモデル・思考の深さの設定、1.0.66 カスタムエージェントの定義の思考の深さ、1.0.88 モデルが受け付けない深さは使わないこと）
 - [Web Content Accessibility Guidelines (WCAG) 2.2](https://www.w3.org/TR/WCAG22/)
 - [SWEBOK Guide V4.0](https://www.computer.org/education/bodies-of-knowledge/software-engineering/v4)

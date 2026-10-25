@@ -31,10 +31,13 @@ export const LIMITS = Object.freeze({
 // 実行の状態（6.1）
 export const ACTIVE_STATUSES = Object.freeze(['starting', 'running', 'summarizing', 'stopping']);
 
+// 思考の深さの選択肢（4.6）。公式のコマンドリファレンスの --effort の値。選ばない（''）ときは上書きしない
+export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
+
 // 画面の文字になる決まった文（REQ-007 の文言）
 export const AUTO_NOTICE = 'Auto のため、役割ごとのモデルが効かないことがあります';
 export const OVERRIDE_NOTICE =
-  '実行が終わると、このチャットでほかのエージェントに設定したモデルの指定も消えます。';
+  '実行が終わると、このチャットでほかのエージェントに設定したモデルと思考の深さの指定も消えます。';
 export const CLEAR_NOTICE = '実行中は /clear を使わないでください。実行が途中で切れます。';
 export const CHAT_CONFIRM_NOTICE =
   '実行中にエージェントが確認（ツールの許可、AI クレジットの上限、質問）を求めたときは、このチャットで答えてください。画面には、確認を待っていることが出ます。';

@@ -4,11 +4,13 @@
 // 内側の EVAL の課題と採点は、生成プラグインの試験と同じ grade.mjs を使う（testing.md 10.5）。
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { documentText } from '../../../com.github.copilot/extensions/plugin-creator/doc-text.mjs';
-import { gradeProgram, listFiles, normalizeRelPath, validateTask } from '../../../skills/test-plugin/scripts/grade.mjs';
+import { gradeProgram, inputCheckProblems, listFiles, normalizeRelPath, validateTask } from '../../../skills/test-plugin/scripts/grade.mjs';
+import { listInputFiles, prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
 
 // ---- 決まった値 -------------------------------------------------------------------------------------
 
@@ -387,6 +389,7 @@ async function validateInner(persona, dir, errors, context) {
   errors.push(...problems);
   if (problems.length > 0) return;
 
+  const before = errors.length;
   for (const rel of task.inputs ?? []) {
     const source = path.join(innerDir, ...normalizeRelPath(rel).split('/'));
     let stat;
@@ -398,6 +401,9 @@ async function validateInner(persona, dir, errors, context) {
     }
     if (stat.isSymbolicLink()) errors.push(`inner/eval.json の入力「${rel}」はシンボリックリンクなので使えない`);
   }
+  const inputsOk = errors.length === before;
+  // 入力のままで当てはまってしまう採点や、入力に当てはまらない unchanged は、生成プラグインの課題と同じく誤りにする
+  if (inputsOk) errors.push(...inputCheckProblems(task, listInputFiles(innerDir, task.inputs ?? []), 'inner/eval.json'));
 
   const gradedKnowledge = new Set();
   for (const c of task.criteria) {
@@ -416,15 +422,24 @@ async function validateInner(persona, dir, errors, context) {
     errors.push('inner/golden/ がない（正しい成果物の見本）');
     return;
   }
-  const files = listFiles(goldenDir);
-  if (files.length === 0) {
+  if (listFiles(goldenDir).length === 0) {
     errors.push('inner/golden/ にファイルがない');
     return;
   }
-  for (const c of task.criteria) {
-    if (c.grading !== 'program') continue;
-    const result = await gradeProgram(c.check, files);
-    if (!result.pass) errors.push(`inner/golden/ の見本が、基準「${c.id}」（${c.text}）に合格しない：${result.reason}`);
+  if (!inputsOk) return;
+  // 採点と同じく、入力を写した作業フォルダに見本を重ねて採点する（見本にない入力は、写したまま変えていないとみなす）
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-golden-'));
+  try {
+    const { workDir, inputs } = prepareWorkDir({ task: { dir: innerDir, json: task }, dir: path.join(temp, 'work') });
+    fs.cpSync(goldenDir, workDir, { recursive: true });
+    const files = listFiles(workDir, { inputs });
+    for (const c of task.criteria) {
+      if (c.grading !== 'program') continue;
+      const result = await gradeProgram(c.check, files, { inputs, workDir });
+      if (!result.pass) errors.push(`inner/golden/ の見本が、基準「${c.id}」（${c.text}）に合格しない：${result.reason}`);
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
   }
 }
 

@@ -3,7 +3,7 @@
 //
 // 中心の処理に求めること
 // - core.getState()              状態の全体（BLUEPRINT 3.5）。
-// - core.start(settings)         { models: { orchestrator, worker, verifier }, maxIterations, task: { <key>: value } }。断るときは Error を投げる（message は平易な日本語）。
+// - core.start(settings)         { models: { orchestrator, worker, verifier }, efforts: { <エージェント>: 思考の深さか '' }, maxIterations, task: { <key>: value } }。断るときは Error を投げる（message は平易な日本語）。
 // - core.stop()
 // - core.fileIssue(issueId)      断るときは Error を投げる。
 // - core.getReply(agentId)       最後の返事の全文（文字）。なければ null。

@@ -10,7 +10,8 @@
 // - 問答の記録（qa.jsonl）は、フックがしている記録（hearing.md 7.4）を、この部品が会話の記録から同じ形で作る。
 //   エクステンションの同じ関数（hooks.onPostToolUse、hooks.onUserPromptSubmitted）を呼ぶので、形も「ヒアリングの最中だけ」の条件も同じ。
 //   コンパクションの後の差し込みは、再現しない（testing.md 4章）。
-// - 起票は偽物の gh で受ける。引数と本文を issues に残すだけで、本物の plugin-creator に Issue は作らない。
+// - 起票は偽物の gh で受ける。引数と本文と返した URL を issues に残すだけで、本物の plugin-creator に Issue は作らない。
+//   返す URL は、起票ごとに違う番号にする（9001、9002、…）。
 // - 状態を変えるツールの呼び出しと結果を、events に順に残す（6.5 の「全項目をヒアリングしたか」「承認の前に生成しなかったか」の材料）。
 
 import fs from 'node:fs';
@@ -25,7 +26,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(here, '..', '..', '..');
 export const CREATOR_SERVER_NAME = 'plugin-creator';
 const TOOL_PREFIX = 'plugin-creator_';
-const FAKE_ISSUE_URL = 'https://github.com/xclang-brain/plugin-creator/issues/9001';
+const FAKE_ISSUE_URL_BASE = 'https://github.com/xclang-brain/plugin-creator/issues/';
+const FAKE_ISSUE_FIRST_NUMBER = 9001;
 
 /** エクステンションの creator.mjs を読み込む（クリエイターのプラグインの根を渡す） */
 export async function loadCreatorModule(pluginRoot = REPO_ROOT) {
@@ -55,12 +57,16 @@ function describeResult(result) {
   return { isError: false, text: String(result ?? '') };
 }
 
-/** 偽物の gh。引数と本文を残して、成功の返事を返す（gh issue create の返事に似せて、Issue の URL を 1 行返す） */
+/**
+ * 偽物の gh。引数と本文を残して、成功の返事を返す（gh issue create の返事に似せて、Issue の URL を 1 行返す）。
+ * URL の番号は、起票ごとに 9001 から 1 つずつ増やす（本物と同じく、起票ごとに違う URL になる）。
+ */
 export function createFakeGh(issues) {
   return async function fakeGh(args, input) {
     const titleArg = (args ?? []).find((a) => typeof a === 'string' && a.startsWith('--title='));
-    issues.push({ args: [...(args ?? [])], title: titleArg ? titleArg.slice('--title='.length) : null, body: String(input ?? '') });
-    return { code: 0, stdout: `${FAKE_ISSUE_URL}\n`, stderr: '', timedOut: false, notFound: false };
+    const url = `${FAKE_ISSUE_URL_BASE}${FAKE_ISSUE_FIRST_NUMBER + issues.length}`;
+    issues.push({ args: [...(args ?? [])], title: titleArg ? titleArg.slice('--title='.length) : null, body: String(input ?? ''), url });
+    return { code: 0, stdout: `${url}\n`, stderr: '', timedOut: false, notFound: false };
   };
 }
 

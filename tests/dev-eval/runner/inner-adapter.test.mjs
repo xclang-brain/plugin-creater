@@ -8,7 +8,7 @@ import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { addTools, createInnerAdapter, describeOpened, OPEN_FAILED, ORCHESTRATOR_BUILTIN_TOOLS, RECORD_FAILED, rewriteModel } from './inner-adapter.mjs';
+import { addTools, createInnerAdapter, describeOpened, OPEN_FAILED, ORCHESTRATOR_BUILTIN_TOOLS, RECORD_FAILED, rewriteField, rewriteModel } from './inner-adapter.mjs';
 import { buildSamplePlugin, pythonHasModules, tmpDir } from './inner-test-support.mjs';
 
 const SKIP = !pythonHasModules() ? 'Python に PyYAML と jsonschema がありません' : false;
@@ -95,6 +95,28 @@ test('REQ-007 統括の起動：統括の定義の本文を効かせ、画面で
   assert.equal(started.model, 'claude-opus-5.5');
   assert.equal(started.executionMode, 'background');
   assert.equal(started.parentAgentId, undefined);
+});
+
+test('REQ-007 エージェントごとの思考の深さ：置き換えた版のコピーの定義の effort に書き、統括は query() の effort にも渡す。選ばないエージェントは変えない', { skip: SKIP }, async (t) => {
+  const { fixture, adapter, queries } = await setup(t);
+  await adapter.core.open({ requestText: '週報を作ってください' });
+  await adapter.core.start({ models: {}, efforts: { orchestrator: 'high', worker: 'low' }, maxIterations: 1, task: { week: '2026-W42' } });
+  assert.equal(queries.length, 1);
+  const { options } = queries[0];
+  assert.equal(options.effort, 'high');
+  const copy = options.plugins[0].path;
+  const effort = (root, name) => /^effort: (.+)$/m.exec(fs.readFileSync(path.join(root, 'agents', `${name}.md`), 'utf8'))?.[1];
+  assert.equal(effort(copy, 'orchestrator'), 'high');
+  assert.equal(effort(copy, 'worker'), 'low');
+  assert.equal(effort(copy, 'verifier'), effort(fixture.convertedRoot, 'verifier'), '選ばないエージェントは定義のまま');
+  assert.notEqual(effort(fixture.convertedRoot, 'worker'), 'low', '元の置き換えた版は変えない');
+  assert.deepEqual(adapter.runs()[0].appliedEfforts, { 'weekly-report:orchestrator': 'high', 'weekly-report:worker': 'low' });
+});
+
+test('REQ-007 統括の起動：選ばないときは、query() に effort を渡さない', { skip: SKIP }, async (t) => {
+  const { adapter, queries } = await setup(t);
+  await startRun(adapter, {});
+  assert.equal('effort' in queries[0].options, false);
 });
 
 test('REQ-007 統括の起動：表にないモデルと、統括以外の種類は断る（黙って別のものを起動しない）', { skip: SKIP }, async (t) => {
@@ -289,6 +311,8 @@ test('testing.md 4章 エージェントの定義の model を書き換える：
   assert.equal(rewriteModel(text, 'claude-opus-5-5'), '---\nname: worker\nmodel: claude-opus-5-5\ntools: Read\n---\n本文の model: 変えない\n');
   assert.equal(rewriteModel('---\nname: w\n---\nx', 'claude-opus-5-5'), '---\nname: w\nmodel: claude-opus-5-5\n---\nx');
   assert.throws(() => rewriteModel('本文だけ', 'claude-opus-5-5'), /フロントマター/);
+  assert.equal(rewriteField('---\nname: w\neffort: high\n---\neffort: 本文', 'effort', 'low'), '---\nname: w\neffort: low\n---\neffort: 本文');
+  assert.equal(rewriteField('---\nname: w\n---\nx', 'effort', 'max'), '---\nname: w\neffort: max\n---\nx');
 });
 
 test('REQ-005 画面を開くツールの返り値：URL と、ユーザーに伝える注意の並び', () => {
