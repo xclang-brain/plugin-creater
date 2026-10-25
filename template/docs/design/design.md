@@ -8,7 +8,7 @@
 
 | 部品 | 区分 | 置き場所 | 役割 | 要件 |
 | --- | --- | --- | --- | --- |
-| マニフェストと README | 土台と値 | `plugin.json`、`README.md`、`.github/plugin/marketplace.json` | 名前・版・説明・リポジトリ（Agent Plugins 1.0.0）。README は使い方。marketplace.json は、手元のフォルダをマーケットプレイスとして入れるため | REQ-004、REQ-005、REQ-014 |
+| マニフェストと README | 土台と値と作業ごと | `plugin.json`、`README.md`、`.github/plugin/marketplace.json` | 名前・版・説明・リポジトリ（Agent Plugins 1.0.0）。README は使う人に向けた説明で、初めに「できること」と「使い方」を置く（この2つは作業ごと）。marketplace.json は、手元のフォルダをマーケットプレイスとして入れるため | REQ-004、REQ-005、REQ-014、REQ-050 |
 | スキル（入口） | 土台と作業ごと | `skills/` | メインのエージェントの手順（3.5）。手順は土台、description と作業の説明は作業ごと | REQ-004、REQ-005、REQ-008 |
 | 統括エージェント | 土台と作業ごと | `com.github.copilot/agents/orchestrator.agent.md` | 計画・実行・評価の繰り返しと振り返り。手順は土台、作業ごとの指示は作業ごと。定義に `tools` は書かない（3.5） | REQ-010、REQ-011、REQ-013 |
 | 作業エージェント | 土台と作業ごと | `com.github.copilot/agents/worker.agent.md`（2体目からは `worker-<名前>.agent.md`） | 成果物を作る | REQ-010 |
@@ -361,4 +361,5 @@ stateDiagram-v2
 | REQ-030 | 2.4 | `com.github.copilot/extensions/{{plugin_name}}/ui/` | 自動のテスト | `tests/stage2/ui/screen.test.mjs` |
 | REQ-030 | 1 | `com.github.copilot/extensions/{{plugin_name}}/ui/` | 人が確かめる | — |
 | REQ-025 | 5.2、5.3、6 | `com.github.copilot/extensions/{{plugin_name}}/core/`、`com.github.copilot/extensions/{{plugin_name}}/ui/` | 人が確かめる | — |
+| REQ-050 | 1 | `README.md` | 人が確かめる | — |
 {{slot:task-trace}}

@@ -76,7 +76,7 @@ SLOT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
 WORKER_SLOT = re.compile(r"\{\{slot:worker-task(?:\.[A-Za-z0-9._-]*)?\}\}")
 EVAL_REL = re.compile(r"^tests/eval/[^/]+/eval\.json$")
 EVAL_INPUT_REL = re.compile(r"^tests/eval/[^/]+/inputs/.+$")   # eval_inputs の to（EVAL の課題の入力のファイルの置き場所）
-HEADING_SLOTS = re.compile(r"^(?:entry-task|orchestrator-task|verifier-task|worker-task(?:\..+)?)$")   # ひな形の ## の節の中に入る文
+HEADING_SLOTS = re.compile(r"^(?:entry-task|orchestrator-task|verifier-task|worker-task(?:\..+)?|readme-what|readme-how)$")   # ひな形の ## の節の中に入る文
 HIGH_HEADING = re.compile(r"^ {0,3}#{1,2}(?:[ \t]|$)")                                                  # # か ## で始まる見出し
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")                                                              # コードの囲み
 # YAML の読み手が読めない字（json.dumps は escape しない）：U+007F〜U+009F、U+FFFE、U+FFFF。

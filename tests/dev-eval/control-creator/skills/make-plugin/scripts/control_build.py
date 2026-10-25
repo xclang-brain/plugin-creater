@@ -86,6 +86,8 @@ def build_parts(work: str, name: str, title: str, description: str, bullets: lis
     worker = ["### %sの書き方" % title, "", "- %s" % bullets[0]]
     worker += ["- %s（%s）" % (text, kid) for text, kid in zip(others, ids)]
     write(os.path.join(slots, "worker-task.worker.md"), "\n".join(worker) + "\n")
+    write(os.path.join(slots, "readme-what.md"), "%sをします。\n" % title)
+    write(os.path.join(slots, "readme-how.md"), "チャットで、%sを頼みます。\n" % title)
     write(os.path.join(slots, "task-requirements.md"),
           "### REQ-101 成果物\n\n- 要件：%sの成果物が作られる。\n- 根拠：憲章 第22条\n- 受け入れ基準：\n  - 成果物が作られる。\n" % title)
     write(os.path.join(slots, "task-design.md"), "### 8.1 成果物の確かめ\n\n- `scripts/control_task.py` が、成果物の名前の形を確かめる。\n")
