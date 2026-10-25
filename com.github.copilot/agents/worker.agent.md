@@ -109,7 +109,8 @@ tools:
 
   - `prompt`、`inputs`、`settings`、基準にするナレッジの番号の組は、頼みに書かれた課題のとおりにそのまま写す（言い換えない。頼みに設定の値がなければ `settings` を書かない）。組み立てのスクリプトが、ユーザーが確かめた課題と同じかを確かめ、違うと断るためである。
   - 基準の番号（`id`）と文（`text`）は、組み立てのスクリプトが作業の定義から入れる。書くのは、もとのナレッジの番号と採点のしかただけである。
-  - `grading` は、文字や形で決まる基準なら `program`、それ以外は `model`。`program` の `check.type` は次の4つ：`file_exists`（`file`）、`contains`（`file`、`text`）、`not_contains`（`file`、`text`）、`regex`（`file`、`pattern`、`flags`）。`file` は作業フォルダの根からのグロブ。
+  - `grading` は、文字や形で決まる基準なら `program`、それ以外は `model`。`program` の `check.type` は次の5つ：`file_exists`（`file`）、`contains`（`file`、`text`）、`not_contains`（`file`、`text`）、`regex`（`file`、`pattern`、`flags`）、`unchanged`（`file`）。`file` は作業フォルダの根からのグロブ。
+  - 入力のファイルを変えていないことは、`unchanged` で確かめる（`file` は、`inputs` に書いた `inputs/<名前>` か、その中のファイルのグロブ。試験のときは、入力が作業フォルダの同じ場所に置かれる）。`contains`、`not_contains`、`regex`、`file_exists` は、もとの入力のままでは合格せず、作業をして初めて合格するものにだけ使う。採点は、中身が変わっていない入力を成果物に数えないので、もとの入力で合格してしまう採点は、構造の検査で断られる。作業が変える入力に、もとからある文字が残ることなど、そうならない基準は `model` にする。
   - 課題のフォルダの名前は、頼みに書かれた課題の番号にする。入力のファイルは、組み立てのスクリプトとメインのエージェントが置くので、`files/` に書かない。`inputs` には、頼みに書かれた置き場所を、課題のフォルダからの `inputs/<名前>` で書く。
 
 ## C 試験で落ちたところの直し

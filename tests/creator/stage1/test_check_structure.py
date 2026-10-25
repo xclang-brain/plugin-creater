@@ -5,6 +5,7 @@
 動かし方（リポジトリの根で）:  python3 -m unittest discover -s tests/creator/stage1 -p "test_*.py"
 試験の名前には、確かめる要件の番号を入れる。
 """
+import base64
 import json
 import os
 import shutil
@@ -650,7 +651,7 @@ class Eval(Sandbox):
         def check(value):
             self.edit_json(self.EVAL, lambda d: d["criteria"][0].update({"check": value}))
         check({"type": "includes", "file": "out/*.md", "text": "x"})
-        self.assertFailsWith("eval", "check.type「includes」は使えない", "file_exists・contains・not_contains・regex")
+        self.assertFailsWith("eval", "check.type「includes」は使えない", "file_exists・contains・not_contains・regex・unchanged")
         check({"type": "contains", "file": "out/*.md"})
         self.assertFailsWith("eval", "text がない（contains には要る）")
         check({"type": "contains", "file": "../out/*.md", "text": "x", "pattern": "y"})
@@ -659,6 +660,74 @@ class Eval(Sandbox):
         self.assertFailsWith("eval", "絶対の場所は使えない")
         check({"type": "regex", "file": "out/*.md", "pattern": "x", "flags": "g"})
         self.assertFailsWith("eval", "flags は、i・m・s・u")
+
+    def set_check(self, check, inputs=None):
+        def edit(d):
+            d["criteria"][0]["check"] = check
+            if inputs is not None:
+                d["inputs"] = inputs
+        self.edit_json(self.EVAL, edit)
+
+    HEADER_LINE = "#define DBG_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)"
+
+    def test_REQ_011_a_check_that_the_unchanged_input_already_satisfies_fails_and_points_to_unchanged(self):
+        self.write("tests/eval/T-01/inputs/src/dbg_log.h", self.HEADER_LINE + "\n")
+        self.set_check({"type": "contains", "file": "inputs/src/dbg_log.h", "text": self.HEADER_LINE}, ["inputs/memo.txt", "inputs/src"])
+        self.assertFailsWith("eval", "criteria[0].check は、課題の入力のファイルがもとのままでも合格してしまう",
+                             "「inputs/src/dbg_log.h」に", "unchanged（file）で確かめる")
+        for check in ({"type": "file_exists", "file": "inputs/**/*.h"},
+                      {"type": "not_contains", "file": "inputs/src/*.h", "text": "TODO"}):
+            self.set_check(check)
+            self.assertFailsWith("eval", "もとのままでも合格してしまう")
+        # 入力のままでは当てはまらない採点は通す
+        for check in ({"type": "contains", "file": "inputs/src/dbg_log.h", "text": "DBG_LEVEL"},
+                      {"type": "not_contains", "file": "inputs/src/*.h", "text": "printf"},
+                      {"type": "contains", "file": "out/*.md", "text": "#define"}):
+            self.set_check(check)
+            self.assertPasses("eval")
+
+    def test_REQ_011_unchanged_must_match_an_input_file(self):
+        self.write("tests/eval/T-01/inputs/src/dbg_log.h", self.HEADER_LINE + "\n")
+        self.set_check({"type": "unchanged", "file": "inputs/src/dbg_log.h"}, ["inputs/memo.txt", "inputs/src"])
+        self.assertPasses("eval")
+        self.set_check({"type": "unchanged", "file": "src/dbg_log.h"})
+        self.assertFailsWith("eval", "check.file「src/dbg_log.h」が、課題の入力のファイルのどれにも当てはまらない")
+        self.set_check({"type": "unchanged", "file": "inputs/src/dbg_log.h", "text": "x"})
+        self.assertFailsWith("eval", "unchanged では使わない項目「text」")
+
+    def test_REQ_011_office_and_binary_inputs_are_not_read_for_text(self):
+        self.write("tests/eval/T-01/inputs/report.docx", "PK 天気")
+        with open(self.path("tests/eval/T-01/inputs/data.bin"), "wb") as f:
+            f.write(b"A\0B")
+        inputs = ["inputs/memo.txt", "inputs/report.docx", "inputs/data.bin"]
+        for check in ({"type": "contains", "file": "inputs/report.docx", "text": "天気"},
+                      {"type": "contains", "file": "inputs/data.bin", "text": "A"},
+                      {"type": "not_contains", "file": "inputs/*", "text": "晴れ"}):
+            self.set_check(check, inputs)
+            self.assertPasses("eval")
+        self.set_check({"type": "file_exists", "file": "inputs/*.docx"}, inputs)   # file_exists は大きさだけで決める
+        self.assertFailsWith("eval", "もとのままでも合格してしまう")
+
+    @unittest.skipUnless(shutil.which("node"), "node がない")
+    def test_REQ_011_a_regex_that_the_unchanged_input_already_matches_fails(self):
+        self.set_check({"type": "regex", "file": "inputs/*.txt", "pattern": "^天気", "flags": "m"})
+        self.assertFailsWith("eval", "もとのままでも合格してしまう", "パターン「^天気」に合う箇所がある")
+        self.set_check({"type": "regex", "file": "inputs/*.txt", "pattern": "晴れ"})
+        self.assertPasses("eval")
+
+    def test_REQ_011_without_node_a_regex_on_inputs_is_not_checked_and_only_a_note_is_left(self):
+        self.set_check({"type": "regex", "file": "inputs/*.txt", "pattern": "^天気"})
+        originals = cs.js_regex_errors, cs.js_regex_hits
+
+        def no_node(items):
+            raise RuntimeError("node を動かせなかった")
+        cs.js_regex_errors = cs.js_regex_hits = no_node
+        try:
+            check = {c.id: c for c in self.report().checks}["eval"]
+        finally:
+            cs.js_regex_errors, cs.js_regex_hits = originals
+        self.assertEqual([], check.errors)
+        self.assertTrue(any("入力のままで当てはまってしまわないかは確かめていない" in w for w in check.warnings), check.warnings)
 
     @unittest.skipUnless(shutil.which("node"), "node がない")
     def test_REQ_011_regex_pattern_must_be_readable_as_a_javascript_regular_expression(self):
@@ -800,6 +869,20 @@ class EvalParity(Sandbox):
             task["criteria"][0] = first
         return task
 
+    def write_case(self, case):
+        """例の課題と、課題のフォルダのファイル（baseFiles と files）を置く（eval-parity.test.mjs の writePlugin と同じ決まり）"""
+        folder = self.path("tests/eval/T-01")
+        shutil.rmtree(folder)
+        os.makedirs(folder)
+        self.write("tests/eval/T-01/eval.json", json.dumps(self.build_task(case), ensure_ascii=False))
+        for rel, content in dict(self.CASES["baseFiles"], **case.get("files", {})).items():
+            if content is None:
+                continue
+            target = self.path("tests/eval/T-01/" + rel)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(content.encode("utf-8") if isinstance(content, str) else base64.b64decode(content["base64"]))
+
     def test_REQ_041_the_same_examples_get_the_same_verdict_as_the_grader(self):
         has_node = shutil.which("node") is not None
         ran = 0
@@ -807,7 +890,7 @@ class EvalParity(Sandbox):
             if case.get("needsNode") and not has_node:
                 continue
             with self.subTest(case["name"]):
-                self.write("tests/eval/T-01/eval.json", json.dumps(self.build_task(case), ensure_ascii=False))
+                self.write_case(case)
                 errors = {c.id: c for c in self.report().checks}["eval"].errors
                 if case["ok"]:
                     self.assertEqual([], errors, "通るはずの課題が断られた")

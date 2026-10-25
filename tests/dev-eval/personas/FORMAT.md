@@ -164,10 +164,10 @@ JSON である。文字は UTF-8。正規表現と書いてあるところは、
   - `id`、`prompt`（頼むときの言葉。入力のファイルの場所を含める）、`inputs`（`inner/` からの相対の場所）、`settings`（任意）、`criteria`。
   - `criteria[]` は、`id`、`text`、`grading`、`check` に加えて、`knowledge`（ナレッジの id）を必ず付ける。
   - 採点の基準は、ナレッジに書いたとおりにする。ナレッジにない細かさまで求めると、正しい成果物を落とす（testing.md 7章）。
-  - 文字や形で決まるものは `program`（`file_exists`、`contains`、`not_contains`、`regex`）、それ以外は `model` にする。「最後の行が決まった文字」は `regex` で書く。文字が出ていないことを正規表現で見るときは、先頭に `(?![\s\S]*(…))` を置く。
+  - 文字や形で決まるものは `program`（`file_exists`、`contains`、`not_contains`、`regex`、`unchanged`）、それ以外は `model` にする。「最後の行が決まった文字」は `regex` で書く。文字が出ていないことを正規表現で見るときは、先頭に `(?![\s\S]*(…))` を置く。
   - `markers.task` を持つナレッジには、基準を 1 件以上付ける。
 - `inner/inputs/`：入力のファイル。課題の `inputs` が指す。
-- `inner/golden/`：正しい成果物の見本。作業フォルダの形（`weekly_report.md` など）で置く。`validate.mjs` が、`program` の基準がすべて合格することを確かめる（基準が厳しすぎないか、書き間違っていないかを見るため）。`model` の基準は確かめない。
+- `inner/golden/`：正しい成果物の見本。作業フォルダの形（`weekly_report.md` など）で置く。`validate.mjs` が、`program` の基準がすべて合格することを確かめる（基準が厳しすぎないか、書き間違っていないかを見るため）。採点と同じく、入力を写した作業フォルダに見本を重ねて採点するので、見本に置かない入力は、変えていないものとして採点される。`model` の基準は確かめない。
 - 画面で選ぶモデルは書かない（画面の既定のまま）。
 
 ## 4. 作る人への決まり

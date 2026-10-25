@@ -11,7 +11,8 @@
 
 終了コード: 0 全部合格、1 不合格あり、2 道具が足りない・使い方の誤り。
 モデルも外のネットワークも使わない。公式スキーマは schemas/ の写しを使う。
-EVAL の課題の regex の pattern が正規表現として読めるかだけは、node があれば node で確かめる（採点は JavaScript の正規表現で行うため）。
+EVAL の課題の regex の pattern が正規表現として読めるかと、課題の入力のままで合ってしまわないかだけは、node があれば node で確かめる
+（採点は JavaScript の正規表現で行うため）。
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ import ipaddress
 import json
 import math
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -744,6 +746,7 @@ CHECK_TYPES: Dict[str, Tuple[List[str], List[str]]] = {   # 種類 -> (必須の
     "contains": (["file", "text"], []),
     "not_contains": (["file", "text"], []),
     "regex": (["file", "pattern"], ["flags"]),
+    "unchanged": (["file"], []),   # file に当てはまる課題の入力のファイルが、もとのまま残っている
 }
 REGEX_FLAGS = "imsu"
 Regexes = List[Tuple[str, str, str]]   # (場所, pattern, flags)
@@ -842,7 +845,8 @@ def check_problems(check: Any, label: str, regexes: Regexes) -> List[str]:
     if check["type"] in ("contains", "not_contains") and "text" in check and not is_text(check["text"]):
         out.append("%s.text は、探す文字を空でない文字で書く" % label)
     if check["type"] == "regex" and "pattern" in check:
-        flags = check.get("flags", "")
+        flags = check.get("flags")
+        flags = "" if flags is None else flags   # 採点（check.flags ?? ''）と同じく、null は書いていないものとする
         if not is_text(check["pattern"]):
             out.append("%s.pattern は、正規表現を空でない文字で書く" % label)
         elif not isinstance(flags, str) or any(f not in REGEX_FLAGS for f in flags) or len(set(flags)) != len(flags):
@@ -986,6 +990,163 @@ def input_problems(task_dir: str, items: List[Any], label: str) -> List[str]:
     return out
 
 
+# ---- 課題の入力と突き合わせる確かめ（grade.mjs の inputCheckProblems と同じ決まり）。
+# 採点は、中身が変わっていない入力を成果物に数えない。そのため、unchanged のほかの4種類で、課題の入力のファイル（もとの中身）だけを
+# 成果物とみなして合格してしまうものは誤りにする（入力を変えないと合格せず、変えれば中身にかかわらず合格に近づくため）。
+# unchanged の file は、課題の入力のファイルのどれかに当てはまらなければならない。
+# 文字の読み方は採点（grade.mjs の readPlainText）と同じにする。ただし docx・xlsx・pptx の入力は、文字を取り出さず「中身が分からない」とする
+# （ここでは採点と同じには取り出せないため）。文字にできない入力（0 のバイトがある、大きすぎる、文字コードが読めない）も同じ。
+# 分からない入力では、合格してしまうとは決めない（contains・regex は文字にできた入力だけで決め、not_contains は分からない入力があれば誤りにしない）。
+# file_exists は中身を読まず、大きさだけで決める。regex は JavaScript の正規表現なので、node で確かめる（node がなければ注意にする）。
+
+OFFICE_EXTENSIONS = (".docx", ".xlsx", ".pptx")
+CHECK_MAX_BYTES = 20 * 1024 * 1024   # 採点が読む1ファイルの大きさの上限
+CHECK_MAX_CHARS = 2000000            # 採点が読む1ファイルの文字数の上限
+GRADER_SKIP_DIRS = {"node_modules", ".git"}   # 採点が見ないフォルダ
+INPUT_CHECK_HINT = ("採点は、中身が変わっていない入力を成果物に数えないので、作業をする前の入力で合格してしまう確かめ方は使えない。"
+                    "file_exists・contains・not_contains・regex は、もとの入力のままでは合格せず、作業をして初めて合格するものにだけ使う"
+                    "（グロブを作業が作るファイルに絞る、作業が書き足す文字を確かめるなど）。"
+                    "入力のファイルを変えていないことは、確かめ方の種類 unchanged（file）で確かめる。"
+                    "作業が変える入力に、もとからある文字が残ることなどは、model で判定する")   # grade.mjs の INPUT_CHECK_HINT と同じ文
+InputFile = Tuple[str, str, int]   # (作業フォルダの根からの相対の場所, 実物の場所, 大きさ)
+RegexProbes = List[Tuple[str, str, str, List[Tuple[str, str]]]]   # (場所, pattern, flags, [(相対の場所, 文字)])
+
+
+def input_files(task_dir: str, items: List[Any]) -> List[InputFile]:
+    """課題の入力を作業フォルダに写したときのファイルの一覧（tasks.mjs の listInputFiles と同じ）。フォルダは中のファイルをすべて数える。"""
+    found: Dict[str, InputFile] = {}
+
+    def walk(path: str, relative: str) -> None:
+        if os.path.islink(path):
+            return
+        if os.path.isdir(path):
+            for name in sorted(os.listdir(path)):
+                walk(os.path.join(path, name), relative + "/" + name if relative else name)
+        elif os.path.isfile(path):
+            key = normalize_rel(relative)
+            found[key] = (key, path, os.path.getsize(path))
+
+    for item in items:
+        if not is_text(item):
+            continue
+        relative = posixpath.normpath(normalize_rel(item))
+        relative = "" if relative == "." else relative
+        walk(os.path.join(task_dir, *relative.split("/")) if relative else task_dir, relative)
+    return [found[k] for k in sorted(found)]
+
+
+def input_text(path: str) -> Optional[str]:
+    """入力のファイルの中の文字（採点と同じ読み方。改行と Unicode の正規化もそろえる）。中身が分からなければ None。"""
+    if os.path.splitext(path)[1].lower() in OFFICE_EXTENSIONS:
+        return None
+    try:
+        if os.path.getsize(path) > CHECK_MAX_BYTES:
+            return None
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if b"\0" in data:
+        return None
+    if data[:3] == b"\xef\xbb\xbf":
+        data = data[3:]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = sjis_text(data)
+    if text is None:
+        return None
+    return unify_text(text[:CHECK_MAX_CHARS])
+
+
+# 採点の TextDecoder("shift_jis")（Node の ICU）と cp932 の違い。ほかの1・2バイトの並びは、すべて同じに読む。
+#   cp932 は 1バイトの 0x80・0xA0・0xFD・0xFE・0xFF を U+0080・U+F8F0〜U+F8F3 に読むが、採点は読めない（文字にできない）とする。
+#   制御文字の 0x1A・0x1C・0x7F は、採点では U+001C・U+007F・U+001A に入れ替わる。
+SJIS_UNREADABLE = re.compile("[\u0080\uf8f0-\uf8f3]")
+SJIS_SWAP = {0x1A: 0x1C, 0x1C: 0x7F, 0x7F: 0x1A}
+
+
+def sjis_text(data: bytes) -> Optional[str]:
+    """Shift_JIS のバイト列を、採点（TextDecoder の shift_jis）と同じに読む。読めなければ None。"""
+    try:
+        text = data.decode("cp932")
+    except UnicodeDecodeError:
+        return None
+    if SJIS_UNREADABLE.search(text):
+        return None
+    return text.translate(SJIS_SWAP)
+
+
+def unify_text(text: str) -> str:
+    return unicodedata.normalize("NFC", text).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def names_of(paths: List[str], limit: int = 3) -> str:
+    shown = "、".join(paths[:limit])
+    return shown + ("、ほか%d件" % (len(paths) - limit) if len(paths) > limit else "")
+
+
+def input_check_problems(task: Dict[str, Any], files: List[InputFile], label: str, probes: RegexProbes) -> List[str]:
+    """課題の入力のファイルと突き合わせて、基準の check を確かめる。regex は probes に集める（あとで node で確かめる）。"""
+    out = []
+    candidates = [f for f in files if not any(part in GRADER_SKIP_DIRS for part in f[0].split("/"))]
+    for i, item in enumerate(task.get("criteria") or []):
+        if not isinstance(item, dict) or item.get("grading") != "program" or not isinstance(item.get("check"), dict):
+            continue
+        where = "%s.criteria[%d].check" % (label, i)
+        check = item["check"]
+        matcher = glob_to_regex(check["file"])
+        if check["type"] == "unchanged":
+            if not any(matcher.match(f[0]) for f in files):
+                out.append("%s.file「%s」が、課題の入力のファイルのどれにも当てはまらない（unchanged は、課題の入力を変えていないことを確かめる種類）"
+                           % (where, check["file"]))
+            continue
+        matched = [f for f in candidates if matcher.match(f[0])]
+        if not matched:
+            continue
+        if check["type"] == "file_exists":
+            filled = [f[0] for f in matched if f[2] > 0]
+            if filled:
+                out.append("%s は、課題の入力のファイルがもとのままでも合格してしまう（「%s」に当てはまるファイルがある（%s））。%s"
+                           % (where, check["file"], names_of(filled), INPUT_CHECK_HINT))
+            continue
+        texts = [(f[0], input_text(f[1])) for f in matched]
+        readable = [(p, t) for p, t in texts if t is not None]
+        if check["type"] == "regex":
+            if readable:
+                probes.append((where, check["pattern"], check.get("flags") or "", readable))
+            continue
+        needle = unify_text(check["text"])
+        hit = next((p for p, t in readable if needle in t), None)
+        if check["type"] == "contains" and hit is not None:
+            out.append("%s は、課題の入力のファイルがもとのままでも合格してしまう（「%s」に「%s」がある）。%s"
+                       % (where, hit, short_text(check["text"]), INPUT_CHECK_HINT))
+        elif check["type"] == "not_contains" and hit is None and len(readable) == len(matched):
+            out.append("%s は、課題の入力のファイルがもとのままでも合格してしまう（「%s」はどのファイルにもない（調べたファイル：%s））。%s"
+                       % (where, short_text(check["text"]), names_of([f[0] for f in matched]), INPUT_CHECK_HINT))
+    return out
+
+
+def short_text(text: str, limit: int = 40) -> str:
+    """grade.mjs の clip と同じく、長い文字を切って … を付ける。"""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def js_regex_hits(probes: RegexProbes) -> Dict[str, str]:
+    """regex の pattern が、入力の文字のどれかに合うかを node で確かめる。場所 -> 合った入力の相対の場所。node がなければ RuntimeError。"""
+    script = ("const items = JSON.parse(require('fs').readFileSync(0, 'utf8'));"
+              "console.log(JSON.stringify(items.map(([p, f, texts]) => { let re; try { re = new RegExp(p, f); } catch (e) { return null; }"
+              " const hit = texts.find(([, t]) => re.test(t)); return hit ? hit[0] : null; })));")
+    try:
+        done = subprocess.run(["node", "-e", script],
+                              input=json.dumps([[p, f, [list(t) for t in texts]] for _, p, f, texts in probes]).encode("utf-8"),
+                              capture_output=True, timeout=60)
+        results = json.loads(done.stdout.decode("utf-8"))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise RuntimeError("node を動かせなかった")
+    return {where: hit for (where, _, _, _), hit in zip(probes, results) if hit}
+
+
 def check_eval(ctx: Context, c: Check) -> None:
     base = os.path.join(ctx.root, "tests", "eval")
     names = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))) if os.path.isdir(base) else []
@@ -997,6 +1158,8 @@ def check_eval(ctx: Context, c: Check) -> None:
         c.error("作業の定義が読めないので、基準の写しと設定を比べられない")
     used: Set[str] = set()
     regexes: Regexes = []
+    probes: RegexProbes = []
+    probe_patterns: Dict[str, str] = {}
     ids: Dict[str, str] = {}
     for name in names:
         path = os.path.join(base, name, "eval.json")
@@ -1016,9 +1179,17 @@ def check_eval(ctx: Context, c: Check) -> None:
             if data["id"] in ids:
                 c.error("%s の id「%s」が、%s と重なっている" % (label, data["id"], ids[data["id"]]))
             ids[data["id"]] = label
+        found_inputs: List[str] = []
         if isinstance(data.get("inputs"), list):
-            for problem in input_problems(os.path.dirname(path), data["inputs"], label):
+            found_inputs = input_problems(os.path.dirname(path), data["inputs"], label)
+            for problem in found_inputs:
                 c.error(problem)
+        if not problems and not found_inputs:   # 入力のままで当てはまってしまう採点や、入力に当てはまらない unchanged は、形が正しく入力がそろうときに確かめる
+            before = len(probes)
+            for problem in input_check_problems(data, input_files(os.path.dirname(path), data.get("inputs", [])), label, probes):
+                c.error(problem)
+            for where, pattern, _, _ in probes[before:]:
+                probe_patterns[where] = pattern
         # settings.task を省いた課題も、空の値として比べる（必須で初めの値のない設定があれば、画面で開始できない）。
         # settings や settings.task が辞書でないときは、形の誤りとして eval_task_problems が知らせているので、ここでは比べない
         eval_settings = data.get("settings", {})
@@ -1043,6 +1214,13 @@ def check_eval(ctx: Context, c: Check) -> None:
                 c.error("%s が正規表現として読めない（%s）" % (where, message))
         except RuntimeError as e:
             c.warn("regex の pattern が正規表現として読めるかは確かめていない（%s。Node.js があれば確かめる）" % e)
+    if probes:
+        try:
+            for where, hit in js_regex_hits(probes).items():
+                c.error("%s は、課題の入力のファイルがもとのままでも合格してしまう（「%s」に、パターン「%s」に合う箇所がある）。%s"
+                        % (where, hit, short_text(probe_patterns[where]), INPUT_CHECK_HINT))
+        except RuntimeError as e:
+            c.warn("regex の基準が課題の入力のままで当てはまってしまわないかは確かめていない（%s。Node.js があれば確かめる）" % e)
     for cid, original in criteria.items():
         if ctx.task is not None and cid not in used:
             c.error("作業の定義の基準 %s（%s）が、どの EVAL の課題にも写されていない" % (cid, short(original.get("text"), 80)))
