@@ -57,7 +57,7 @@ export function createRun(ctx, { id, settings, requestText, isAuto, startedAt })
     waits: [],
     limit: null, // 最後の利用の上限の待ち { requestId, answered, action }
     humanWait: null, // 人の判断待ちの質問 { question, askedAt, iteration, turnEnded, waitingSince, answerUnknown? }（4.15）
-    humanAnswered: false, // この実行で、人の答えが統括に届いたか（人の指示で終える印を受け付ける条件。4.15）
+    humanEndOpen: false, // 人の指示で終える印を受け付けるか。人の答えが届くと開き、統括がほかのことをすると閉じる（4.15）
     refusals: {},
     stopRequested: false,
     stopAt: null,
@@ -157,7 +157,7 @@ export function resumeFromHumanWait(ctx, run, at, how) {
   if (run.status !== 'waiting_human') return;
   // 人の答えが届いたとみるのは、<名前>_answer で答えを送ったか、送りが時間切れだった（届いて動き出した）ときだけ。
   // ほかのきっかけで統括が動き出しても、人の指示で終える印は受け付けない（4.15）
-  if (how === 'answered' || run.humanWait?.answerUnknown) run.humanAnswered = true;
+  if (how === 'answered' || run.humanWait?.answerUnknown) run.humanEndOpen = true;
   run.status = 'running';
   run.humanWait = null;
   const rec = run.tree.get(run.rootId);
@@ -167,6 +167,13 @@ export function resumeFromHumanWait(ctx, run, at, how) {
     syncSlot(run, rec);
   }
   logEntry(ctx, run, { t: 'status', at, status: 'running', resumed: how });
+}
+
+// 人の指示で終える印を閉じる（4.15）。答えの直後に、統括が印を付けた _review より先に、繰り返しを続けることをした。
+// 次の答えが届くまで、印は受け付けない。閉じるのは、統括が _review・_issue・_finish 以外の記録のツールを呼んだとき（records.mjs）と、
+// 統括を親とするエージェントが始まったとき（events.mjs）
+export function closeHumanEnd(run) {
+  run.humanEndOpen = false;
 }
 
 // 起票の印から、案の起票の状態を読む（4.11）

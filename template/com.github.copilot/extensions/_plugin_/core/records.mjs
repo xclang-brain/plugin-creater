@@ -2,7 +2,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { ASK_RECORDED_MESSAGE, DISCONNECTED_MESSAGE, LIMITS, STOPPED_MESSAGE } from './constants.mjs';
 import { analyzeEntries, formatReviewText, numberIssues } from './analysis.mjs';
-import { currentIteration, isActiveAgent, resumeFromHumanWait } from './run.mjs';
+import { closeHumanEnd, currentIteration, isActiveAgent, resumeFromHumanWait } from './run.mjs';
 import { logEntry } from './log.mjs';
 import { requestClose } from './lifecycle.mjs';
 import { isPlainObject } from './util.mjs';
@@ -22,6 +22,8 @@ const refuse = (message) => {
 };
 
 const COUNTED_TOOLS = new Set(['plan', 'verdict', 'review', 'issue', 'finish', 'ask']);
+// まとめの記録。統括が呼んでも、人の指示で終える印を閉じない（4.15）。印を付け忘れて断られたときに、印を付けて呼び直せるようにする
+const SUMMARY_TOOLS = new Set(['review', 'issue', 'finish']);
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 const isNonEmptyString = (v) => typeof v === 'string' && v.trim() !== '';
 
@@ -231,8 +233,8 @@ function recordShow(ctx, run, args, agentId) {
 
 function requireSummarizing(ctx, run, name) {
   if (run.status !== 'summarizing') {
-    // 人の答えが届いた実行では、人の指示で終える印のことを添える（4.15）
-    const hint = run.humanAnswered
+    // 人の指示で終える印を受け付けるあいだ（人の答えの直後）だけ、印のことを添える（4.15）
+    const hint = run.humanEndOpen
       ? `人の判断待ちの答えが、ここで終えるよう言っていたときは、${tool(ctx, 'review')} を endedByHuman を true にして呼び、まとめを続けてください。`
       : '';
     refuse(
@@ -241,15 +243,18 @@ function requireSummarizing(ctx, run, name) {
   }
 }
 
-// 人の指示で終える（4.15）。人の答えが届いた後に、統括が印を付けて _review を呼んだ。繰り返しの途中でも、まとめ中に移す。
-// 人の答えなしに、統括が自分の判断で繰り返しを抜けられないよう、答えが届いた実行だけで受け付ける。
+// 人の指示で終える（4.15）。人の答えの直後に、統括が印を付けて _review を呼んだ。繰り返しの途中でも、まとめ中に移す。
+// 人の答えなしに、統括が自分の判断で繰り返しを抜けられないよう、印が開いているとき（答えが届いてから、統括がほかのことをするまで）だけ受け付ける。
 // まとめ中の印は使わない（繰り返しは人の指示の前に終わっているので、終わった理由は合否の記録のまま）。
-function endByHuman(run) {
+function endByHuman(ctx, run) {
   if (run.status !== 'running') return;
-  if (!run.humanAnswered) {
-    refuse('この実行では、まだ人の答えが届いていません。endedByHuman は、人の判断待ちの答えが、ここで終えるよう言ったときだけ付けます。印を付けずに、繰り返しを続けてください。');
-  }
   if (run.humanWait) refuse('答えを待っている質問があります。ほかのツールを呼ばずに、手番を終えて、答えを待ってください。');
+  if (!run.humanEndOpen) {
+    refuse(
+      `いまは endedByHuman を付けられません。この印は、人の判断待ちの答えが届いた直後に、その答えがいまここで終えるよう言っているときだけ付けます。答えが届いていないときと、答えの後に計画などの記録をしたり、エージェントを呼んだりした後は付けられません。印を付けずに、繰り返しを続けてください。人の答えが、後で終えるよう言っていたときは、その時が来たら、${tool(ctx, 'ask')} で、ここで終えるかを聞いてください。`,
+    );
+  }
+  closeHumanEnd(run);
   run.outcome = 'human_ended';
   run.status = 'summarizing';
 }
@@ -267,7 +272,7 @@ function mechanicalDrafts(ctx, run) {
 }
 
 function recordReview(ctx, run, args) {
-  if (args.endedByHuman === true) endByHuman(run);
+  if (args.endedByHuman === true) endByHuman(ctx, run);
   requireSummarizing(ctx, run, 'review');
   const issues = numberIssues(mechanicalDrafts(ctx, run), 'M', 'mechanical');
   return formatReviewText({
@@ -348,6 +353,9 @@ export function applyRecord(ctx, shortName, args, agentId) {
   // 人の判断待ちのあいだに、統括が記録のツールを呼んだ。答えが届いて動き出したとみる（答えの送りが時間切れだったとき。4.15）。
   // 作業・検証の記録では戻さない。待っている統括が動いた印ではなく、戻すと、統括の手番の終わりが来ないまま実行中で残るため
   if (run.status === 'waiting_human' && agentId === run.rootId) resumeFromHumanWait(ctx, run, ctx.clock.now(), 'activity');
+  // 人の答えの後に、統括がまとめの記録より先に、計画・表示・質問の記録を呼んだ。繰り返しを続けたとみて、人の指示で終える印を閉じる（4.15）。
+  // 受け付けるか断るかによらない。続けようとしたことは同じで、断りの後に印で抜けられないようにする
+  if (agentId === run.rootId && !SUMMARY_TOOLS.has(shortName)) closeHumanEnd(run);
   const counted = COUNTED_TOOLS.has(shortName);
   try {
     if (handler.role && run.tree.get(agentId)?.role !== handler.role) {

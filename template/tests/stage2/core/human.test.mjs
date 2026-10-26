@@ -344,12 +344,12 @@ test('REQ-051 人の答えが届いていない実行では、印を付けた _r
   const h = await makeHarness(t);
   await h.begin({ maxIterations: 3 });
   await h.iterate(1, { pass: false });
-  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /いまは endedByHuman を付けられません/);
   assert.match(await expectRefusal(h.tool('finish', { summary: 'まとめ' }, h.root)), /まだ繰り返しの途中です/);
   assert.equal(h.run().status, 'running');
-  // 質問を記録しても、答えが届く前は同じ
+  // 質問を記録しても、答えが届く前は断る（答えを待つよう返す）
   await h.tool('ask', { question: QUESTION }, h.root);
-  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /答えを待っている質問があります/);
   assert.equal(h.run().status, 'running');
 });
 
@@ -433,6 +433,108 @@ test('REQ-051 答えを渡さないまま、待っている統括が動き出し
   // <名前>_answer を通らずに、統括が動き出した（例：メインのエージェントが直接メッセージを送った）
   await h.event({ type: 'tool.started', agentId: h.root, toolCallId: 'tc-x1', toolName: 'weekly-report_review', arguments: {} });
   assert.equal(h.run().status, 'running');
-  assert.match(await expectRefusal(h.tool('review', END, h.root)), /まだ人の答えが届いていません/);
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /いまは endedByHuman を付けられません/);
   assert.equal(h.run().status, 'running');
+});
+
+test('REQ-051 「続けて」と答えた後に計画が記録されると、後で印を付けた _review は断られ、「まだ繰り返しの途中です」の断りに印のことが添えられない', async (t) => {
+  const h = await makeHarness(t);
+  await toWaiting(h, { maxIterations: 3 });
+  await answer(h, '続けて');
+  await h.iterate(2, { pass: false });
+  assert.equal(h.run().status, 'running');
+  const reason = await expectRefusal(h.tool('review', END, h.root));
+  assert.match(reason, /いまは endedByHuman を付けられません/);
+  assert.match(reason, /weekly-report_ask で、ここで終えるかを聞いてください/, '終えるには聞き直すよう返す');
+  const plain = await expectRefusal(h.tool('review', {}, h.root));
+  assert.match(plain, /まだ繰り返しの途中です/);
+  assert.doesNotMatch(plain, /endedByHuman/, '印を受け付けないときは、印のことを添えない');
+  assert.doesNotMatch(await expectRefusal(h.tool('finish', { summary: 'まとめ' }, h.root)), /endedByHuman/);
+  assert.equal(h.run().status, 'running');
+});
+
+test('REQ-051 終えるよう言う答えの直後なら、ファイルを読んだり、印を付け忘れた _review が断られたりした後でも、印を付けた _review を受け付ける', async (t) => {
+  const h = await makeHarness(t);
+  await toWaitingBeforeVerdict(h, { maxIterations: 3 });
+  await answer(h, 'やめて');
+  await h.event({ type: 'tool.started', agentId: h.root, toolCallId: 'tc-v1', toolName: 'view', arguments: { path: 'a' } });
+  await h.event({ type: 'tool.completed', agentId: h.root, toolCallId: 'tc-v1', toolName: 'view', success: true });
+  assert.match(await expectRefusal(h.tool('review', {}, h.root)), /まだ繰り返しの途中です[\s\S]*endedByHuman を true にして呼び/);
+  assert.match(await expectRefusal(h.tool('issue', { title: '案', body: '本文' }, h.root)), /endedByHuman/);
+  await h.tool('review', END, h.root);
+  assert.equal(h.run().status, 'summarizing');
+});
+
+test('REQ-051 答えの後に、統括が計画などの記録を呼ぶか、作業か検証のエージェントを始めると、印を付けた _review は断られる', async (t) => {
+  // 計画の記録（受け付けられた）
+  const a = await makeHarness(t);
+  await toWaiting(a, { maxIterations: 3 });
+  await answer(a, 'やめて');
+  await a.tool('plan', a.planArgs(2), a.root);
+  assert.match(await expectRefusal(a.tool('review', END, a.root)), /いまは endedByHuman を付けられません/);
+
+  // 計画の記録（断られた）
+  const b = await makeHarness(t);
+  await toWaiting(b, { maxIterations: 3 });
+  await answer(b, 'やめて');
+  await expectRefusal(b.tool('plan', b.planArgs(5), b.root));
+  assert.match(await expectRefusal(b.tool('review', END, b.root)), /いまは endedByHuman を付けられません/);
+
+  // 表示の記録
+  const c = await makeHarness(t);
+  await toWaiting(c, { maxIterations: 3 });
+  await answer(c, 'やめて');
+  await c.tool('show', { key: 'no-such-key', value: 'x' }, c.root).catch(() => {});
+  assert.match(await expectRefusal(c.tool('review', END, c.root)), /いまは endedByHuman を付けられません/);
+
+  // 検証のエージェントを始めた（合否の記録の前に聞いていた）
+  const d = await makeHarness(t);
+  await toWaitingBeforeVerdict(d, { maxIterations: 3 });
+  await answer(d, 'やめて');
+  await d.spawn('verifier');
+  assert.match(await expectRefusal(d.tool('review', END, d.root)), /いまは endedByHuman を付けられません/);
+  assert.equal(d.run().status, 'running');
+
+  // 比べ：作業エージェントが呼んだエージェントは、統括のしたことではないので数えない
+  const e = await makeHarness(t);
+  await e.begin({ maxIterations: 3 });
+  await e.tool('plan', e.planArgs(1), e.root);
+  const worker = await e.spawn('worker');
+  await e.tool('ask', { question: QUESTION }, e.root);
+  await rootTurnEnd(e);
+  await answer(e, 'やめて');
+  await e.spawn('helper', { parent: worker });
+  await e.tool('review', END, e.root);
+  assert.equal(e.run().status, 'summarizing');
+});
+
+test('REQ-051 後で終えるよう言う答えでは、続けた後の試行が不合格でも、聞き直す前の印は断られる。聞き直して「終えて」と答えると、「人の指示で終えた」で終わる', async (t) => {
+  const h = await makeHarness(t);
+  await toWaiting(h, { maxIterations: 4 });
+  await answer(h, 'あと1回だけ試して、だめなら終えて');
+  await h.iterate(2, { pass: false });
+  assert.equal(h.run().status, 'running');
+  assert.match(await expectRefusal(h.tool('review', END, h.root)), /いまは endedByHuman を付けられません[\s\S]*weekly-report_ask/, '聞かずに終えられない');
+  await h.tool('ask', { question: '試行2も失敗しました。終えますか？' }, h.root);
+  await rootTurnEnd(h, { first: false, response: '人の判断待ち\n試行2も失敗しました。終えますか？' });
+  assert.equal(h.run().status, 'waiting_human');
+  assert.equal(h.run().humanWait.iteration, 2);
+  await answer(h, '終えて');
+  await h.tool('review', END, h.root);
+  assert.equal(h.run().status, 'summarizing');
+  await h.tool('finish', { summary: '人の指示で、試行 2 の後に終えました。' }, h.root);
+  await rootTurnEnd(h, { first: false, response: '実行の番号：x' });
+  const run = h.run();
+  assert.deepEqual([run.endReason.kind, run.endReason.detail], ['human_ended', null]);
+  assert.deepEqual(run.iterations.map((i) => i.n), [1, 2]);
+  assert.equal(h.port.callsOf('sendMessage').length, 2, '答えは 2 回届いた');
+});
+
+test('REQ-051 統括に送る答えの文は、いまここで終えるときは先に印を付けること、後で終えるときは続けて聞き直すことを伝える', async (t) => {
+  const h = await makeHarness(t);
+  await toWaiting(h);
+  await answer(h, '続けて');
+  const [[, message]] = h.port.callsOf('sendMessage').map((c) => c.args);
+  assert.match(message, /いまここで終えるよう言っているときは[\s\S]*ほかの記録やエージェントの呼び出しより先に/);
+  assert.match(message, /後で終えるよう言っているときは、いまは続けて、その時が来たら、終えるかをもう一度聞いてください/);
 });

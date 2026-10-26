@@ -31,4 +31,22 @@ describe('手番の数え方', () => {
     assert.equal(tracker.state.busy, true, '2回目の送信で、また動いている状態');
     assert.equal(tracker.state.idleCount, 0);
   });
+
+  test('REQ-051 イベントに通し番号を付け、最後の session.idle と、メインのエージェントへの裏のエージェントの知らせの番号を覚える', () => {
+    const tracker = createTracker();
+    tracker.onEvent({ type: 'assistant.message', data: { content: 'URL' } });
+    tracker.onEvent({ type: 'session.idle', data: {} });
+    assert.equal(tracker.state.seq, 2);
+    assert.equal(tracker.state.lastIdleSeq, 2);
+    assert.equal(tracker.state.lastNoticeSeq, 0);
+
+    tracker.onEvent({ type: 'system.notification', data: { kind: { type: 'agent_idle', agentId: 'w-1' } }, agentId: 'orch-1' });
+    assert.equal(tracker.state.lastNoticeSeq, 0, 'サブエージェントに届いた知らせ（agentId 付き）は数えない');
+    tracker.onEvent({ type: 'system.notification', data: { kind: { type: 'agent_idle', agentId: 'orch-1' } } });
+    assert.equal(tracker.state.lastNoticeSeq, 4);
+    assert.equal(tracker.state.busy, true, '知らせを受けたメインのエージェントは動く');
+    tracker.onEvent({ type: 'session.idle', data: {} });
+    assert.equal(tracker.state.lastIdleSeq, 5);
+    assert.equal(tracker.state.busy, false);
+  });
 });

@@ -1608,6 +1608,27 @@ describe('見た目（REQ-030）', () => {
     }
   });
 
+  test('REQ-030 設計図風の決まり：確認の待ちと人の判断待ちの1件ずつは、方眼の上の白い四角（角は 3px）で示す', async () => {
+    // 両方の区画が出ている画面で、同じ箱になっていることを確かめる
+    const state = richRunning();
+    state.run.status = 'waiting_human';
+    state.run.humanWait = richWaitingHuman().run.humanWait;
+    await withScreen({ state, task: ALL_DISPLAYS_TASK, allowErrors: [HTTP_404] }, async ({ page }) => {
+      await until(page, () => !document.getElementById('s-waits').hidden && !document.getElementById('s-human').hidden);
+      const boxes = await page.evaluate(() =>
+        [...document.querySelectorAll('#s-waits .wait, #s-human .wait')].map((el) => {
+          const s = getComputedStyle(el);
+          return { section: el.closest('section').id, background: s.backgroundColor, border: ['Top', 'Right', 'Bottom', 'Left'].map((side) => `${s[`border${side}Width`]} ${s[`border${side}Style`]}`), radius: s.borderTopLeftRadius };
+        }),
+      );
+      assert.equal(boxes.filter((b) => b.section === 's-waits').length, 3, '確認の待ちを3件とも調べた');
+      assert.equal(boxes.filter((b) => b.section === 's-human').length, 1, '人の判断待ちも調べた');
+      for (const box of boxes) {
+        assert.deepEqual({ background: box.background, border: box.border, radius: box.radius }, { background: 'rgb(255, 255, 255)', border: Array(4).fill('1px solid'), radius: '3px' }, `${box.section} の箱`);
+      }
+    });
+  });
+
   test('REQ-030 状態の札（色の違う全種類）と、押せないボタンも、色の差が 4.5:1 以上', async () => {
     const state = richFinished();
     state.run.agents = ['standby', 'running', 'waiting', 'waiting_human', 'completed', 'failed', 'stopped', 'unstopped'].map((status, i) => ({ ...state.run.agents[0], slot: `s${i}`, role: 'worker', label: `枠${i}`, status, agentId: null }));

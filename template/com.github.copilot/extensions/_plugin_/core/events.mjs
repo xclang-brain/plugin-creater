@@ -1,6 +1,7 @@
 import { LIMITS } from './constants.mjs';
 import { callWithTimeout, clone } from './util.mjs';
 import {
+  closeHumanEnd,
   currentIteration,
   enterHumanWait,
   isActiveAgent,
@@ -57,6 +58,7 @@ function addToTree(ctx, run, e, at) {
     reply: null,
   };
   run.tree.set(e.agentId, rec);
+  if (e.parentAgentId === run.rootId) closeHumanEnd(run); // 統括が作業か検証を始めた。人の指示で終える印を閉じる（4.15）
   if (slotName) {
     const slot = slotByName(run, slotName);
     slot.agentId = e.agentId;

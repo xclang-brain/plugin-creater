@@ -144,6 +144,31 @@ describe('画面の操作', () => {
     });
   });
 
+  test('REQ-051 人の判断待ちの質問を、状態の要点（onSnapshot）に入れる。質問を記録しただけのあいだは、待っていない印にする', async () => {
+    await withApp(async ({ core, app }) => {
+      const seen = [];
+      const done = operate(app, { onSnapshot: (s) => seen.push(s) });
+      await until(() => core.callsOf('start').length === 1, '開始');
+      await until(() => seen.length >= 1, '実行中の表示');
+      assert.equal(seen[0].humanWait, null);
+      const asked = (status, waiting) => (s) => {
+        s.run.status = status;
+        s.run.humanWait = { question: 'ビルドが失敗しました。どうしますか？', askedAt: 1234, iteration: 1, waiting };
+        return s;
+      };
+      core.set(asked('running', false));
+      await until(() => seen.some((s) => s.humanWait), '質問の記録');
+      core.set(asked('waiting_human', true));
+      await until(() => seen.some((s) => s.status === 'waiting_human'), '人の判断待ち');
+      core.set(fake.finishedState());
+      await done;
+      assert.deepEqual(seen.find((s) => s.humanWait && !s.humanWait.waiting).humanWait, { question: 'ビルドが失敗しました。どうしますか？', askedAt: 1234, waiting: false });
+      assert.deepEqual(seen.find((s) => s.status === 'waiting_human').humanWait, { question: 'ビルドが失敗しました。どうしますか？', askedAt: 1234, waiting: true });
+      assert.equal(seen.at(-1).humanWait, null);
+      assert.deepEqual(core.calls.map((c) => c.name), ['start'], '画面では答えない（止めもしない）');
+    });
+  });
+
   test('REQ-041 終わらないときは、上限の時間で打ち切り、終わっていないことと、そこまでの記録を返す', async () => {
     await withApp(async ({ app }) => {
       const result = await operate(app, { timeoutMs: 700 });

@@ -572,10 +572,13 @@ h3 {
   border: 2px solid #b8860b;
 }
 
+/* 確認の待ちと人の判断待ちの1件ずつ：ほかの区画の箱と同じ、方眼の上の白い四角（4.16） */
 .wait {
-  margin-top: 0.75rem;
-  padding-top: 0.5rem;
-  border-top: 1px dashed var(--thin);
+  margin: 0.6rem 0;
+  padding: 0.45rem 0.8rem 0.5rem;
+  background: var(--box);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
 }
 
 .command {
@@ -601,13 +604,6 @@ h3 {
 /* 人の判断待ち：確認の待ちと同じ黄（判断待ち）の枠 */
 #s-human {
   border: 2px solid #b8860b;
-}
-
-#s-human .wait {
-  padding: 0.45rem 0.8rem 0.5rem;
-  background: var(--box);
-  border: 1px solid var(--stroke);
-  border-radius: var(--radius);
 }
 
 #s-unstopped {
