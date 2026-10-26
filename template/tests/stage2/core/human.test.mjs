@@ -446,6 +446,7 @@ test('REQ-051 「続けて」と答えた後に計画が記録されると、後
   const reason = await expectRefusal(h.tool('review', END, h.root));
   assert.match(reason, /いまは endedByHuman を付けられません/);
   assert.match(reason, /weekly-report_ask で、ここで終えるかを聞いてください/, '終えるには聞き直すよう返す');
+  assert.match(reason, /いまここで終えるよう言っていたのに[\s\S]*weekly-report_ask で、ここで終えるかを聞き直してください/, '順を間違えたときも、聞き直すよう返す');
   const plain = await expectRefusal(h.tool('review', {}, h.root));
   assert.match(plain, /まだ繰り返しの途中です/);
   assert.doesNotMatch(plain, /endedByHuman/, '印を受け付けないときは、印のことを添えない');
