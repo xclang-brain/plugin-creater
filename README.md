@@ -1,225 +1,85 @@
 # plugin-creator
 
-plugin-creator は、GitHub Copilot CLI のプラグインです。
+Copilot CLI のプラグインを生成するプラグインです。あなたに作業の手順やルールを質問し、その答えを組み込んだプラグインを生成します。
 
-- あなたに質問して、仕事のナレッジ（やり方や決まり）を聞き取ります。
-- 聞き取ったナレッジを組み込んだ Copilot CLI のプラグインを作り、試験します。
+## 始め方
 
-## できること
+1. インストールします。
 
-| | 内容 |
-| --- | --- |
-| あなたが渡すもの | 任せたい仕事の頼み、質問への答え、いつも使っているファイル。作り直すときは、既存のプラグイン |
-| あなたが受け取るもの | 生成プラグイン（ナレッジを組み込んだ Copilot CLI のプラグイン） |
+   ```text
+   /plugin marketplace add xclang-brain/plugin-creator
+   /plugin install plugin-creator@plugin-creator
+   ```
 
-plugin-creator は、次の順に進めます。
+2. 実験的機能を有効にします。
 
-1. ヒアリング：あなたに質問して、ナレッジを聞き取ります。最近実際にやった1回の流れも聞きます。
-2. 生成：ナレッジを組み込んだ生成プラグインを作ります。あなたのファイルやスクリプトで使えるものは、流用します。
-3. 試験：生成プラグインを試験して、結果を示します。
+   ```text
+   /settings experimental on
+   ```
 
-生成プラグインは、次のように動きます。
+3. チャットに「〇〇の作業を自動化するプラグインを作って」と入力します。
 
-- 統括エージェント、作業エージェント、検証エージェントが分担して作業します。
-- 統括エージェントが計画し、作業エージェントが実行し、検証エージェントが評価します。これを繰り返して、成果物をよくします（PDS サイクル）。
-- Web管理画面（ブラウザーで開く画面）で、設定、実行の監視と停止、結果の確認ができます。
+## 生成までの流れ
 
-### 例：週報の生成プラグイン
+1. plugin-creator が、plugin-creator の画面の URL をチャットに示します。ブラウザーで開くと、質問で決まったことの一覧を見られます。
+2. plugin-creator の質問に、チャットで答えます。
+3. plugin-creator が、生成の前に、決まったことのまとめを示します。直したいところを伝え、よいと答えます。
+4. plugin-creator が、Copilot CLI を起動したフォルダの中に、新しいフォルダを作り、そこにプラグインを生成します。
 
-- 頼み：「毎週の売上データ（CSV）から、部長に出す週報を作る作業を、Copilot CLI のプラグインにしたいです」
-- ヒアリングで聞き取ったナレッジの例：
-  - 見出しは「■今週の売上」と「■来週の予定」の2つだけ
-  - 最後の行は「以上」
-  - 金額は万円の単位にし、1万円未満は切り捨てる
-- 生成プラグイン：`weekly-sales-report`。「sales.csv から週報を作って」と頼むと、週報 `weekly_report.md` を作ります。
+生成したプラグインのインストールのしかたは、そのフォルダの `README.md` にあります。
 
-この例の会話の全文は、[会話例](examples/weekly-report.md) にあります。AI が演じたユーザーとの会話です。人と話すと、質問の数や順番が変わります。
+## モデルの選び方
 
-## 使い方
+- 質問と、生成の中の判断は、あなたが `/model` で選んだモデルで行います。思考力の高いモデルが向いています。
+- 生成したプラグインのファイルを書く仕事は、費用の低いモデル（GPT-6 Luna か Claude Haiku 5.5）で行います。ただし、モデルが Auto のときは、Auto が選んだモデルで行います。
 
-初めて使う前に、下の「使うために要る準備」を1回行います。
+## 生成したプラグインを試験する
 
-1. 生成プラグインを置きたいフォルダで、`copilot` を起動します。このフォルダを、作業フォルダと呼びます。
-2. チャットで頼みます。例：「〇〇の作業を自動化したい」
-   - `/plugin-creator:make-plugin` と打っても始められます。
-   - 既存のプラグインを作り直すときは、そのプラグインのフォルダを示して頼みます。
-3. plugin-creator が、plugin-creator の画面の URL をチャットに示します。
-   - ブラウザーで開くと、ヒアリングで決まったことの一覧を見られます。
-   - 画面は見るだけです。答えは、チャットに書きます。
-   - URL は、Copilot CLI を動かしているマシンのブラウザーでだけ開けます。
-4. plugin-creator の質問に、チャットで答えます。
-5. 生成の前に、plugin-creator が次の3つを示します。
-   - 聞き取ったナレッジの一覧と、生成プラグインの振る舞いの案
-   - Web管理画面の見本（ブラウザーで開きます）
-   - EVAL（実際のモデルで課題を実行して採点する試験）の課題と合否の基準
-6. 直したいところを伝えます。あなたがよいと答えると、plugin-creator が生成を始めます。
-7. plugin-creator が、作業フォルダの中の新しいフォルダに、生成プラグインを git のリポジトリとして作ります。
-8. plugin-creator が、生成プラグインの構造の検査と部品の試験を行い、結果と使い方をチャットに示します。
-   - 構造の検査と部品の試験の中身は、下の「生成プラグインを試験する」にあります。
-   - 生成プラグインのインストールのしかたは、そのフォルダの `README.md` にあります。
-
-### モデルの選び方
-
-- plugin-creator は、ヒアリングと、生成プラグインの部品の分け方などの判断を、あなたが選んだモデルで行います。
-- この仕事には、思考力の高いモデルが向いています。
-- モデルは `/model` で変えられます。
-- plugin-creator は、生成プラグインのファイルを書く仕事を、費用の低いモデルに任せます。
-  - 使うモデルは GPT-6 Luna です。使えないときは Claude Haiku 5.5 です。
-  - あなたがモデルを Auto にしているときは、この仕事も Auto が選んだモデルで行います。
-
-### 途中でやめて、後で続ける
-
-ヒアリングは、途中でやめられます。前のセッション（Copilot CLI の1つの会話）に戻ると、plugin-creator がやめたところから続けます。
-
-- 最後のセッションに戻る：`copilot --continue`
-- 番号を指定して戻る：`copilot --resume=<セッションの番号>`
-  - 番号は、やめるときに plugin-creator がチャットに示します。
-
-`/clear` の後や、新しいセッションで頼むと、ヒアリングは最初から始まります。
-
-### 生成プラグインを試験する
-
-試験は3段階です。
-
-| 段階 | 確かめること | 動かし方 |
+| 試験 | 確かめること | 動かし方 |
 | --- | --- | --- |
-| 構造の検査 | 設定ファイル、ファイルの置き場所、フロントマターが公式仕様に沿っているか | 生成プラグインのフォルダで `python3 tests/run.py` |
-| 部品の試験 | スクリプト、フック、MCP サーバー、Web管理画面が正しく動くか | 上と同じコマンド |
-| EVAL | 実際のモデルで課題を実行し、合否の基準で採点する。生成プラグインありとなしで、点数を比べる | チャットで「作ったプラグインを試験して」と頼む |
+| 構造の検査 | ファイルの置き場所と書き方が、公式仕様に沿っているか | 生成したプラグインのフォルダで `python3 tests/run.py` |
+| 部品の試験 | スクリプトや画面が動くか | 上と同じ |
+| EVAL | 実際のモデルで課題を実行し、採点する | チャットに「作ったプラグインを試験して」と入力 |
 
-- 構造の検査と部品の試験：
-  - 生成の直後に、plugin-creator が行います。
-  - 生成プラグインを直した後は、上のコマンドで、あなたが行います。plugin-creator をインストールしていなくても動きます。
-  - モデルを使わないので、AI クレジット（GitHub Copilot の利用を数える単位）を使いません。
-- EVAL：
-  - AI クレジットを使います。
-  - plugin-creator は、始める前に、実行の回数と AI クレジットの見込みを示します。あなたがよいと答えてから始めます。
-  - 見込みを出せないときは、plugin-creator がそのことを伝え、使った分を終わった後に示します。
+- 構造の検査と部品の試験は、生成の直後に plugin-creator も行います。AI クレジットを使いません。
+- EVAL は AI クレジットを使います。plugin-creator は、始める前に使う量の見込みを示し、あなたがよいと答えてから始めます。
 
-試験に要るソフトウェア（Python、Playwright、ブラウザー）が足りないとき：
+## 読み込むときの確認
 
-- plugin-creator が、足りないものと、インストールのしかたと、インストールする場所を示します。
-- あなたがよいと答えると、plugin-creator がインストールします。
-- ブラウザーは、手元の Chrome か Edge を使います。どちらもないときだけ、plugin-creator が Playwright のブラウザーをインストールします。
-- plugin-creator は、EVAL に要るものを `<COPILOT_HOME>/plugin-data/plugin-creator/tools/` にインストールします。`<COPILOT_HOME>` は Copilot CLI の設定フォルダで、ふつうは `~/.copilot` です。
-
-## 使うために要る準備
-
-次の3つを、最初に1回行います。
-
-### 1. インストールする
-
-```shell
-copilot plugin marketplace add xclang-brain/plugin-creator
-copilot plugin install plugin-creator@plugin-creator
-```
-
-- 1行目は、このリポジトリを、マーケットプレイス（プラグインの一覧を配るリポジトリやフォルダ）として登録します。
-- 2行目は、マーケットプレイス plugin-creator から、プラグイン plugin-creator をインストールします。形は `<プラグイン>@<マーケットプレイス>` です。
-- GitHub からダウンロードしたフォルダからも、インストールできます。そのときは、1行目の `xclang-brain/plugin-creator` を、フォルダの絶対パスにします。
-
-### 2. 実験的機能を有効にする
-
-- plugin-creator の画面とヒアリングの記録は、エクステンションが動かします。エクステンションは、Copilot CLI の横で動く、プラグインの中の Node.js のプログラムです。
-- エクステンションは、Copilot CLI 1.0.102 の時点では、実験的機能です。実験的機能を有効にしないと、plugin-creator は動きません。
-
-初めて使うときは、次のように起動します。有効にした設定は Copilot CLI の設定ファイルに残るので、次からは `--experimental` を付けなくても有効です。
-
-```shell
-copilot --experimental
-```
-
-Copilot CLI を起動した後なら、チャットで次のように打ちます。
+plugin-creator を読み込むとき、Copilot CLI がチャットに次の確認を出します。
 
 ```text
-/settings experimental on
+Extension "plugin:plugin-creator:plugin-creator" wants elevated permissions
+This extension wants to: skip tool permission prompts, register hooks.
 ```
 
-- Copilot CLI が自動で再起動します。今の会話は終わります。
-- 再起動の後、まだ信頼していないフォルダでは、Copilot CLI がフォルダを信頼するかの確認を出します。
-- 続けて、「3. エクステンションの読み込みを許可する」の確認が出ます。この確認は、続けて2回出ることがあります。
+許可すると、plugin-creator は次のことをします。
 
-### 3. エクステンションの読み込みを許可する
-
-Copilot CLI は、plugin-creator のエクステンションを読み込むとき、チャットに許可の確認を出します。許可しないと、エクステンションが読み込まれず、ヒアリングを始められません。
-
-- 題：`Extension "plugin:plugin-creator:plugin-creator" wants elevated permissions`
-- 本文：
-
-  ```text
-  This extension wants to: skip tool permission prompts, register hooks.
-  Denying will prevent this extension from loading.
-  ```
-
-Copilot CLI 1.0.101 から、この確認は必ずあなたに出ます。Assisted の許可（許可を自動で判定する設定）にしていても、自動では許可されません。
+- `skip tool permission prompts`：画面を開くツール、決まったことを記録するツール、Word・Excel・PowerPoint の文書を読むツールを、確認なしで使います。
+- `register hooks`：質問と答えを、手元のファイルに記録します。会話が自動で要約された後に、AI に手順を読み直させます。
 
 | 選択肢 | 選ぶと起きること |
 | --- | --- |
-| Yes | 今回だけ許可します。Copilot CLI を起動するたびと、`/clear` のたびに、また確認が出ます |
-| Yes, and always allow "plugin:plugin-creator:plugin-creator" in this directory | このフォルダでは、常に許可します。次からは、`/clear` の後も、起動し直しても、確認が出ません。ほかのフォルダでは、また出ます。作業フォルダが Git のリポジトリのときは、`in this directory` の代わりに `in this repo` と出ます |
-| Yes, and don't ask again for "plugin:plugin-creator:plugin-creator" this session | このセッションの間は、確認が出ません。Copilot CLI のプログラムでは、フォルダが分からないときに、2つ目の代わりに出ます。実際に出ることは、確かめていません |
-| No (Esc) | 断ります。エクステンションは読み込まれません |
+| Yes | 今回だけ許可します。次に起動したときと `/clear` の後に、また確認が出ます |
+| Yes, and always allow ... in this directory | このフォルダでは、次から確認が出ません。Git のリポジトリでは `in this repo` と出ます |
+| No (Esc) | plugin-creator は動きません |
 
-確認の本文の意味は、次のとおりです。
+## 質問と答えの記録
 
-- `skip tool permission prompts`：plugin-creator の次のツールは、Copilot CLI の許可の確認なしで動きます。
-  - plugin-creator の画面を開くツール
-  - ヒアリングで決まったことを記録するツール
-  - あなたが示した Word・Excel・PowerPoint の文書をテキストにするツール。Copilot CLI を起動したフォルダの外の文書も読みます
-
-  Issue を起票するツールだけは、起票のたびに確認が出ます。
-- `register hooks`：plugin-creator のフックを登録します。フックは、次の2つを行います。
-  - ヒアリングの問いと答えを、手元のファイルに記録します。
-  - コンパクション（会話の自動の要約）の後に1回だけ、ヒアリングの手順のスキル（make-plugin）を読み直すよう、AI に知らせます。
-
-## 知っておくこと
-
-### 質問に答えないとき
-
-plugin-creator は、あなたにしか分からないことを推測で埋めません。次のときは、止まります。
-
-- 質問を Ctrl+D で断ったとき、Esc で閉じたとき：
-  - plugin-creator は、何を聞きたかったかと、続け方を示して止まります。生成プラグインは作りません。
-  - 続けるには、チャットに答えを書きます。答えていない質問は、続けるときに、もう一度聞きます。
-- autopilot（手順ごとに入力を待たずに作業を続けるモード）で頼んだとき：
-  - plugin-creator は、上と同じように止まります。
-  - 続けるには、Shift+Tab でモードを切り替えて standard にし、チャットに答えを書きます。
-- `-p` か `--no-ask-user` を付けて起動したとき：
-  - 質問のツール（`ask_user`）がないので、plugin-creator はヒアリングを始めません。
-  - これらを付けずに、`copilot` を起動し直します。
-
-生成の後の2つの質問には、答えなくても止まりません。
-
-- 試験に要るソフトウェアをインストールするか：答えないと、インストールせずに進みます。試験をしなかったことは、結果の説明で示します。
-- Issue を起票するか：答えないと、起票せずに進みます。
-
-### plugin-creator の質問の改善（Issue）
-
-- plugin-creator は、生成の後と、あなたが頼んだ試験の後に、ヒアリングを振り返ります。
-- 自分の質問の足りなかったところを、plugin-creator のリポジトリに出す Issue の案にします。案には、あなたの仕事の中身を書きません。
-- plugin-creator は、案ごとに起票してよいかを聞きます。よいと答えた案だけを起票します。
-- 起票のとき、Copilot CLI が許可の確認を出します。この確認が、起票を止める最後の機会です。
-  - 毎回、今回だけ許可する選択肢を選びます。このセッションの間や、ずっと許可する選択肢は選びません。
-  - 起票のツールを、起動のときの `--allow-tool` などで、前もって許可しません。
-- 起票には、gh（GitHub CLI）が要ります。gh をインストールし、`gh auth login` でログインしておきます。
-
-### ヒアリングの記録の置き場所と消し方
-
-plugin-creator は、ヒアリングの途中経過を、セッションごとに次のフォルダに記録します。記録は手元にだけ置き、外には送りません。
+plugin-creator は、質問と答えを、次のフォルダに記録します。記録には、あなたの作業の中身が入ります。外には送りません。自動では消えないので、要らなくなったらフォルダを削除します。
 
 ```text
-<COPILOT_HOME>/plugin-data/plugin-creator/hearings/<セッションの番号>/
+~/.copilot/plugin-data/plugin-creator/hearings/
 ```
-
-- `<COPILOT_HOME>` は、ふつうは `~/.copilot` です。
-- フォルダには、決まったことの記録（`state.json`）と、問いと答えの記録（`qa.jsonl`）があります。あなたの仕事の中身が入っています。
-- plugin-creator は、記録を自動では消しません。要らなくなったら、セッションの番号のフォルダを削除します。すべて消すときは、`hearings` のフォルダを削除します。
-- 記録を削除したセッションに `--continue` や `--resume` で戻っても、ヒアリングの続きはできません。
 
 ## うまく始まらないとき
 
-チャットで頼んでも plugin-creator の画面の URL が出ないときは、エクステンションが読み込まれていません。原因と直し方は、次のどれかです。
+チャットで頼んでも plugin-creator の画面の URL が出ないときは、次のどれかです。
 
-- 実験的機能が有効でない：「2. 実験的機能を有効にする」のとおりに有効にします。
-- エクステンションの読み込みを断った：`/exit` で Copilot CLI を終了し、`copilot` で起動し直します。出た確認で許可します。
-- `/extensions mode` を Disabled にしている：`/extensions mode` で、Load & Augment か Load Only に戻します。Disabled の設定は、次のセッションにも残ります。
+- 実験的機能が有効でない：`/settings experimental on` と入力します。
+- 読み込むときの確認で No を選んだ：`/clear` と入力し、もう一度出た確認で許可します。
+- `/extensions mode` が Disabled になっている：`/extensions mode` で Load & Augment に戻します。
+
+## 会話例
+
+plugin-creator と、AI が演じたユーザーとの会話の例は、[examples/weekly-report.md](examples/weekly-report.md) にあります。
