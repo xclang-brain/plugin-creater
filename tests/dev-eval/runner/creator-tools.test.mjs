@@ -32,10 +32,10 @@ async function withToolkit(fn) {
   }
 }
 
-test('REQ-015 エクステンションのツール 8 つを、サーバー名 plugin-creator の MCP のツールとして出す', async () => {
+test('REQ-015 REQ-052 エクステンションのツール 9 つ（直すときの change を含む）を、サーバー名 plugin-creator の MCP のツールとして出す', async () => {
   await withToolkit(async ({ toolkit }) => {
     assert.equal(CREATOR_SERVER_NAME, 'plugin-creator');
-    assert.deepEqual(toolkit.tools.map((t) => t.name), ['open', 'state', 'progress', 'record', 'confirm', 'results', 'doc_text', 'issue']);
+    assert.deepEqual(toolkit.tools.map((t) => t.name), ['open', 'state', 'progress', 'record', 'confirm', 'results', 'doc_text', 'issue', 'change']);
     assert.deepEqual(toolkit.mcpTools, toolkit.tools.map((t) => `mcp__plugin-creator__${t.name}`));
     for (const t of toolkit.tools) {
       assert.equal(typeof t.description, 'string');

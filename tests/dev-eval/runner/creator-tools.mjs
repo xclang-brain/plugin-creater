@@ -5,7 +5,7 @@
 // 画面を開くツール、記録のツール（progress、record、confirm）、状態取得ツール、試験の結果を知らせるツール、
 // 文書をテキストにするツール、質問の改善案の起票を、Agent SDK の同じプロセスの MCP サーバーとして出す。
 //   サーバー名：plugin-creator（D1a の変換が、ツール名を mcp__plugin-creator__<短い名前> に置き換える）
-//   ツール：open、state、progress、record、confirm、results、doc_text、issue
+//   ツール：open、state、progress、record、confirm、results、doc_text、issue、change
 // - 記録（state.json、qa.jsonl）は、この実行の COPILOT_HOME（copilotHome）に作る。本物のクリエイターと同じ置き場所の形。
 // - 問答の記録（qa.jsonl）は、フックがしている記録（hearing.md 7.4）を、この部品が会話の記録から同じ形で作る。
 //   エクステンションの同じ関数（hooks.onPostToolUse、hooks.onUserPromptSubmitted）を呼ぶので、形も「ヒアリングの最中だけ」の条件も同じ。

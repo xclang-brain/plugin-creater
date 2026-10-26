@@ -15,6 +15,7 @@ const TOOLS = {
   progress: { skip: true },
   record: { skip: true },
   confirm: { skip: true },
+  change: { skip: true }, // 今のプラグインを直す記録を作る（BLUEPRINT 5 C1）
   results: { skip: true },
   doc_text: { skip: true }, // ユーザーの答え15：確認を省く
   issue: { skip: false }, // creator-structure.md 4.5：確認を省かない
@@ -37,7 +38,7 @@ function collectEnums(schema, out = []) {
 }
 
 describe('ツールの登録', () => {
-  test('BLUEPRINT 7章 8つのツールが、plugin-creator_ で始まる名前で登録される', async () => {
+  test('BLUEPRINT 7章 9つのツールが、plugin-creator_ で始まる名前で登録される', async () => {
     await withRun(async (run) => {
       assert.deepEqual([...run.fake.toolNames].sort(), Object.keys(TOOLS).map(T).sort());
     });
@@ -73,6 +74,7 @@ describe('ツールの登録', () => {
       assert.deepEqual(required('issue'), ['title', 'body']);
       assert.deepEqual(required('results'), ['paths']);
       assert.deepEqual(required('confirm'), ['knowledgeIds', 'behavior', 'taskPath', 'evalTasks']);
+      assert.deepEqual(required('change'), ['folder', 'wants']);
     });
   });
 
@@ -81,7 +83,7 @@ describe('ツールの登録', () => {
       const progress = run.fake.tool(T('progress')).parameters;
       assert.deepEqual(progress.properties.stage.enum, STAGE_NAMES);
       assert.deepEqual(progress.properties.items.items.properties.item.enum, ITEM_NAMES);
-      assert.deepEqual(progress.properties.items.items.properties.status.enum, ['聞いた', '決まりなし', '保留']);
+      assert.deepEqual(progress.properties.items.items.properties.status.enum, ['聞いた', '決まりなし', '保留', '変えないので聞かない']);
 
       const record = run.fake.tool(T('record')).parameters.properties.knowledge.items.properties;
       assert.deepEqual(record.kind.enum, ['合否の決め方', 'それ以外']);

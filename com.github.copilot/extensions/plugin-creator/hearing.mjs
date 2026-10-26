@@ -9,6 +9,12 @@
 // - ナレッジの状態の移り方：候補 → 決まった・外した。決まった・外したどうしは行き来できる。候補には戻せない。
 // - 段階を「生成」に進めるには、生成前の確認（confirm）を受け付けていることと、承認の答えの抜き書きが要る。
 //   進めると承認の時刻を残し、その後は記録を変えない（問答も記録しない。差し込みも返さない）。
+// - 今のプラグインを直すとき（記録の change がある。REQ-052〜061、BLUEPRINT 4.1・4.2）：
+//   - 記録は plugin-creator_change だけが作る（applyChange）。作る記録があるセッションでは断る。
+//   - 項目の状態「変えないので聞かない」は、直すときだけ、未着手からだけ使える。「前回の1回」と、作っていないプラグインでは使えない。
+//   - 引き継いだ決まり（carried）の中身を直す記録が来たら、元の行を「外した」にし、新しい番号の行（replaces＝元の番号）を「決まった」で足す（REQ-058）。
+//     中身の直しは、ユーザーが今の中身を答えたときだけなので、状態「決まった」のほかは断る。
+//   - 段階と項目「できていたことの確認」は使わない（できていたことは、すべて引き継ぐ。REQ-054）。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -27,6 +33,7 @@ import {
   OSS_KINDS,
   STAGES,
   assetStatusIndex,
+  confirmWordFor,
   itemIndex,
   itemStatusIndex,
   kindIndex,
@@ -69,6 +76,7 @@ function freshState({ sessionId, now }) {
     createdAt: now,
     updatedAt: now,
     stage: 'start',
+    change: null, // 今のプラグインを直すとき（BLUEPRINT 4.1）。plugin-creator_change が作る
     rebuild: false, // 作り直しのとき true（段階「できていたことの確認」に入るか、その項目を記録すると true になる）
     items: {}, // { <項目の記号>: { status, quote, holder, updatedAt } }。ないものは未着手
     knowledge: [], // 7.3 の欄
@@ -83,6 +91,18 @@ function freshState({ sessionId, now }) {
 }
 
 const knowledgeNumber = (n) => `K-${String(n).padStart(2, '0')}`;
+
+/** ユーザーに見せる確認の呼び名。直すときは「直す前の確認」、作るときは「作る前の確認」 */
+export const confirmWord = (s) => confirmWordFor(Boolean(s?.change));
+
+/** 直すプラグインの見出し（名前と今の版） */
+export const pluginLabel = (change) => `${change.name}、今の版 ${change.version ?? 'なし'}`;
+
+const MAKE_RECORD_MESSAGE = 'このセッションでは、新しく作るか作り直すお話を聞いています。今のプラグインを直すときは、/clear してから頼み直してください。';
+const REBUILD_IN_CHANGE_MESSAGE = '今のプラグインを直すときは、できていたことは聞かずに、すべて引き継ぎます。段階と聞くこと「できていたことの確認」は使いません。';
+
+/** 項目の状態が、聞いていないもの（未着手か、変えないので聞かない）か */
+const notAsked = (status) => status === 'todo' || status === 'unchanged';
 
 /** 長い文を、画面と返り値のために切る */
 export function clip(value, max) {
@@ -159,6 +179,19 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
 
   // ---- progress ---------------------------------------------------------------
 
+  /** 項目の状態「変えないので聞かない」にしてよいか（REQ-056、BLUEPRINT 4.1）。だめなら断る */
+  function checkUnchanged(next, item) {
+    if (!next.change) throw new Refusal(`「変えないので聞かない」は、今のプラグインを直すときだけ使えます。「${item.name}」は、聞いてから記録してください。`);
+    if (!next.change.generated) {
+      throw new Refusal('plugin-creator が作っていないプラグインを直すときは、プラグインの形を変えること自体が変えるところなので、「変えないので聞かない」は使えません。聞くことは、すべて聞いてください。');
+    }
+    if (item.key === 'last_case') throw new Refusal('「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
+    const current = statusOf(next, item.key);
+    if (!notAsked(current)) {
+      throw new Refusal(`「${item.name}」は、もう聞いているので（今の状態：${itemStatusIndex.nameOf(current)}）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、状態が「未着手」のものだけです。`);
+    }
+  }
+
   function applyProgress(args) {
     assertWritable();
     const input = isObject(args) ? args : {};
@@ -200,11 +233,13 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
         if (status.key === 'todo') {
           throw new Refusal(`「${item.name}」を「未着手」には戻せません。使える状態：${listNames(ITEM_STATUSES.filter((s) => s.key !== 'todo'))}`);
         }
+        if (item.key === 'rebuild_check' && next.change) throw new Refusal(REBUILD_IN_CHANGE_MESSAGE);
+        if (status.key === 'unchanged') checkUnchanged(next, item);
         if (!has(e.quote)) {
           throw new Refusal(`「${item.name}」の状態を変えるには、ユーザーの言葉の抜き書き（quote）を添えてください。`);
         }
-        // 未着手から変えるときの抜き書きは、それより前のユーザーの言葉のどれか1つの中にある（採点と同じ決め方。要約や言い換えは断る）
-        if (statusOf(next, item.key) === 'todo' && !quoteInUserWords(e.quote)) {
+        // 未着手（か、変えないので聞かない）から変えるときの抜き書きは、それより前のユーザーの言葉のどれか1つの中にある（採点と同じ決め方。要約や言い換えは断る）
+        if (notAsked(statusOf(next, item.key)) && !quoteInUserWords(e.quote)) {
           throw new Refusal(
             `「${item.name}」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。1つの答えの言葉を、そのまま写してください（要約しない。間を省くときは「…」でつなぐ）。`,
           );
@@ -221,13 +256,14 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     }
 
     if (stageKey) {
+      if (stageKey === 'rebuild_check' && next.change) throw new Refusal(REBUILD_IN_CHANGE_MESSAGE);
       if (stageKey === 'generate') {
         if (!state?.confirmation) {
-          throw new Refusal('段階を「生成」に進める前に、作る前の確認で示すものを plugin-creator_confirm で知らせて、ユーザーによいと答えてもらってください。');
+          throw new Refusal(`段階を「生成」に進める前に、${confirmWord(state)}で示すものを plugin-creator_confirm で知らせて、ユーザーによいと答えてもらってください。`);
         }
         const changed = changesSinceConfirmation();
         if (changed) {
-          throw new Refusal(`作る前の確認で示した仕事のやり方や決まりの一覧と、今の「決まった」ものが違います（${changed}）。plugin-creator_confirm で示し直して、ユーザーによいと答えてもらってください。`);
+          throw new Refusal(`${confirmWord(state)}で示した仕事のやり方や決まりの一覧と、今の「決まった」ものが違います（${changed}）。plugin-creator_confirm で示し直して、ユーザーによいと答えてもらってください。`);
         }
         const taskChanged = taskChangedSinceConfirmation();
         if (taskChanged) throw new Refusal(taskChanged);
@@ -291,7 +327,42 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     return words.length === 0 || quoteFound(quote, words);
   }
 
-  function applyKnowledge(next, e, added, updated) {
+  /** 引き継いだ決まりの中身（種類・項目・文・例・例外）を変える記録か（REQ-058。例と例外の直しも中身の直し） */
+  function contentChanged(existing, fields) {
+    return ['kind', 'item', 'text', 'example', 'exception'].some((f) => f in fields && fields[f] !== (existing[f] ?? null));
+  }
+
+  /**
+   * 引き継いだ決まりの中身を直す記録：元の行を「外した」にし、新しい番号の行（replaces＝元の番号）を足す（REQ-058、決定17、BLUEPRINT 4.2）。
+   * 渡されていない欄は元の値。新しい行の状態は「決まった」（ほかの状態は applyKnowledge が断る）。出どころは渡されなければ「ヒアリングの答え」。
+   */
+  function renumber(next, existing, fields, quote) {
+    existing.status = 'dropped';
+    existing.quote = quote;
+    existing.updatedAt = iso();
+    next.knowledgeCounter += 1;
+    const id = knowledgeNumber(next.knowledgeCounter);
+    const item = fields.item ?? existing.item;
+    next.knowledge.push({
+      id,
+      kind: fields.kind ?? existing.kind,
+      item,
+      itemName: itemIndex.nameOf(item),
+      text: fields.text ?? existing.text,
+      source: fields.source ?? 'answer',
+      quote,
+      example: 'example' in fields ? fields.example : existing.example ?? null,
+      exception: 'exception' in fields ? fields.exception : existing.exception ?? null,
+      status: 'decided',
+      replaces: existing.id,
+      recordedAt: iso(),
+      updatedAt: iso(),
+      itemTouchedAtRecord: !notAsked(statusOf(next, item)),
+    });
+    return id;
+  }
+
+  function applyKnowledge(next, e, added, updated, replaced) {
     if (!isObject(e)) throw new Refusal('仕事のやり方や決まり（knowledge）は、欄を持つものの一覧で渡してください。');
     if (!has(e.quote)) {
       throw new Refusal('仕事のやり方や決まりには、ユーザーの言葉の抜き書き（quote）を添えてください。ファイルから読んだものは、ファイル名と箇所を書いてください。');
@@ -306,8 +377,24 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
       if (fields.status === 'candidate' && existing.status !== 'candidate') {
         throw new Refusal(`仕事のやり方や決まり ${existing.id} を「候補」には戻せません。使える状態：${listNames(KNOWLEDGE_STATUSES.filter((s) => s.key !== 'candidate'))}`);
       }
+      // 中身を直して付け直した元の行は、変えない（同じ決まりが2つの番号で残らないように。付け直した行を外せば、元の行をまた扱える）
+      const replacer = next.knowledge.find((k) => k.replaces === existing.id && k.status !== 'dropped');
+      if (replacer) {
+        throw new Refusal(`仕事のやり方や決まり ${existing.id} は、中身を直して ${replacer.id} にしました。直すときは ${replacer.id} を渡してください。`);
+      }
+      if (existing.carried && contentChanged(existing, fields)) {
+        // 付け直すのは、ユーザーが今の中身を答えたときだけ。付け直した行は「決まった」か「外した」だけにする
+        // （「候補」の付け直しがあると、決まりの変わり方で、元の番号が付け直しでなく外したものに見えるため）
+        if (fields.status !== undefined && fields.status !== 'decided') {
+          throw new Refusal(
+            `仕事のやり方や決まり ${existing.id} は引き継いだ決まりなので、中身（種類・聞くこと・文・例・例外）を直すのは、ユーザーが今の中身を答えたときだけです。状態は「決まった」で渡してください。決まりでなくなったときは、中身を変えずに、状態を「外した」にしてください。`,
+          );
+        }
+        replaced.push([existing.id, renumber(next, existing, fields, text(e.quote))]);
+        return;
+      }
       Object.assign(existing, fields, { quote: text(e.quote), updatedAt: iso() });
-      existing.itemName = itemIndex.nameOf(existing.item); // 項目を直したときも、日本語の名前をそろえる
+      if (fields.item !== undefined) existing.itemName = itemIndex.nameOf(existing.item); // 項目を直したときも、日本語の名前をそろえる
       updated.push(existing.id);
       return;
     }
@@ -318,7 +405,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const fields = checkKnowledgeFields(e, '新しい仕事のやり方や決まりの');
     if (fields.source === 'added_at_confirmation' && isOnlyChosenOption(text(e.quote), store.readQa())) {
       throw new Refusal(
-        '作る前の確認で足すのは、ユーザーが答えの中で自分の言葉で述べた決まりだけです。抜き書き（quote）に、その決まりを述べたユーザーの言葉を入れてください。示したものに「違うところはない」と答えただけなら、記録しないでください。',
+        `${confirmWord(next)}で足すのは、ユーザーが答えの中で自分の言葉で述べた決まりだけです。抜き書き（quote）に、その決まりを述べたユーザーの言葉を入れてください。示したものに「違うところはない」と答えただけなら、記録しないでください。`,
       );
     }
     next.knowledgeCounter += 1;
@@ -337,7 +424,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
       // 自動で付ける欄（11章）：記録の時刻と、記録したときにその項目が未着手でなかったか
       recordedAt: iso(),
       updatedAt: iso(),
-      itemTouchedAtRecord: statusOf(next, fields.item) !== 'todo',
+      itemTouchedAtRecord: !notAsked(statusOf(next, fields.item)),
     });
     added.push(id);
   }
@@ -358,7 +445,8 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const next = working();
     const added = [];
     const updated = [];
-    for (const e of knowledge ?? []) applyKnowledge(next, e, added, updated);
+    const replaced = [];
+    for (const e of knowledge ?? []) applyKnowledge(next, e, added, updated, replaced);
 
     let assetCount = 0;
     for (const e of assets ?? []) {
@@ -390,6 +478,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const parts = [];
     if (added.length) parts.push(`仕事のやり方や決まり ${added.join('、')} を追加`);
     if (updated.length) parts.push(`仕事のやり方や決まり ${updated.join('、')} を更新`);
+    for (const [from, to] of replaced) parts.push(`仕事のやり方や決まり ${from} の中身を直したので、${from} を外して ${to} にしました`);
     if (assetCount) parts.push(`資産${assetCount}件`);
     if (ossCount) parts.push(`標準機能と公開のプラグイン${ossCount}件`);
     const open = candidatesOf(next).length;
@@ -403,7 +492,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     assertWritable();
     const names = remainingNames(state);
     if (names.length) {
-      throw new Refusal(`まだ聞いていないことがあるので、作る前の確認はできません：${names.join('、')}。聞いてから、もう一度知らせてください。`);
+      throw new Refusal(`まだ聞いていないことがあるので、${confirmWord(state)}はできません：${names.join('、')}。聞いてから、もう一度知らせてください。`);
     }
   }
 
@@ -465,7 +554,93 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const now = taskFileHash(c.taskPath);
     if (now === c.taskHash) return null;
     const what = now === null ? `見つからなくなりました（${c.taskPath}）` : `示したあとに変わっています（${c.taskPath}）`;
-    return `作る前の確認で示した画面と合格の条件の設定の案が、${what}。作業の画面の見本を直したときは、plugin-creator_confirm で示し直して、ユーザーによいと答えてもらってください。`;
+    return `${confirmWord(state)}で示した画面と合格の条件の設定の案が、${what}。作業の画面の見本を直したときは、plugin-creator_confirm で示し直して、ユーザーによいと答えてもらってください。`;
+  }
+
+  // ---- 今のプラグインを直す（plugin-creator_change） ------------------------------------------------
+
+  /**
+   * 直すプラグインの記録を作る（REQ-052・054・058、BLUEPRINT 4.1）。新しい記録を段階「始まり」で作り、
+   * 決まりの一覧（tests/knowledge.json）の決まりを、元の番号・種類・項目・文のまま、確かめたいこととして取り込む。
+   * 同じフォルダの記録がすでにあれば、変えたいことだけを置き換える（再開とコンパクションの後のため。取り込み直さない）。
+   * 作る記録があるセッションと、違うフォルダは断る（取り込む番号と、作る流れで付けた番号が重なるため）。
+   * @param {{ folder: string, wants: string[], readPlugin: () => object }} input readPlugin は change.mjs の readPluginForChange（新しく作るときだけ呼ぶ）
+   */
+  function applyChange({ folder, wants, readPlugin }) {
+    assertWritable();
+    if (state && !state.change) throw new Refusal(MAKE_RECORD_MESSAGE);
+    if (state?.change) {
+      if (state.change.folder !== folder) {
+        throw new Refusal(`このセッションでは、別のプラグイン（${state.change.folder}）を直すお話を聞いています。ほかのプラグインを直すときは、/clear してから頼み直してください。`);
+      }
+      const next = clone(state);
+      next.change.wants = wants;
+      commit(next);
+      return `直すプラグインの記録は、もうあります（${pluginLabel(next.change)}）。変えたいことを置き換えました。決まりは取り込み直していません。`;
+    }
+
+    const plugin = readPlugin();
+    const at = iso();
+    const next = freshState({ sessionId, now: at });
+    next.change = {
+      folder,
+      manifest: plugin.manifest,
+      name: plugin.name,
+      version: plugin.version,
+      generated: plugin.generated,
+      carried: plugin.knowledge.map((k) => k.id),
+      removed: plugin.removed,
+      maxId: plugin.maxId,
+      criteriaIds: plugin.criteriaIds,
+      evalPrompts: plugin.evalPrompts,
+      wants,
+      startedAt: at,
+    };
+    next.knowledge = plugin.knowledge.map((k) => ({
+      id: k.id,
+      kind: k.kind,
+      item: k.item,
+      itemName: k.itemName,
+      text: k.text,
+      source: 'existing_plugin',
+      quote: `tests/knowledge.json の ${k.id}`,
+      example: null,
+      exception: null,
+      status: 'candidate',
+      carried: true,
+      recordedAt: at,
+      updatedAt: at,
+      itemTouchedAtRecord: false,
+    }));
+    next.knowledgeCounter = plugin.maxId; // 新しい番号は、これまでに使った番号の最大の次から（D15）
+    commit(next);
+
+    const head = `直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
+    const nextId = `新しい決まりは ${knowledgeNumber(next.knowledgeCounter + 1)} から付きます。`;
+    if (!plugin.generated) {
+      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}`;
+    }
+    const ids = next.change.carried;
+    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}`;
+    const range = ids.length === 1 ? ids[0] : `${ids[0]}〜${ids[ids.length - 1]}`;
+    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}`;
+  }
+
+  /**
+   * 決まりの変わり方（直すとき。REQ-057・060）。ids を渡すと、その番号（確認で示したもの）を今の決まりとして数える。省くと「決まった」もの。
+   * 足した：引き継いでいない今の決まり（付け直したものを除く）。直した：付け直したもの { from, to }。外した：引き継いだ決まりのうち、外して付け直していないもの。
+   */
+  function knowledgeChanges(ids = null) {
+    const rows = state?.knowledge ?? [];
+    const shown = ids ? new Set(ids) : null;
+    const kept = rows.filter((k) => (shown ? shown.has(k.id) : k.status === 'decided'));
+    const replaced = kept.filter((k) => k.replaces).map((k) => ({ from: k.replaces, to: k.id }));
+    const replacedFrom = new Set(replaced.map((r) => r.from));
+    return {
+      added: kept.filter((k) => !k.carried && !k.replaces).map((k) => k.id),
+      replaced,
+      removed: rows.filter((k) => k.carried && k.status === 'dropped' && !replacedFrom.has(k.id)).map((k) => k.id),
+    };
   }
 
   // ---- そのほか -----------------------------------------------------------------
@@ -485,7 +660,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
       if (k.source === 'volunteered' && k.itemTouchedAtRecord) {
         out.push({ id: k.id, itemName: itemIndex.nameOf(k.item), reason: 'そのことを聞いた後に、ユーザーが自分から話した' });
       } else if (k.source === 'added_at_confirmation') {
-        out.push({ id: k.id, itemName: itemIndex.nameOf(k.item), reason: '作る前の確認で足した' });
+        out.push({ id: k.id, itemName: itemIndex.nameOf(k.item), reason: `${confirmWord(state)}で足した` });
       }
     }
     return out;
@@ -505,6 +680,10 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     get state() {
       return state;
     },
+    /** 今のプラグインを直す記録か */
+    get isChange() {
+      return Boolean(state?.change);
+    },
     applicableItems: () => applicableItems(state),
     itemStatus: (key) => itemStatus(state, key),
     remainingNames: () => remainingNames(state),
@@ -512,6 +691,8 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     candidates: () => candidatesOf(state),
     applyProgress,
     applyRecord,
+    applyChange,
+    knowledgeChanges,
     checkConfirmable,
     knowledgeByIds,
     commitConfirmation,

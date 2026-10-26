@@ -86,11 +86,13 @@ function knowledgeBlock(k) {
  */
 export function buildSystemPrompt(persona, { styleName = 'normal' } = {}) {
   const parts = [persona.profile];
-  if (persona.experience === 'never' || !(persona.files ?? []).length) {
+  // role が repo のファイル（改善の模擬ユーザーの題材のリポジトリに、初めから置いたもの）は、ユーザー役に示さない（personas/FORMAT.md 2.1）
+  const files = (persona.files ?? []).filter((f) => f.role !== 'repo');
+  if (persona.experience === 'never' || !files.length) {
     parts.push('この作業は、まだやったことがありません。持っているファイルはありません。ファイルを聞かれたら「ありません。まだやったことがないので」と答える。');
   } else {
     parts.push(
-      `あなたが持っているファイル（作業フォルダの中にある）:\n${persona.files
+      `あなたが持っているファイル（作業フォルダの中にある）:\n${files
         .map((f) => `- ${f.place}：${f.describe}（答える条件：${f.reveal}）`)
         .join('\n')}`,
     );

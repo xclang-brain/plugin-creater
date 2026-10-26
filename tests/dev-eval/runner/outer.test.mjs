@@ -117,7 +117,12 @@ test('REQ-015 計画：模擬ユーザー × 話し方 × 腕 × モデル × �
   assert.deepEqual(all.map((p) => p.style), ['normal', 'terse', 'vague', 'dont-know', 'nothing-special', 'hurry']);
   assert.throws(() => planRuns({ personas: [personas[1]], styles: ['hurry'], arms: ['with'], models: ['claude-opus-5-5'], runs: 1 }), /話し方「hurry」/);
   assert.ok(estimateUsd(plan) > 0);
-  assert.equal(estimateUsd(planRuns({ personas: [personas[0]], arms: ['with'], models: ['claude-opus-5-5'], runs: 1, inner: false })), 0.1);
+  // 作る流れの外側は実測の約7ドル、内側の EVAL を足すと約2ドル増える（testing.md 8.1）
+  assert.equal(estimateUsd(planRuns({ personas: [personas[0]], arms: ['with'], models: ['claude-opus-5-5'], runs: 1, inner: false })), 7);
+  assert.equal(estimateUsd(planRuns({ personas: [personas[0]], arms: ['with'], models: ['claude-opus-5-5'], runs: 1, inner: true })), 9);
+  // 改善の模擬ユーザーは約15ドル（推定）
+  assert.equal(estimateUsd([{ persona: 'x', kind: 'change', arm: 'with', inner: false }, { persona: 'x', kind: 'change', arm: 'with', inner: true }]), 15 + 17);
+  assert.ok(plan.every((p) => p.kind === 'create'));
 });
 
 test('REQ-015 見ない模擬ユーザー：実行のときに、置き場所から読み込む。置き場所の既定は tests/dev-eval/heldout/（この試験は中身を読まない）', async () => {

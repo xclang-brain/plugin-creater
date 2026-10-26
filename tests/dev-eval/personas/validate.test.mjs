@@ -11,10 +11,14 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { documentText } from '../../../com.github.copilot/extensions/plugin-creator/doc-text.mjs';
-import { CONFIRM_ANSWERS, CONFIRM_CHOICES, KIND_ANSWER, STYLE_KEYS, loadPersona, validatePersona } from './validate.mjs';
+import { gradeProgram, listFiles } from '../../../skills/test-plugin/scripts/grade.mjs';
+import { prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
+import { CONFIRM_ANSWERS, CONFIRM_CHOICES, FIXTURES_DIR, KIND_ANSWER, STYLE_KEYS, loadPersona, readTarGz, validatePersona } from './validate.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PERSONAS = ['weekly-report', 'meeting-minutes', 'training-survey'];
+const PERSONAS = ['weekly-report', 'meeting-minutes', 'training-survey', 'edl-change'];
+/** 話し方の 6 つをそろえている模擬ユーザー */
+const ALL_STYLES = ['weekly-report', 'meeting-minutes'];
 const dirOf = (id) => path.join(HERE, id);
 const readPersona = (id) => JSON.parse(fs.readFileSync(path.join(dirOf(id), 'persona.json'), 'utf8'));
 
@@ -41,7 +45,7 @@ const knowledgeOf = (persona, id) => persona.knowledge.find((k) => k.id === id);
 
 for (const id of PERSONAS) {
   test(`REQ-017 模擬ユーザー ${id} が形の決まりに合う`, async () => {
-    const result = await validatePersona(dirOf(id), { allStyles: id !== 'training-survey' });
+    const result = await validatePersona(dirOf(id), { allStyles: ALL_STYLES.includes(id) });
     assert.deepEqual(result.errors, []);
     assert.equal(result.ok, true);
   });
@@ -392,6 +396,323 @@ test('REQ-038 eval.json が grade.mjs の決まりに合わない（grading が�
     },
   });
   assert.ok(hasError(r, 'grading'));
+});
+
+// ---- 改善・設計変更の模擬ユーザー（kind が change） -------------------------------------------------------------
+
+const EDL = 'edl-change';
+const fixtureFiles = () => readTarGz(path.join(FIXTURES_DIR, 'market.tar.gz'));
+
+test('REQ-055 改善の模擬ユーザー edl-change は、題材のリポジトリ・直す対象・ユーザーのスキル・擬似の機器を持つ', async () => {
+  const p = readPersona(EDL);
+  assert.equal(p.kind, 'change');
+  assert.equal(p.target, 'market/plugins/embedded-debug-loop');
+  assert.equal(p.device, 'kx200');
+  assert.equal(p.workspace.repo.fixture, 'market.tar.gz');
+  const skills = p.files.filter((f) => f.role === 'skill').map((f) => f.place);
+  assert.ok(skills.length >= 4 && skills.every((place) => place.startsWith(`${p.expect.userSkills}/`)));
+  for (const name of ['cross-compile', 'deploy']) assert.ok(skills.includes(`${p.expect.userSkills}/${name}/SKILL.md`), name);
+  assert.ok(skills.some((place) => place.endsWith('/scripts/mkkximg.py')));
+  assert.deepEqual(p.files.filter((f) => f.role === 'repo').map((f) => f.place), ['market/plugins/embedded-debug-loop/skills/log-insertion-rules/SKILL.md']);
+  const { fixture, files } = await loadPersona(dirOf(EDL));
+  assert.equal(fixture, path.join(FIXTURES_DIR, 'market.tar.gz'));
+  assert.equal(files.find((f) => f.role === 'repo').describe, undefined);
+  // 4 つの答え（rule・exception・incidental・wrong）が、ユーザーのスキルから読み取る決まりにそろっている
+  const kinds = new Set(p.knowledge.filter((k) => k.from === 'file' && k.file.path.startsWith(`${p.expect.userSkills}/`)).map((k) => k.file.kind));
+  assert.deepEqual([...kinds].sort(), ['exception', 'incidental', 'rule', 'wrong']);
+});
+
+test('REQ-054 書き足した決まりのファイル（role が repo）は、題材の元のファイルに 1 行足したものである', () => {
+  const p = readPersona(EDL);
+  const place = p.files.find((f) => f.role === 'repo').place;
+  const original = fixtureFiles().get(place.replace(/^market\//, '')).toString('utf8').split('\n');
+  const changed = fs.readFileSync(path.join(dirOf(EDL), 'files', place), 'utf8').split('\n');
+  const at = changed.findIndex((line, i) => line !== original[i]);
+  assert.equal(changed[at], '- KX-200 では `dbg_log.h` の `DBG_LOG` でログを出し、printf を直接使わない。');
+  assert.deepEqual([...changed.slice(0, at), ...changed.slice(at + 1)], original);
+  const k = knowledgeOf(p, 'log-dbg');
+  assert.equal(k.file.path, place);
+  assert.equal(k.file.kind, 'rule');
+});
+
+test('REQ-058 K-15 の今を答えるナレッジがあり、expect の番号が題材の決まりの一覧と合う', () => {
+  const p = readPersona(EDL);
+  const knowledge = JSON.parse(fixtureFiles().get('plugins/embedded-debug-loop/tests/knowledge.json').toString('utf8'));
+  assert.equal(p.expect.carriedMax, knowledge.length);
+  assert.ok(knowledge.some((k) => k.id === p.expect.replaced));
+  const k15 = knowledgeOf(p, 'k15-now');
+  assert.match(k15.fact, /K-15/);
+  assert.match(k15.fact, /reboot/);
+  // 元の K-15 の場合（ビルドの失敗・デプロイできない・実機が応答しない・ログが取れない）に、それぞれ今どうするかを答えられる
+  const original = knowledge.find((k) => k.id === p.expect.replaced).text;
+  for (const words of ['ビルドが失敗', 'デプロイできない', '実機が応答しない', 'ログが取れない']) {
+    assert.ok(original.includes(words), `元の K-15 に「${words}」がない`);
+    assert.ok(k15.fact.includes(words), `k15-now の fact に「${words}」のときがない`);
+  }
+  const listQuestion = p.userRoleTests.options[0].question;
+  for (const k of knowledge) assert.ok(listQuestion.includes(k.id), `${k.id} が決まりの一覧の問いにない`);
+});
+
+// クリエイターの問いの例（make-plugin の references）の「…」を、入れ子の「」ごと取り出す
+const REFERENCES = path.join(HERE, '..', '..', '..', 'skills', 'make-plugin', 'references');
+function exampleQuestions(name) {
+  const text = fs.readFileSync(path.join(REFERENCES, name), 'utf8');
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '「') {
+      if (depth === 0) start = i + 1;
+      depth += 1;
+    } else if (text[i] === '」' && depth > 0) {
+      depth -= 1;
+      if (depth === 0) out.push(text.slice(start, i));
+    }
+  }
+  return out.filter((q) => q.length >= 20);
+}
+
+test('REQ-056 expect.lastTimeAsked は、最近の1回をたどる問いに当たり、ファイルの場所の問いや画面の問いに当たらない', () => {
+  const p = readPersona(EDL);
+  const lastTime = new RegExp(p.expect.lastTimeAsked);
+  const recent = exampleQuestions('last-time.md').filter((q) => q.includes('最近'));
+  assert.ok(recent.length >= 2, 'last-time.md の「最近」の問いの例が見つからない');
+  for (const q of recent) assert.match(q, lastTime);
+  for (const q of [
+    '最近デプロイした1回を、最初から終わりまで順に教えてください。',
+    '最近デプロイした1回で、この流れに書かれていないことは何ですか？',
+  ]) assert.match(q, lastTime);
+  // 段階「実物を受け取る」の問い（作り直しでは「前回の1回のファイル」を聞く）と、画面の問いには当たらない
+  const receive = exampleQuestions('receive.md');
+  assert.ok(receive.length >= 1, 'receive.md の問いの例が見つからない');
+  for (const q of [
+    ...receive,
+    ...exampleQuestions('screen.md'),
+    '最近デプロイしたときに使ったスキルやファイルは、どこにありますか？',
+    '前回の1回で受け取ったファイルと作ったファイル、いつも使っているファイル（テンプレート、手順書、スクリプトなど）は、どこにありますか？',
+  ]) assert.doesNotMatch(q, lastTime);
+});
+
+test('REQ-056 expect.screenAsked は、画面の問いを言い換えても当たり、画面を変えない説明やほかの問いには当たらない', () => {
+  const p = readPersona(EDL);
+  const screen = new RegExp(p.expect.screenAsked);
+  const examples = exampleQuestions('screen.md').filter((q) => q.includes('画面で'));
+  assert.equal(examples.length, 3, 'screen.md の3つの問いの例が見つからない');
+  for (const q of [
+    ...examples,
+    '作業の画面に表示したいものはありますか？',
+    '画面で確認したいことはありますか？',
+    '画面に足したい設定はありますか？',
+    '作業の画面で、毎回決めたいことを教えてください。',
+  ]) assert.match(q, screen);
+  for (const q of [
+    ...exampleQuestions('receive.md'),
+    ...exampleQuestions('last-time.md'),
+    '作業の画面に出したいものは、今のまま変えません。',
+    'そのとき、どの画面で何を確かめましたか？',
+  ]) assert.doesNotMatch(q, screen);
+});
+
+test('REQ-060 expect.explained の版の正規表現は、版に当たり、機器の IP アドレスに当たらない', () => {
+  const p = readPersona(EDL);
+  const version = p.expect.explained.map((e) => new RegExp(e)).find((re) => re.test('0.2.0'));
+  assert.ok(version, '版（0.2.0）に当たる正規表現がない');
+  for (const s of ['版を 0.2.0 にしました。', '0.1.0 → 0.2.0']) assert.match(s, version);
+  for (const s of ['機器のアドレスは 192.168.7.2 です。', '前のアドレスは 192.168.7.20 でした。']) assert.doesNotMatch(s, version);
+});
+
+test('REQ-055 機器の手順と目印の embedded は決まりの形で、コマンドだけの行（作業エージェントの試験など）には当たらない', () => {
+  const p = readPersona(EDL);
+  const all = (id) => knowledgeOf(p, id).markers.embedded.map((e) => new RegExp(e));
+  const commands = [
+    'kxtool -d 192.168.7.2 console -c "kxinstall /tmp/sensor.kximg" -c reboot -c "kxapp run sensor"',
+    "const r = kxtool(['console', '-c', 'kxinstall /tmp/a.kximg', '-c', 'reboot', '-c', 'kxapp run a']);",
+    "assert.match(out, /\\[kxapp\\] sensor exited \\(status=0\\)/);",
+    "print(f'[kxapp] {name} exited (status=0)')",
+  ].join('\n');
+  for (const id of ['dp-steps', 'dp-marker']) for (const re of all(id)) assert.doesNotMatch(commands, re, id);
+  // ユーザーのスキルの書き方（決まりの形）には当たる
+  const skill = fs.readFileSync(path.join(dirOf(EDL), 'files', 'kx200-firmware', '.github', 'skills', 'deploy', 'SKILL.md'), 'utf8');
+  for (const id of ['dp-steps', 'dp-marker']) for (const re of all(id)) assert.match(skill, re, id);
+});
+
+test('REQ-055 「違う」アドレスの excluded は、既定として使う書き方に当たり、古いと書いた行に当たらない', () => {
+  const p = readPersona(EDL);
+  const [excluded] = knowledgeOf(p, 'dp-ip').markers.excluded.map((e) => new RegExp(e));
+  for (const s of [
+    'アドレスが頼みに書かれていなければ、既定の `192.168.7.20` を使う。',
+    'KX_DEVICE=192.168.7.20',
+  ]) assert.match(s, excluded);
+  for (const s of [
+    '機器のアドレスは 192.168.7.2（ユーザーのスキルにある 192.168.7.20 は古い）',
+    '192.168.7.20 ではなく 192.168.7.2 を使う。',
+    '192.168.7.20 は使わない。',
+    '旧アドレス 192.168.7.20（古い）',
+    '前のボードのアドレス 192.168.7.20 は使わない',
+    '192.168.7.2',
+  ]) assert.doesNotMatch(s, excluded);
+});
+
+test('REQ-055 markers がほかのナレッジの文に当たる、ユーザーのスキルの決まりに 4 つの種類がそろわないと不合格になる', async () => {
+  const r = await mutate(EDL, (p) => {
+    knowledgeOf(p, 'dp-steps').markers.embedded = ['kxinstall', 'reboot'];
+    p.knowledge = p.knowledge.filter((k) => k.id !== 'dp-ip');
+    p.userRoleTests.recall = p.userRoleTests.recall.filter((t) => t.knowledge !== 'dp-ip');
+    p.userRoleTests.confirm = p.userRoleTests.confirm.filter((t) => t.knowledge !== 'dp-ip');
+  }, {
+    files: (dir) => {
+      const file = path.join(dir, 'inner', 'eval.json');
+      const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+      task.criteria = task.criteria.filter((c) => c.knowledge !== 'dp-ip');
+      fs.writeFileSync(file, JSON.stringify(task, null, 2));
+    },
+  });
+  assert.ok(hasError(r, 'ナレッジ「dp-steps」の markers.embedded「kxinstall」が、ナレッジ「dp-image」の文に当たる'), r.errors.join('\n'));
+  assert.ok(hasError(r, 'ナレッジ「dp-steps」の markers.embedded「reboot」が、ナレッジ「k15-now」の文に当たる'), r.errors.join('\n'));
+  assert.ok(hasError(r, 'kind が wrong のものがない'), r.errors.join('\n'));
+  assert.ok(!hasError(r, 'kind が rule のものがない'));
+  const ok = await validatePersona(dirOf(EDL));
+  assert.deepEqual(ok.errors, []);
+});
+
+test('REQ-058 expect の番号が題材と合わないと不合格になる', async () => {
+  const r = await mutate(EDL, (p) => {
+    p.expect.carriedMax = 18;
+    p.expect.replaced = 'K-99';
+  });
+  assert.ok(hasError(r, 'expect.carriedMax（18）'));
+  assert.ok(hasError(r, 'expect.replaced「K-99」'));
+});
+
+test('REQ-055 改善の項目・role・スクリプトの形式は、kind が change のときだけ使える', async () => {
+  const r = await mutate('weekly-report', (p) => {
+    p.target = 'market/plugins/x';
+    p.files[0].role = 'skill';
+    p.files[1].src = 'files/x.py';
+  }, { files: (dir) => fs.writeFileSync(path.join(dir, 'files', 'x.py'), 'print(1)\n') });
+  assert.ok(hasError(r, 'target は、kind が change のときだけ書く'));
+  assert.ok(hasError(r, 'files[0].role は output・input・template のどれか'));
+  assert.ok(hasError(r, '形式「.py」は使えない'));
+  const r2 = await mutate(EDL, (p) => {
+    p.kind = 'make';
+  });
+  assert.ok(hasError(r2, 'kind は change だけを書ける'));
+});
+
+test('REQ-059 題材がない、対象がリポジトリの外、git add しただけの変更が対象の中だと不合格になる', async () => {
+  const r1 = await mutate(EDL, (p) => {
+    p.workspace.repo.fixture = 'none.tar.gz';
+  });
+  assert.ok(hasError(r1, 'workspace.repo.fixture「none.tar.gz」を読めない'));
+  const r2 = await mutate(EDL, (p) => {
+    p.target = 'other/plugins/embedded-debug-loop';
+    p.workspace.repo.commitDate = '2026-10-01';
+    p.workspace.repo.origin = 'yes';
+  });
+  assert.ok(hasError(r2, 'target は、workspace.repo.place の下'));
+  assert.ok(hasError(r2, 'commitDate'));
+  assert.ok(hasError(r2, 'origin は true か false'));
+  const r3 = await mutate(EDL, (p) => {
+    p.workspace.repo.staged = [{ path: 'NOTE.md', append: 'x' }];
+    p.target = 'market/plugins/none';
+  });
+  assert.ok(hasError(r3, 'target「market/plugins/none」のファイルが、題材 market.tar.gz にない'));
+  assert.ok(hasError(r3, 'staged[0].path「NOTE.md」が、題材 market.tar.gz にない'));
+  const r4 = await mutate(EDL, (p) => {
+    p.workspace.repo.staged = [{ path: 'plugins/embedded-debug-loop/README.md', append: 'x' }];
+  });
+  assert.ok(hasError(r4, 'staged[0].path「plugins/embedded-debug-loop/README.md」は、target の外に置く'));
+});
+
+test('REQ-055 ユーザーのスキルが対象の中・userSkills の外、repo のファイルがリポジトリの外だと不合格になる', async () => {
+  const r = await mutate(EDL, (p) => {
+    p.files[0].place = 'market/plugins/embedded-debug-loop/skills/x/SKILL.md';
+    p.files[4].place = 'elsewhere/SKILL.md';
+    for (const k of p.knowledge) if (k.file?.path === 'kx200-firmware/.github/skills/cross-compile/SKILL.md') k.file.path = p.files[0].place;
+    for (const k of p.knowledge) if (k.file?.path?.startsWith('market/')) k.file.path = p.files[4].place;
+  });
+  assert.ok(hasError(r, 'files[0] は role が skill なので、place を target の外にする'));
+  assert.ok(hasError(r, 'expect.userSkills「kx200-firmware/.github/skills」の下にない'));
+  assert.ok(hasError(r, 'files[4] は role が repo なので'));
+});
+
+test('REQ-055 生成プラグインを見る markers が、題材の元の文字や、写すだけで入る資産の文字に当たると不合格になる', async () => {
+  const r = await mutate(EDL, (p) => {
+    knowledgeOf(p, 'cc-static').markers.embedded = ['printf'];
+    knowledgeOf(p, 'dp-image').markers.embedded = ['KX2I'];
+    knowledgeOf(p, 'cc-git-pull').markers.excluded = ['arm-linux-gnueabihf-gcc'];
+  });
+  assert.ok(hasError(r, 'ナレッジ「cc-static」の markers.embedded「printf」が、題材の plugins/embedded-debug-loop/'));
+  assert.ok(hasError(r, 'ナレッジ「dp-image」の markers.embedded「KX2I」が、流用される資産 kx200-firmware/.github/skills/deploy/scripts/mkkximg.py'));
+  assert.ok(hasError(r, 'ナレッジ「cc-git-pull」の markers.excluded「arm-linux-gnueabihf-gcc」が、流用される資産'));
+});
+
+test('REQ-062 単体の課題（inner/standalone.json）も、見本で基準を確かめる', async () => {
+  const r = await mutate(EDL, () => {}, {
+    files: (dir) => {
+      const file = path.join(dir, 'inner', 'standalone.json');
+      const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+      task.criteria[3].check.pattern = '\\[kxapp\\] other exited';
+      task.criteria[0].knowledge = 'no-such';
+      fs.writeFileSync(file, JSON.stringify(task, null, 2));
+    },
+  });
+  assert.ok(hasError(r, 'inner/standalone.json の基準「C-04」'));
+  assert.ok(hasError(r, 'inner/standalone.json の基準「C-01」の knowledge「no-such」'));
+});
+
+test('REQ-062 確かめ B の目印の基準は、機器のコンソールでなく、頼まれた場所に保存したログ（logs/device.log）を見る', async () => {
+  const task = JSON.parse(fs.readFileSync(path.join(dirOf(EDL), 'inner', 'standalone.json'), 'utf8'));
+  assert.match(task.prompt, /logs\/device\.log に保存/);
+  const marker = task.criteria.find((c) => c.knowledge === 'dp-marker');
+  assert.equal(marker.check.file, 'logs/device.log');
+  // ログを保存しなかった見本（機器のコンソールには目印が出ている）は、B の目印の基準に合格しない。A は保存を頼まないので合格する
+  const r = await mutate(EDL, () => {}, { files: (dir) => fs.rmSync(path.join(dir, 'inner', 'golden', 'logs'), { recursive: true, force: true }) });
+  assert.ok(hasError(r, `inner/standalone.json の基準「${marker.id}」`), r.errors.join('\n'));
+  assert.ok(!r.errors.some((e) => e.includes('inner/eval.json')), r.errors.join('\n'));
+});
+
+test('REQ-055 readTarGz は、pax の見出しで書いた長い名前も読む', { skip: spawnSync('tar', ['--version']).status !== 0 && 'tar がない' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-tar-'));
+  try {
+    const long = `${'d'.repeat(60)}/${'f'.repeat(80)}.txt`;
+    fs.mkdirSync(path.join(root, 'src', path.dirname(long)), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', long), 'long name\n');
+    fs.writeFileSync(path.join(root, 'src', 'short.md'), 'short\n');
+    const made = spawnSync('tar', ['--format=pax', '-czf', path.join(root, 'x.tar.gz'), '-C', path.join(root, 'src'), '.'], { encoding: 'utf8' });
+    assert.equal(made.status, 0, made.stderr);
+    const files = readTarGz(path.join(root, 'x.tar.gz'));
+    assert.equal(files.get(long).toString(), 'long name\n');
+    assert.equal(files.get('short.md').toString(), 'short\n');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+const hasCmd = (cmd) => spawnSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0;
+const ARM_MISSING = ['qemu-arm', 'arm-linux-gnueabihf-gcc', 'python3'].filter((c) => !hasCmd(c));
+
+test('REQ-061 擬似の機器を正しい手順で動かすと、edl-change の内側の課題（A と B）の基準にすべて合格する', { skip: ARM_MISSING.length > 0 && `${ARM_MISSING.join('・')} がない` }, async () => {
+  const { makeGolden } = await import('./edl-change/inner/make_golden.mjs');
+  const innerDir = path.join(dirOf(EDL), 'inner');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-edl-'));
+  try {
+    const records = await makeGolden(path.join(root, 'records'));
+    for (const name of ['eval.json', 'standalone.json']) {
+      const task = JSON.parse(fs.readFileSync(path.join(innerDir, name), 'utf8'));
+      const { workDir, inputs } = prepareWorkDir({ task: { dir: innerDir, json: task }, dir: path.join(root, name) });
+      fs.cpSync(path.join(innerDir, 'golden', 'inputs'), path.join(workDir, 'inputs'), { recursive: true });
+      // 機器の記録（.device）と、確かめ B で頼まれた場所に保存したログ（logs/device.log）
+      fs.cpSync(records, workDir, { recursive: true });
+      const files = listFiles(workDir, { inputs });
+      for (const c of task.criteria) {
+        const result = await gradeProgram(c.check, files, { inputs, workDir });
+        assert.ok(result.pass, `${name} ${c.id}：${result.reason}`);
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ---- コマンド ---------------------------------------------------------------------------------------------------

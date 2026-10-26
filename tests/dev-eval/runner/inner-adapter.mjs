@@ -126,6 +126,10 @@ export function summarizeMessage(message) {
  * @param {object} [options.envExtra] 試すエージェントの環境変数に足すもの
  * @param {string} [options.mainModel] メインのエージェントのモデル（Claude Code の ID）
  * @param {boolean} [options.sandbox] 統括の実行を OS のサンドボックスで動かすか
+ * @param {object} [options.sandboxNetwork] 統括の実行のサンドボックスの network（擬似の機器の口だけを許す。isolation.mjs）
+ * @param {object} [options.sandboxFilesystem] 統括の実行のサンドボックスの filesystem（擬似の機器の中身を隠す）
+ * @param {boolean} [options.denyNetwork] 真なら、統括の実行の、サンドボックスの外への通信の求めを断る
+ * @param {Array} [options.refused] 統括の実行が断った書き込みと通信の求めを入れる配列（メインの実行と同じ配列を渡せる）
  * @param {(entry: object) => void} [options.record] 記録（events.jsonl に書く 1 件）を受け取る
  * @param {Function} [options.startUi] (core) => Promise<{ url, close }>。省くと、生成プラグインの ui/app.mjs を使う
  * @param {Function} [options.importModule] モジュールの読み込み（試験用）
@@ -135,6 +139,7 @@ export function summarizeMessage(message) {
 export async function createInnerAdapter(options) {
   const {
     sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra = {}, mainModel = 'claude-sonnet-5-5', sandbox = false,
+    sandboxNetwork, sandboxFilesystem, denyNetwork = false, refused = [],
     record = () => {}, importModule = (file) => import(pathToFileURL(file).href), onOrchestratorTurnEnd = null,
   } = options;
   for (const key of ['sdk', 'pluginRoot', 'convertedRoot', 'workDir', 'runDir']) {
@@ -499,7 +504,7 @@ export async function createInnerAdapter(options) {
       // 同じ統括の続き（sendMessage）でも同じ設定で動かすので、組み立て方を残す
       root.optionsFor = (resume) => makeQueryOptions({
         cwd: workDir, home, model: claudeId, plugins: [copy.dest], mcpServers: { [serverName]: buildToolServer(root) }, mcpTools: mcpTools(),
-        hooks: makeHooks(root), agent: orchestratorType, sandbox, maxTurns: ORCHESTRATOR_MAX_TURNS, abortController: root.abort,
+        hooks: makeHooks(root), agent: orchestratorType, sandbox, sandboxNetwork, sandboxFilesystem, denyNetwork, refused, maxTurns: ORCHESTRATOR_MAX_TURNS, abortController: root.abort,
         effort: copy.appliedEfforts[orchestratorType],
         // Agent は既定で裏で動く。前面で動かして終わるのを待つかは、統括の指示（run_in_background: false）に従うかで決まる。
         // 環境変数 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS で強制はしない（指示に従うかも試すため）

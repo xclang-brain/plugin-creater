@@ -1,0 +1,450 @@
+{
+  "id": "edl-change",
+  "title": "組み込みのデバッグのプラグインを KX-200 向けに直す（ファームウェアの担当）",
+  "kind": "change",
+  "experience": "done",
+  "request": "market/plugins/embedded-debug-loop のプラグインを、うちの KX-200 のボードで使えるようにしたいです。今使っている KX-200 のクロスコンパイルとデプロイのスキルが kx200-firmware/.github/skills にあるので、それを組み込んでください。",
+  "profile": "あなたは組み込み機器のファームウェアの担当です。チームでは KX-200 という ARM のボードを使っていて、クロスコンパイルとデプロイは、チームで作ったスキル（kx200-firmware/.github/skills にある）で行っています。前に AI に作ってもらった組み込みのデバッグのプラグイン（market/plugins/embedded-debug-loop）を KX-200 で使えるように直してもらうために、AI の質問に答えます。",
+  "workspace": {
+    "repo": {
+      "place": "market",
+      "fixture": "market.tar.gz",
+      "commitDate": "2026-10-01T00:00:00+09:00",
+      "staged": [
+        {
+          "path": "README.md",
+          "append": "\n作業中のメモ\n"
+        }
+      ],
+      "origin": true
+    }
+  },
+  "target": "market/plugins/embedded-debug-loop",
+  "device": "kx200",
+  "expect": {
+    "carriedMax": 17,
+    "replaced": "K-15",
+    "deviceTool": "kxtool",
+    "userSkills": "kx200-firmware/.github/skills",
+    "screenAsked": "画面(?:で|に)[^。？?\\n]{0,30}(?:決め|設定し|見|出し|表示し|確かめ|確認し|足し|入れ)(?:たい|ますか)[^。？?\\n]{0,20}(?:[？?]|教えて|書いて|挙げて|選んで)",
+    "lastTimeAsked": "(?:最近|前回|この前|直近|実際に)[^。？?\\n]{0,40}(?:1\\s*回|一回)[^。？?\\n]{0,40}(?:思い出|順に|順を追|順番|たど|振り返|したこと|やったこと|書かれていない)",
+    "explained": [
+      "revert",
+      "起動し直",
+      "marketplace\\.json|一覧",
+      "(?<![\\d.])\\d+\\.\\d+\\.\\d+(?!\\.?\\d)"
+    ]
+  },
+  "files": [
+    {
+      "src": "files/kx200-firmware/.github/skills/cross-compile/SKILL.md",
+      "place": "kx200-firmware/.github/skills/cross-compile/SKILL.md",
+      "role": "skill",
+      "describe": "チームで使っている KX-200 のクロスコンパイルのスキルの本文",
+      "reveal": "今使っているクロスコンパイルやビルドのスキル、組み込みたいスキル、スキルの場所について聞かれたとき"
+    },
+    {
+      "src": "files/kx200-firmware/.github/skills/cross-compile/scripts/kx-build.sh",
+      "place": "kx200-firmware/.github/skills/cross-compile/scripts/kx-build.sh",
+      "role": "skill",
+      "describe": "クロスコンパイルのスキルが使う、ビルドのスクリプト",
+      "reveal": "今使っているクロスコンパイルのスキル、ビルドのスクリプト、スキルの場所について聞かれたとき"
+    },
+    {
+      "src": "files/kx200-firmware/.github/skills/deploy/SKILL.md",
+      "place": "kx200-firmware/.github/skills/deploy/SKILL.md",
+      "role": "skill",
+      "describe": "チームで使っている KX-200 のデプロイ（ボードに入れて動かし、ログを取る）のスキルの本文",
+      "reveal": "今使っているデプロイのスキル、組み込みたいスキル、スキルの場所について聞かれたとき"
+    },
+    {
+      "src": "files/kx200-firmware/.github/skills/deploy/scripts/mkkximg.py",
+      "place": "kx200-firmware/.github/skills/deploy/scripts/mkkximg.py",
+      "role": "skill",
+      "describe": "デプロイのスキルが使う、ELF をボードに入れられるイメージにするスクリプト",
+      "reveal": "今使っているデプロイのスキル、イメージを作るスクリプト、スキルの場所について聞かれたとき"
+    },
+    {
+      "src": "files/market/plugins/embedded-debug-loop/skills/log-insertion-rules/SKILL.md",
+      "place": "market/plugins/embedded-debug-loop/skills/log-insertion-rules/SKILL.md",
+      "role": "repo"
+    }
+  ],
+  "knowledge": [
+    {
+      "id": "cc-toolchain",
+      "fact": "KX-200 向けのビルドは、arm-linux-gnueabihf-gcc で行う。開発機の gcc でビルドしたもの（x86 の実行ファイル）は KX-200 では動かないので使わない。",
+      "reveal": "ビルドに使うコンパイラやツールチェーン、ビルドのやり方を聞かれたとき。または、スキルに書いてあるツールチェーンの決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/cross-compile/SKILL.md",
+        "evidence": "arm-linux-gnueabihf-gcc",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "コンパイラ|ツールチェーン|arm-linux|gcc|ビルドのやり方|ビルドの仕方|ビルドの決まり",
+        "answered": "arm-linux-gnueabihf",
+        "leak": "arm-linux|開発機の gcc",
+        "embedded": [
+          "(?:ツールチェーン|コンパイラ|ビルド|クロスコンパイル)[^\\n]{0,30}arm-linux-gnueabihf|arm-linux-gnueabihf-gcc`?\\s*(?:で|を使|を用)"
+        ]
+      }
+    },
+    {
+      "id": "cc-static",
+      "fact": "KX-200 向けの実行ファイルは、必ず静的リンク（-static）にする。KX-200 には共有ライブラリのローダーがないので、動的リンクだと not found と出て動かない。",
+      "reveal": "リンクのしかた、静的リンクか動的リンクか、ビルドのオプションを聞かれたとき。または、スキルに書いてあるリンクの決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/cross-compile/SKILL.md",
+        "evidence": "-static",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "リンク|-static|静的|動的|ローダー|共有ライブラリ",
+        "answered": "静的リンク|-static",
+        "leak": "静的リンク|-static|ローダー",
+        "embedded": [
+          "静的(?:に)?リンク|-static`?\\s*(?:を付け|を指定|で|に)"
+        ]
+      }
+    },
+    {
+      "id": "cc-debug",
+      "fact": "ビルドの最適化は、ふだんは -O2 にする。",
+      "reveal": "最適化、ビルドのオプション、デバッグ用のビルドについて聞かれたとき。または、スキルに書いてある最適化の決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/cross-compile/SKILL.md",
+        "evidence": "-O2",
+        "kind": "exception",
+        "answer": "そうしないときもある",
+        "detail": "gdb で1行ずつ追うようなデバッグの調査のときだけは、--debug を付けて -O0 -g でビルドする"
+      },
+      "markers": {
+        "asked": "最適化|-O2|-O0|--debug|デバッグ用|デバッグ情報|ビルドのオプション",
+        "answered": "-O2",
+        "leak": "-O2|--debug|最適化",
+        "embedded": [
+          "-O2`?\\s*(?:で|に|を)",
+          "--debug`?\\s*(?:を付け|を指定|で|に)|-O0\\s*-g`?\\s*(?:で|に)"
+        ]
+      }
+    },
+    {
+      "id": "cc-git-pull",
+      "fact": "スキルの手順にある、ビルドの前の git pull は、自分がいつもそうしているので書いただけで、決まりではない。ソースが git で管理されていないときもある。",
+      "reveal": "ビルドの前にすること、ソースを最新にするか、git pull について聞かれたとき。または、スキルに書いてある git pull の決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/cross-compile/SKILL.md",
+        "evidence": "git pull",
+        "kind": "incidental",
+        "answer": "決まりではなく、たまたま"
+      },
+      "markers": {
+        "asked": "git pull|最新に|pull|ビルドの前",
+        "answered": "決まりではない|書いただけ",
+        "leak": "git pull|書いただけ",
+        "excluded": [
+          "git pull"
+        ]
+      }
+    },
+    {
+      "id": "dp-image",
+      "fact": "KX-200 に送るものは、必ず mkkximg.py で .kximg のイメージにする。ELF のまま送って kxinstall すると bad magic で断られる。",
+      "reveal": "ボードに送るもの、送る前に何をするか、イメージの作り方を聞かれたとき。または、スキルに書いてあるイメージの決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/deploy/SKILL.md",
+        "evidence": "mkkximg.py",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "イメージ|kximg|mkkximg|見出し|包|ELF のまま|送るもの|送る形",
+        "answered": "mkkximg|\\.kximg",
+        "leak": "mkkximg|kximg|bad magic",
+        "embedded": [
+          "mkkximg\\.py`?\\s*(?:で|を使|に通|を通)|\\.kximg`?\\s*(?:に包|にし|にす)"
+        ]
+      }
+    },
+    {
+      "id": "dp-steps",
+      "fact": "KX-200 に入れるときは、kxtool -d <アドレス> send で送り、kxinstall /tmp/<イメージ> で入れ、reboot してから kxapp run <アプリの名前> で動かす。reboot するまでは、入れたものが有効にならない。",
+      "reveal": "デプロイの手順、ボードに入れるときの手順、送った後にボードですることを聞かれたとき。または、スキルに書いてある手順の決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/deploy/SKILL.md",
+        "evidence": "kxinstall",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "kxinstall|reboot|再起動|有効|kxapp run|手順|入れるとき|入れ方|送った後",
+        "answered": "reboot|再起動",
+        "leak": "kxinstall|kxapp run|有効にならない",
+        "embedded": [
+          "reboot[^\\n]{0,20}(?:するまで|しないと|してから|した後|の後|まで)[^\\n]{0,40}(?:有効|kxapp run)|有効に(?:する|なる)[^\\n]{0,20}reboot"
+        ]
+      }
+    },
+    {
+      "id": "dp-marker",
+      "fact": "kxapp run の出力の終わりに [kxapp] <アプリの名前> exited (status=N) という目印が出るので、そこまで取る。取ったものは、頼まれた場所にログとして保存する。",
+      "reveal": "ログの取り方、いつまで取るか、取り終わりの目印、ログの保存のしかたを聞かれたとき。または、スキルに書いてある目印の決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/deploy/SKILL.md",
+        "evidence": "exited (status=N)",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "目印|exited|終わり|いつまで|ログの取り方|ログを取る|ログの保存|保存",
+        "answered": "exited|目印",
+        "leak": "exited|目印",
+        "embedded": [
+          "\\[kxapp\\][^\\n]{0,40}exited[^\\n]{0,30}(?:まで|出たら|出るの|が出る|を待)|(?:目印|終わりの印)[^\\n]{0,40}\\[kxapp\\][^\\n]{0,40}exited"
+        ]
+      }
+    },
+    {
+      "id": "dp-ip",
+      "fact": "KX-200 のボードのアドレスは 192.168.7.2。",
+      "reveal": "ボードのアドレスや IP、送り先を聞かれたとき。または、スキルに書いてあるアドレスの決まりを確かめられたとき",
+      "volunteer": true,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/deploy/SKILL.md",
+        "evidence": "192.168.7.20",
+        "kind": "wrong",
+        "answer": "違う",
+        "detail": "スキルに既定として書いてある 192.168.7.20 は前のボードのアドレスで、直し忘れている。今は 192.168.7.2"
+      },
+      "markers": {
+        "asked": "アドレス|IP|192\\.168|送り先",
+        "answered": "192\\.168\\.7\\.2(?!\\d)",
+        "embedded": [
+          "192\\.168\\.7\\.2(?!\\d)"
+        ],
+        "excluded": [
+          "(?<!(?:古い|旧|前の|誤った|間違った)[^\\n]{0,10})192\\.168\\.7\\.20(?!\\d)(?![^\\n]{0,15}(?:ではな|でなく|じゃな|使わ|旧|は(?:古|前|誤|違|間違)|[（(](?:古|旧|前)))"
+        ]
+      }
+    },
+    {
+      "id": "dp-uname",
+      "fact": "送る前に uname -a でボードの版を見ているのは、前に古い版のボードで困ったことがあって、自分で見るようにしているだけで、決まりではない。",
+      "reveal": "送る前にすること、ボードの版の確かめ、uname について聞かれたとき。または、スキルに書いてある uname -a の決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "kx200-firmware/.github/skills/deploy/SKILL.md",
+        "evidence": "uname -a",
+        "kind": "incidental",
+        "answer": "決まりではなく、たまたま"
+      },
+      "markers": {
+        "asked": "uname|版を見|版の確か|送る前",
+        "answered": "決まりではない|自分で見る",
+        "leak": "uname|版を見",
+        "excluded": [
+          "uname -a"
+        ]
+      }
+    },
+    {
+      "id": "log-dbg",
+      "fact": "前に作ってもらったプラグインのログ追加の決まり（log-insertion-rules の SKILL.md）に、あとから自分で「KX-200 では dbg_log.h の DBG_LOG でログを出し、printf を直接使わない」と書き足した。KX-200 のファームウェアでは、ログは DBG_LOG で出す。",
+      "reveal": "ログの出し方、ログ関数、printf について聞かれたとき。または、プラグインのファイルに書き足してある決まりを確かめられたとき",
+      "volunteer": false,
+      "from": "file",
+      "file": {
+        "path": "market/plugins/embedded-debug-loop/skills/log-insertion-rules/SKILL.md",
+        "evidence": "DBG_LOG",
+        "kind": "rule",
+        "answer": "このとおり"
+      },
+      "markers": {
+        "asked": "DBG_LOG|dbg_log|ログ関数|ログの出し方|ログをどう出|printf|書き足",
+        "answered": "DBG_LOG",
+        "leak": "DBG_LOG|dbg_log",
+        "embedded": [
+          "DBG_LOG`?\\s*(?:で|を使|を用|マクロ)"
+        ]
+      }
+    },
+    {
+      "id": "k15-now",
+      "fact": "前に作ってもらったプラグインの決まりの一覧（K-01〜K-17）のうち、古くなったのは K-15 だけで、ほかは今もそのとおり。K-15 は今は、デプロイできない・実機が応答しない・ログが取れないときは、ボードを1回 reboot してやり直し、それでもだめなら人に伝えて判断してもらう。ビルドが失敗したときは、今までどおり、そのまま進めずに人に伝える。最近の1回では、センサーの平均値がおかしかったので、ソースにログを足してビルドし、ボードに入れて動かし、ログを見て直した。途中で1回ログが取れなかったので、ボードを reboot してやり直したら取れた。",
+      "reveal": "前に作ったプラグインの決まりの一覧を見せられて、違うもの・古いものを聞かれたとき。デプロイできない・実機が応答しない・ログが取れない・ビルドが失敗したときにどうしているかを聞かれたとき。最近実際にやった1回を聞かれたとき",
+      "volunteer": true,
+      "from": "talk",
+      "markers": {
+        "asked": "K-15|違うもの|古いもの|古くなった|決まりの一覧|いつもと違う|うまくいかない|失敗した|デプロイできない|応答しない|ログが取れない|最近|前回|この前",
+        "answered": "reboot",
+        "embedded": [
+          "(?:1|一)\\s*回[^\\n]{0,30}reboot|reboot[^\\n]{0,40}やり直"
+        ]
+      }
+    }
+  ],
+  "userRoleTests": {
+    "generic": [
+      "守らないと困ることはありますか？",
+      "ほかに、伝えておきたいことはありますか？",
+      "KX-200 で作業するときに、気をつけていることはありますか？",
+      "注意点を教えてください。",
+      "この作業で大事なことは何ですか？"
+    ],
+    "recall": [
+      {
+        "knowledge": "k15-now",
+        "questions": [
+          "デプロイできないときやログが取れないときは、どうしていますか？",
+          "前に作ったプラグインの決まりの一覧で、K-15 は今もそのとおりですか？"
+        ]
+      },
+      {
+        "knowledge": "cc-static",
+        "questions": [
+          "KX-200 向けのビルドで、リンクのしかたに決まりはありますか？",
+          "静的リンクと動的リンクのどちらにしますか？"
+        ]
+      },
+      {
+        "knowledge": "dp-steps",
+        "questions": [
+          "KX-200 に入れるときの手順を教えてください。",
+          "送った後に、ボードで何をしますか？"
+        ]
+      },
+      {
+        "knowledge": "dp-ip",
+        "questions": [
+          "KX-200 のボードのアドレスは何ですか？",
+          "デプロイの送り先の IP アドレスを教えてください。"
+        ]
+      },
+      {
+        "knowledge": "log-dbg",
+        "questions": [
+          "KX-200 のファームウェアでは、ログをどう出しますか？",
+          "ログを足すとき、printf をそのまま使いますか？"
+        ]
+      }
+    ],
+    "compound": [
+      {
+        "question": "KX-200 向けのビルドの決まりを教えてください（使うコンパイラと、リンクのしかたを含めて）。",
+        "expect": [
+          "cc-toolchain",
+          "cc-static"
+        ]
+      },
+      {
+        "question": "KX-200 へのデプロイのやり方を教えてください（送る前に何のイメージにするかと、送った後の手順を含めて）。",
+        "expect": [
+          "dp-image",
+          "dp-steps"
+        ]
+      }
+    ],
+    "unknown": [
+      "ビルドにかかる時間の目安はありますか？",
+      "ボードのシリアル番号は控えますか？",
+      "ログは何日分残しますか？",
+      "ボードの電源ケーブルは何を使っていますか？"
+    ],
+    "abstain": "特に(決まって)?(いません|ない|ありません)|決まって(いません|ない)|分かりません|わかりません|知りません|ありません",
+    "context": [
+      {
+        "turns": [
+          "KX-200 に送るものは、どうやって作りますか？",
+          "それをしないで ELF のまま送ると、どうなりますか？"
+        ],
+        "expect": "bad magic|断"
+      }
+    ],
+    "options": [
+      {
+        "question": "前に作ったときの決まりの一覧です。\nK-01（作業の目的）：組み込み機器のデバッグに必要な一連の作業を、AIが人間の介入なしに自律的に実行する。対象言語はC/C++に限定する。\nK-02（作業の目的）：今回の主目的はプラグインの生成・試験であり、実際の開発でも利用できれば望ましいが、あくまで試験が主目的。\nK-03（頼む場面と言い方）：ユーザーは最初に調査プロンプトを入力し、AIは必要に応じて不明点を質問し、材料が整ったら調査を開始する。\nK-04（進め方）：基本フローは、初期調査プロンプトの入力→必要に応じた対話→初期セットアップ→ソースコードの静的調査→ソースコード修正・ログ追加→クロスコンパイル→実機へのデプロイ→実機からのログ収集→ログの分析と次のアクションの計画→目的達成まで静的調査〜分析を繰り返す→最終結果の出力。\nK-05（進め方）：各イテレーションはPDSサイクル（Plan 計画、Do 実施、See 実施結果の評価・振り返り）で処理し、必ず計画・実施・評価を行う。ループには上限回数を設定する。\nK-06（進め方）：ログ収集では実機のシェルコンソールからログを取得し、分析して次のアクションを計画する。\nK-07（決まった書き方やルール）：ログ追加・クロスコンパイル・デプロイのような機器ごとに異なる処理は、ユーザーがAIが判断するためのルールをスキルとして作成・カスタマイズでき、AIはそのルールに基づいて自律的に推論・実行する。Makefile、バッチファイル、複数段階ビルド、TFTP、CRCやサム値の調整は具体例であり固定仕様ではない。\nK-08（決まった書き方やルール）：ログ追加は基本的にprintfを使い、logメッセージのような関数を使う場合もある。\nK-09（受け取るもの）：初期セットアップでブラウザーから、組み込み機器の情報（IPアドレスなど）、ローカルPC上のソースコードの場所、クロスコンパイルに必要な情報、ループの上限回数を設定する。\nK-10（成果物）：実行終了後、最初に結論とデバッグループ全体の結果を表示し、続けて各イテレーションのPDS概要を Iteration・Plan・Do・See の表で表示する。\nK-11（成果物）：プラグイン自体の改善のために適切にログを残し、ログを元に振り返りを行い、問題があれば最後にIssueを発行できるようにする。\nK-12（使う道具と環境）：ローカルHTMLサーバーを利用し、実行中のエージェントたちの振る舞いを監視できるようにする。\nK-13（合否の決め方）：デバッグの成功条件は人間と会話しながら決める。初期プロンプトに成功条件が書いてあればそれを達成した時に成功としてループを終える。書いてなければ、調査を始める前にプラグインから人間に成功条件を質問する。\nK-14（守らないと困ること）：プラグインとして固定の禁止事項はない。守らないと困ることがあればユーザーが初期プロンプトで伝えるので、AIは初期プロンプトに書かれた制約を全イテレーションで守る。\nK-15（いつもと違うとき）：ビルドが失敗した、デプロイできない、実機が応答しない・ログが取れないといったことが起きたときは、AIはそのまま進めず、起きたことを人間に伝えて判断を仰ぐ。\nK-16（成果物）：できあがるプラグインには、利用者が plugin-creator の作り直し（既存プラグインの設計変更）を使って、対象機器に合わせたクロスコンパイル・デプロイ（とログ追加）のスキルを作り、それに合わせて設定画面の項目も変えるための手順書を含める。利用者がその手順通りにカスタマイズできること。\nK-17（使う道具と環境）：設定画面で各エージェント（まとめ役、ソースコード担当、ビルド・デプロイ担当、確認役）のモデルとエフォートレベルを指定でき、指定した値で作業開始時にカスタムエージェントのフロントマター（model、reasoningEffort）を書き換える。reasoningEffort が効くことは確認済みの前提でよい。\nこの中に、違うものや古くなったものはありますか？",
+        "choices": [
+          "すべてこのとおり",
+          "違う・古いものがある"
+        ],
+        "expect": "K-?15[\\s\\S]*(?:reboot|再起動)|(?:reboot|再起動)[\\s\\S]*K-?15"
+      }
+    ],
+    "confirm": [
+      {
+        "knowledge": "cc-toolchain",
+        "question": "cross-compile のスキル（kx200-firmware/.github/skills/cross-compile/SKILL.md）には「ビルドは arm-linux-gnueabihf-gcc で行う。開発機の gcc でビルドしたものは KX-200 では動かない」とあります。KX-200 向けのビルドは arm-linux-gnueabihf-gcc で行う、という決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      },
+      {
+        "knowledge": "cc-static",
+        "question": "cross-compile のスキルには「必ず静的リンク（-static）にする」とあります。KX-200 向けの実行ファイルは必ず静的リンクにする、という決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      },
+      {
+        "knowledge": "cc-debug",
+        "question": "cross-compile のスキルには「最適化は -O2 にする」とあります。ビルドの最適化は、いつも -O2 にする決まりですか？",
+        "expect": "そうしないとき|ときもある|場合もある|--debug|-O0"
+      },
+      {
+        "knowledge": "cc-git-pull",
+        "question": "cross-compile のスキルの手順の最初に「ソースのフォルダで git pull して、最新にする」とあります。ビルドの前に git pull する決まりですか？",
+        "expect": "たまたま|決まりではない|決まりじゃない|決まりではありません"
+      },
+      {
+        "knowledge": "dp-image",
+        "question": "deploy のスキルには「送るのは、必ず mkkximg.py で作った .kximg」とあります。KX-200 に送るものは必ず mkkximg.py で .kximg のイメージにする、という決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      },
+      {
+        "knowledge": "dp-steps",
+        "question": "deploy のスキルの手順では、kxtool で send してから kxinstall し、reboot してから kxapp run で動かしています。この順に入れて動かす決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      },
+      {
+        "knowledge": "dp-marker",
+        "question": "deploy のスキルには「[kxapp] <アプリの名前> exited (status=N) が出るまでを取る」とあります。目印が出るまでログを取り、頼まれた場所に保存する決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      },
+      {
+        "knowledge": "dp-ip",
+        "question": "deploy のスキルには、ボードのアドレスの既定は 192.168.7.20 とあります。アドレスが頼みに書かれていなければ 192.168.7.20 を使う、という決まりですか？",
+        "expect": "違う|違います|192\\.168\\.7\\.2(?!\\d)"
+      },
+      {
+        "knowledge": "dp-uname",
+        "question": "deploy のスキルの手順の最初に、送る前に uname -a でボードの版を見るとあります。送る前に uname -a で版を見る決まりですか？",
+        "expect": "たまたま|決まりではない|決まりじゃない|決まりではありません"
+      },
+      {
+        "knowledge": "log-dbg",
+        "question": "プラグインのログ追加の決まり（skills/log-insertion-rules/SKILL.md）に「KX-200 では dbg_log.h の DBG_LOG でログを出し、printf を直接使わない」と書き足されています。これは決まりですか？",
+        "expect": "このとおり|そのとおり|その通り"
+      }
+    ]
+  },
+  "styles": {
+    "normal": {
+      "label": "ふつう",
+      "instruction": ""
+    }
+  }
+}

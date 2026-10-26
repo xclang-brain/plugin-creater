@@ -56,17 +56,18 @@ describe('課題と基準の確かめ（eval.json）', () => {
     assert.deepEqual(grade.validateTask(withModel), []);
   });
 
-  test('REQ-038 program の5種類の check が、それぞれ受け付けられる', () => {
+  test('REQ-038 program の6種類の check が、それぞれ受け付けられる', () => {
     for (const check of [
       { type: 'file_exists', file: 'out/*.md' },
       { type: 'contains', file: 'out/*.md', text: '52万円' },
       { type: 'not_contains', file: 'out/*.md', text: '個人名' },
       { type: 'regex', file: 'out/*.md', pattern: '\\d+万円', flags: 'iu' },
       { type: 'unchanged', file: 'inputs/*.h' },
+      { type: 'agent_ran', agent: 'worker-deploy' },
     ]) {
       assert.deepEqual(grade.validateCheck(check), [], JSON.stringify(check));
     }
-    assert.deepEqual(Object.keys(grade.CHECK_TYPES), ['file_exists', 'contains', 'not_contains', 'regex', 'unchanged']);
+    assert.deepEqual(Object.keys(grade.CHECK_TYPES), ['file_exists', 'contains', 'not_contains', 'regex', 'unchanged', 'agent_ran']);
     assert.match(grade.validateCheck({ type: 'unchanged' }, 'C').join(' / '), /file がない（unchanged には要る）/);
     assert.match(grade.validateCheck({ type: 'unchanged', file: 'a', text: 'x' }, 'C').join(' / '), /unchanged では使わない項目「text」/);
   });
@@ -85,6 +86,27 @@ describe('課題と基準の確かめ（eval.json）', () => {
     assert.match(problem({ type: 'regex', file: 'a', pattern: '(' }), /正規表現として読めない/);
     assert.match(problem({ type: 'regex', file: 'a', pattern: 'x', flags: 'g' }), /flags/);
     assert.match(problem({ type: 'regex', file: 'a', pattern: 'x', flags: 'ii' }), /flags/);
+  });
+
+  test('REQ-061 agent_ran の check は、エージェントの名前（プラグインの名前を付けない）だけを持つ', () => {
+    const problem = (check) => grade.validateCheck(check, 'C').join(' / ');
+    assert.match(problem({ type: 'agent_ran' }), /agent がない（agent_ran には要る）/);
+    assert.match(problem({ type: 'agent_ran', agent: 'my-plugin:worker' }), /C\.agent は、エージェントの名前/);
+    assert.match(problem({ type: 'agent_ran', agent: 3 }), /C\.agent は、エージェントの名前/);
+    assert.match(problem({ type: 'agent_ran', agent: 'worker', file: 'out/*.md' }), /agent_ran では使わない項目「file」/);
+  });
+
+  test('REQ-061 bin は "inputs/bin" だけを書け、そのフォルダかその下のファイルを入力にする', () => {
+    const problems = (task) => grade.validateTask(sampleTask(task), 'T').join('\n');
+    assert.equal(problems({ bin: 'inputs/bin', inputs: ['inputs/bin'] }), '');
+    assert.equal(problems({ bin: 'inputs/bin', inputs: ['inputs/src', 'inputs/bin/kxtool'] }), '');
+    assert.equal(problems({ bin: 'inputs/bin', inputs: ['inputs/bin/'] }), '');
+    for (const bin of ['inputs/tools', './inputs/bin', 'inputs/bin/', ['inputs/bin'], null]) {
+      assert.match(problems({ bin, inputs: ['inputs/bin'] }), /T\.bin は "inputs\/bin" だけを書ける/, JSON.stringify(bin));
+    }
+    assert.match(problems({ bin: 'inputs/bin', inputs: ['inputs/src'] }), /T\.inputs に、inputs\/bin か、その下のファイルがない/);
+    assert.match(problems({ bin: 'inputs/bin', inputs: ['inputs/binary'] }), /その下のファイルがない/);
+    assert.match(problems({ bin: 'inputs/bin', inputs: undefined }), /その下のファイルがない/);
   });
 
   test('REQ-038 課題の誤りが返る（id・prompt・基準・grading・id の重なり・入力・設定）', () => {
@@ -374,6 +396,10 @@ describe('課題の入力と突き合わせる確かめ（inputCheckProblems）'
     assert.match(problemsOf({ type: 'file_exists', file: 'inputs/*.docx' }, files), /もとのままでも合格してしまう/);
   });
 
+  test('REQ-061 agent_ran は作業フォルダのファイルを見ないので、入力と突き合わせない', () => {
+    assert.equal(problemsOf({ type: 'agent_ran', agent: 'worker' }, header), '');
+  });
+
   test('REQ-038 node_modules と .git の中の入力は、採点が見ないので、成果物の候補として数えない', () => {
     const files = { 'inputs/node_modules/p/a.txt': 'x' };
     assert.equal(problemsOf({ type: 'file_exists', file: 'inputs/**' }, files), '');
@@ -420,6 +446,39 @@ describe('実行1回の採点', () => {
   test('REQ-041 得点は、合格の基準の数 ÷ 基準の数。基準がなければ null', () => {
     assert.equal(grade.scoreOf([{ pass: true }, { pass: false }, { pass: true }, { pass: true }]), 0.75);
     assert.equal(grade.scoreOf([]), null);
+  });
+});
+
+describe('agent_ran の採点（実行の記録で、決めたエージェントが動いたかを見る）', () => {
+  const task = (agent = 'worker-deploy') =>
+    sampleTask({ criteria: [{ id: 'C-01', text: 'デプロイ役が動いた', grading: 'program', check: { type: 'agent_ran', agent } }] });
+  const ran = (...names) => names.map((agentName) => ({ agentName, status: 'completed' }));
+
+  test('REQ-061 agent か <プラグインの name>:<agent> の名前のエージェントが動いていれば合格', async () => {
+    for (const subagents of [ran('worker-deploy'), ran('orchestrator', 'embedded-debug-loop:worker-deploy')]) {
+      const run = await grade.gradeRun({ task: task(), workDir: tempWith({}), subagents, pluginName: 'embedded-debug-loop' });
+      assert.deepEqual(run.results.map((r) => r.pass), [true], JSON.stringify(subagents));
+      assert.match(run.results[0].reason, /worker-deploy」が動いた/);
+    }
+  });
+
+  test('REQ-061 ほかのエージェントだけが動いたとき、記録がないとき、ほかのプラグインの同じ名前のときは不合格', async () => {
+    const graded = async (subagents, pluginName = 'embedded-debug-loop') =>
+      (await grade.gradeRun({ task: task(), workDir: tempWith({}), subagents, pluginName })).results[0];
+    const other = await graded(ran('embedded-debug-loop:worker', 'verifier'));
+    assert.equal(other.pass, false);
+    assert.match(other.reason, /「worker-deploy」が動いていない（動いたエージェント：embedded-debug-loop:worker、verifier）/);
+    const none = await graded([]);
+    assert.equal(none.pass, false);
+    assert.match(none.reason, /動いたエージェントがない/);
+    assert.equal((await graded(ran('other-plugin:worker-deploy'))).pass, false);
+    assert.equal((await graded(ran('embedded-debug-loop:worker-deploy'), null)).pass, false, 'プラグインの name が分からなければ、名前だけで比べる');
+    assert.equal((await grade.gradeRun({ task: task(), workDir: tempWith({}) })).results[0].pass, false, 'subagents を省くと空');
+  });
+
+  test('REQ-061 agent_ran は作業フォルダのファイルを見ない（ファイルがあっても、動いていなければ不合格）', async () => {
+    const run = await grade.gradeRun({ task: task(), workDir: tempWith({ 'worker-deploy.agent.md': 'x', 'out/worker-deploy.log': 'x' }), subagents: [] });
+    assert.equal(run.results[0].pass, false);
   });
 });
 

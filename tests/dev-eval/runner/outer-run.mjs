@@ -7,6 +7,9 @@
 //   4. 会話の全文と採点を、記録（record.json）に残す（6.6）。
 // 開発者が答えるとき（6.7）は、ユーザー役の代わりに、中継（human-relay.mjs）を作る関数を引数 createAnswerer で渡し、answerer を human にする。
 // 止まった実行を続きから始めるとき（outer.mjs --resume）は、引数 resume で、前の実行のフォルダとクリエイターへの最初の発言を渡す。
+// 改善の模擬ユーザー（persona.kind が change。testing.md 6章）では、題材のリポジトリを作業フォルダに置き（outer-change.mjs）、
+// 問いに答える直前・記録のツールのたび・手番の終わりに、直すプラグインのフォルダの HEAD と git status を記録する（repo.snapshot）。
+// 終わりは「承認の後に HEAD が進み、直すフォルダに変更が残っていない」で見分け、直したフォルダの 1・2段目を動かして、outer-grade-change.mjs で採点する。
 // 前の会話の記録は、クリエイターのセッションの記録から読み直す（outer-resume.mjs）。
 // 実際のモデルを使うのは、query（Agent SDK）を渡さないときだけ。試験では偽物の query を渡す。
 // 統括がユーザーの承認をとってから、実際のモデルで動かすこと。
@@ -19,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 
 import { makeQueryOptions, sandboxStatus } from './isolation.mjs';
 import { readConversionReport } from './model-map.mjs';
-import { collectGeneratedFiles, gradeOuter } from './outer-grade.mjs';
+import { collectGeneratedFiles, gradeOuter, personaFileHashes } from './outer-grade.mjs';
+import { changeEnded, changePaths, changeRecordOf, collectChangeRepo, manifestOf, placeWorkspace, readBaseline, takeBaseline, takeSnapshot } from './outer-change.mjs';
+import { gradeChange } from './outer-grade-change.mjs';
 import { createCreatorToolkit, REPO_ROOT } from './creator-tools.mjs';
 import { createUserRole, loadQuery } from './user-role.mjs';
 import { conversationOf, createMessageRecorder, createRecorder, questionItemData } from './outer-record.mjs';
@@ -175,6 +180,9 @@ export async function runGeneratedStages(pluginDir, { python = 'python3', env = 
   }
 }
 
+/** 会話が終わったとき（終わりの理由）。生成プラグインができた、または改善の模擬ユーザーで直すフォルダを直した・新しいフォルダに作った */
+export const FINISHED_REASONS = Object.freeze(['generated', 'generated_without_approval', 'changed', 'changed_without_approval', 'generated_new_folder']);
+
 /** 続きから始めたとき、読み直しが確かでなければ採点しない観点（会話の全体にもとづく観点） */
 export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generation-before-approval']);
 
@@ -200,6 +208,7 @@ export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generat
  *   省くとユーザー役（createUserRole）。開発者が答えるときは、中継（human-relay.mjs の createHumanRelay）を作る関数を渡す（testing.md 6.7）
  * @param {'user-role'|'human'} [o.answerer] 答える人の種類。human なら、記録・採点・内側の EVAL を開発者が答える形にする（testing.md 6.7）
  * @param {number} [o.innerRuns] 内側の EVAL の、あり・なしそれぞれの回数（省くと 1）
+ * @param {string} [o.fixturesDir] 改善の模擬ユーザーの題材の置き場所（試験用。省くと tests/dev-eval/fixtures）
  * @param {{ runDir: string, prompt: string, sessionId?: string, relayDir?: string, fromRelayId?: string|null, abandoned?: string[] }} [o.resume]
  *   止まった実行を続きから始める（開発者が答えるときだけ。testing.md 6.7）。runDir は前の実行のフォルダ（その中の work などを使い、
  *   示すファイルは置き直さない）。prompt は、続けるセッションに送る最初の発言。sessionId を省くと、agent-home のセッションの記録から探す。
@@ -240,6 +249,8 @@ export async function runOuterOnce(o) {
   }
   let { persona } = loaded;
   const { files: personaFiles } = loaded;
+  // 改善の模擬ユーザー（testing.md 6章）。直すプラグインのフォルダを直す（新しいフォルダに作らない）
+  const change = persona.kind === 'change';
   if (!persona.styles?.[styleName]) throw new Error(`話し方「${styleName}」は、模擬ユーザー ${persona.id} にありません。`);
   if (sandbox) {
     const status = (o.sandboxCheck ?? sandboxStatus)();
@@ -261,9 +272,23 @@ export async function runOuterOnce(o) {
   }
   const dirs = runDirsOf(runDir);
   for (const d of [dirs.work, dirs.agentHome, dirs.copilotHome, dirs.userHome]) fs.mkdirSync(d, { recursive: true });
-  if (!resume) placePersonaFiles(dirs.work, personaFiles);
+  let baseline = null;
+  if (!resume) {
+    // role が repo のファイルは、題材のリポジトリの初めのコミットの前に置く（placeWorkspace）
+    placePersonaFiles(dirs.work, change ? personaFiles.filter((f) => f.role !== 'repo') : personaFiles);
+    if (change) {
+      const placed = placeWorkspace(dirs.work, persona, loaded.dir, { ...(o.fixturesDir ? { fixturesDir: o.fixturesDir } : {}), originDir: path.join(runDir, 'origin.git') });
+      baseline = takeBaseline(runDir, { workDir: dirs.work, persona, originDir: placed.originDir, now: clock.now });
+    }
+  } else if (change) baseline = readBaseline(runDir);
+  // 改善の模擬ユーザーの直すフォルダも、始める前からあるプラグインに入る（新しいフォルダの見分けに使う）。直すフォルダのマニフェストが
+  // 直下にないとき（.claude-plugin/ など）は、始める前の記録に入らないが、直して直下に plugin.json ができても、新しいフォルダに数えない
   const preexisting = preexistingPlugins(runDir, dirs.work, { resume: Boolean(resume) });
-  const generatedPlugins = () => findGeneratedPlugins(dirs.work).filter((d) => !preexisting.includes(path.relative(dirs.work, d).split(path.sep).join('/')));
+  const targetRel = change ? path.relative(dirs.work, changePaths(dirs.work, persona).targetDir).split(path.sep).join('/') : null;
+  const generatedPlugins = () => findGeneratedPlugins(dirs.work)
+    .map((d) => ({ d, rel: path.relative(dirs.work, d).split(path.sep).join('/') }))
+    .filter(({ rel }) => !preexisting.includes(rel) && rel !== targetRel)
+    .map(({ d }) => d);
   // 続きから始めるときのセッションの番号と、その記録（ここで探せなければ、何も動かさずに断る）
   const transcript = resume ? findSessionTranscript(dirs.agentHome, resume.sessionId) : null;
 
@@ -279,6 +304,13 @@ export async function runOuterOnce(o) {
   let sessionId = transcript?.sessionId;
   let stopped = null;
   const messageRecorder = createMessageRecorder({ recorder, models, subagents, skills });
+  /** 改善の模擬ユーザーで、直すフォルダの HEAD と git status を記録する（承認の前に変わっていないかを見る材料） */
+  const snapshot = (reason) => {
+    if (!change) return null;
+    const { at, ...s } = takeSnapshot({ workDir: dirs.work, persona, reason, now: clock.now });
+    recorder.add('repo.snapshot', s);
+    return { at, ...s };
+  };
 
   // クリエイターの置き換え（置き換えた版と、エクステンションの代わりの MCP サーバー）
   let converted = null;
@@ -308,7 +340,11 @@ export async function runOuterOnce(o) {
         sessionId: `outer-${path.basename(runDir)}`,
         clock,
         pluginRoot: creatorRoot,
-        onEvent: (e) => { e.seq = recorder.next(); },
+        onEvent: (e) => {
+          // 記録のツールが動く前のスナップショットを、呼び出しより前の順番にする（承認の呼び出しの直前の状態が、承認の前に入る）
+          if (e.type === 'tool.call') snapshot(`tool:${e.tool}`);
+          e.seq = recorder.next();
+        },
       })
     : null;
   if (toolkit && report) {
@@ -346,6 +382,7 @@ export async function runOuterOnce(o) {
       // 質問の直前の文の処理が、この呼び出しより後になることがあるので、1 回譲ってから受け取る
       await new Promise((resolve) => setImmediate(resolve));
       let notes = unreadNotes.splice(0);
+      snapshot('question');
       for (const q of questions) {
         const item = questionItemData(q, group, questions.length);
         const { options } = item;
@@ -419,7 +456,11 @@ export async function runOuterOnce(o) {
 
     const readState = () => (toolkit ? toolkit.readState() : null);
     /** 生成プラグインができて手番が終わったら、会話は終わり。承認（段階「生成」）の記録がないまま作られたときは、その理由で終える（採点で落ちる） */
-    const finishedReason = () => {
+    const finishedReason = (turnSnapshot) => {
+      if (change) {
+        const newPlugins = generatedPlugins().map((d) => path.relative(dirs.work, d).split(path.sep).join('/'));
+        return changeEnded({ baseline, snapshot: turnSnapshot, approved: arm !== 'with' || readState()?.stage === 'generate', newPlugins });
+      }
       if (generatedPlugins().length === 0) return null;
       return arm === 'with' && readState()?.stage !== 'generate' ? 'generated_without_approval' : 'generated';
     };
@@ -477,6 +518,7 @@ export async function runOuterOnce(o) {
         if (signal?.aborted) { stopped = { reason: 'interrupted' }; break; }
         onProgress({ phase: 'turn', n: exchanges + 1 });
         const turn = await runTurn(prompt, sessionId);
+        const turnSnapshot = snapshot('turn-end');
         const text = (turn.result?.result ?? '').trim() || turn.lastText.trim();
         if (text) lastCreatorText = text;
         if (!turn.result) { stopped = { reason: 'no_result' }; break; }
@@ -484,7 +526,7 @@ export async function runOuterOnce(o) {
           stopped = { reason: LIMIT_PATTERN.test(`${turn.result.result ?? ''}`) ? 'usage_limit' : turn.result.subtype ?? 'error', message: String(turn.result.result ?? '').slice(0, 300) };
           break;
         }
-        const finished = finishedReason();
+        const finished = finishedReason(turnSnapshot);
         if (finished) { stopped = { reason: finished }; break; }
         // 文章で質問して手番を終えたときも、ユーザー役の答えを次の発言として返す（6.1）
         const question = text || NO_TEXT_QUESTION;
@@ -502,20 +544,26 @@ export async function runOuterOnce(o) {
       stopped = { reason: 'exception', message: error?.message ?? String(error) };
     }
     // 開発者の答えを待つ間などに中断されたら、生成まで進んでいなければ、中断として終える（ユーザー役の AI のときは、これまでどおり）
-    if (createAnswerer && signal?.aborted && !['generated', 'generated_without_approval'].includes(stopped?.reason)) {
+    if (createAnswerer && signal?.aborted && !FINISHED_REASONS.includes(stopped?.reason)) {
       stopped = { reason: 'interrupted', ...(stopped?.reason ? { detail: stopped.reason } : {}) };
     }
     userRole.setStatus?.({ phase: 'grading' });
 
     // ---- 生成プラグインの採点 ----
     const plugins = generatedPlugins();
-    const pluginDir = plugins.length === 1 ? plugins[0] : null;
+    // 改善の模擬ユーザーでは、直したフォルダを採点する。材料（リポジトリと直したファイル）は、1・2段目の結果のファイルが混ざる前に集める
+    const changeRepo = change
+      ? collectChangeRepo({ workDir: dirs.work, persona, baseline, newPlugins: plugins.map((d) => path.relative(dirs.work, d).split(path.sep).join('/')) })
+      : null;
+    const changedDir = change ? changePaths(dirs.work, persona).targetDir : null;
+    // 直すフォルダのマニフェストは、直下のほかに .plugin/・.github/plugin/・.claude-plugin/ にあってもよい（エクステンションと同じ探し方）
+    const pluginDir = change ? (manifestOf(changedDir) ? changedDir : null) : plugins.length === 1 ? plugins[0] : null;
     let generatedFiles = null;
     let stages = null;
     let innerResult = null;
     let innerRecord = null;
     if (pluginDir) {
-      generatedFiles = collectGeneratedFiles(pluginDir);
+      if (!change) generatedFiles = collectGeneratedFiles(pluginDir);
       onProgress({ phase: 'stages' });
       try {
         stages = await runStages(pluginDir, {});
@@ -560,30 +608,46 @@ export async function runOuterOnce(o) {
       subagents: Object.entries(subagents).map(([id, s]) => ({ type: s.type, models: models[id] ?? [] })),
       lowCost: converted ? readConvertedAgentModel(converted, 'worker') : null,
     };
-    const grading = gradeOuter({
-      persona,
-      personaFiles,
-      items: recorder.items,
-      toolEvents,
-      state,
-      generatedCount: plugins.length,
-      generatedFiles,
-      stages,
-      // 開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
-      inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
-      userSignals: userRole.signals,
-      modelUse,
-      model,
-      arm,
-      answerer: answererKind,
-      notGraded,
-    });
+    const grading = change
+      ? gradeChange({
+          persona,
+          record: { skills: skills.filter(Boolean) },
+          state,
+          items: recorder.items,
+          toolEvents,
+          stages,
+          repo: changeRepo,
+          personaFiles: personaFileHashes(personaFiles),
+          modelUse,
+          model,
+          arm,
+          answerer: answererKind,
+          inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
+        })
+      : gradeOuter({
+          persona,
+          personaFiles,
+          items: recorder.items,
+          toolEvents,
+          state,
+          generatedCount: plugins.length,
+          generatedFiles,
+          stages,
+          // 開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
+          inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
+          userSignals: userRole.signals,
+          modelUse,
+          model,
+          arm,
+          answerer: answererKind,
+          notGraded,
+        });
     if (human) grading.innerSeparate = innerResult;
 
     const finishedAt = new Date(clock.now()).toISOString();
     const record = {
       schema: 'outer-record/1',
-      persona: { id: persona.id, title: persona.title, experience: persona.experience },
+      persona: { id: persona.id, title: persona.title, experience: persona.experience, ...(change ? { kind: 'change' } : {}) },
       style: styleName,
       arm,
       answerer: human ? 'human' : 'user-role',
@@ -618,6 +682,7 @@ export async function runOuterOnce(o) {
       issues: toolkit ? toolkit.issues : [],
       userRole: { answers: userRole.answers, signals: userRole.signals },
       generated: { plugins: plugins.map((p) => path.relative(dirs.work, p)), files: (generatedFiles ?? []).map((f) => ({ rel: f.rel, size: f.size, sha256: f.sha256 })) },
+      ...(change ? { change: changeRecordOf(changeRepo, recorder.items) } : {}),
       stages,
       inner: innerResult,
       grading,

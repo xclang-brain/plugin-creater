@@ -8,12 +8,18 @@
 //   { id, text, grading: "program", check: {...} }   プログラムで採点する
 //   { id, text, grading: "model", check?: { files?: [グロブ] } }   モデルが判定する
 //
-// program の check.type（5種類。file は作業フォルダの根からの相対のグロブ）
+// program の check.type（6種類。file は作業フォルダの根からの相対のグロブ）
 //   file_exists   { type, file }                 file に当てはまる、空でないファイルがある
 //   contains      { type, file, text }           当てはまるファイルのどれかに、text という文字がある
 //   not_contains  { type, file, text }           当てはまるファイルが1つ以上あり、どれにも text がない
 //   regex         { type, file, pattern, flags? } 当てはまるファイルのどれかに、正規表現が合う（flags は i・m・s・u）
 //   unchanged     { type, file }                 file に当てはまる課題の入力のファイルが、すべてもとのまま残っている
+//   agent_ran     { type, agent }                その実行で、エージェント agent（com.github.copilot/agents/<agent>.agent.md）が動いた。
+//                                                実行の記録の subagent.started のエージェントの名前が、agent か <プラグインの name>:<agent> なら合格。
+//                                                作業フォルダのファイルは見ない（エージェントの組み方を変えたときの試験。REQ-061）
+// 課題の bin（省ける）：擬似の機器の道具（差し替えのスクリプト）を置く、課題の入力のフォルダ。書けるのは "inputs/bin" だけで、
+//   inputs に、そのフォルダかその下のファイルがなければならない。test-plugin は、作業フォルダに写したこのフォルダを、
+//   その課題の実行の PATH の先頭に足す（tasks.mjs、run.mjs）。
 // 課題の入力として写したファイルのうち、中身が変わっていないものは「当てはまるファイル」に数えない（入力だけで合格しないため）。
 // そのため、unchanged のほかの4種類で、課題の入力のままで当てはまってしまうものは、課題の誤りにする（inputCheckProblems）。
 // 入力を変えていないことは unchanged で確かめる。unchanged の file は、課題の入力のファイルのどれかに当てはまらなければならない。
@@ -32,7 +38,12 @@ export const CHECK_TYPES = {
   not_contains: { required: ['file', 'text'], optional: [] },
   regex: { required: ['file', 'pattern'], optional: ['flags'] },
   unchanged: { required: ['file'], optional: [] },
+  agent_ran: { required: ['agent'], optional: [] },
 };
+/** 課題の bin に書ける、ただ1つの場所（1段目の check_structure.py の BIN_DIR と同じ） */
+export const BIN_DIR = 'inputs/bin';
+/** エージェントの名前（com.github.copilot/agents/<名前>.agent.md の <名前>。1段目の AGENT_ID と同じ） */
+const AGENT_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const REGEX_FLAGS = new Set(['i', 'm', 's', 'u']);
 const SKIP_DIRS = new Set(['node_modules', '.git']);
 export const MAX_LISTED_FILES = 5000;
@@ -156,6 +167,9 @@ export function validateCheck(check, label = 'check') {
   for (const key of Object.keys(check)) if (!allowed.has(key)) problems.push(`${label} に、${check.type} では使わない項目「${key}」がある`);
   for (const key of spec.required) if (!(key in check)) problems.push(`${label} に ${key} がない（${check.type} には要る）`);
   if ('file' in check) checkGlob(check.file, `${label}.file`, problems);
+  if (check.type === 'agent_ran' && 'agent' in check && !(typeof check.agent === 'string' && AGENT_NAME.test(check.agent))) {
+    problems.push(`${label}.agent は、エージェントの名前（com.github.copilot/agents/<名前>.agent.md の <名前>。プラグインの名前は付けない）で書く`);
+  }
   if (check.type === 'contains' || check.type === 'not_contains') {
     if ('text' in check && !isText(check.text)) problems.push(`${label}.text は、探す文字を空でない文字で書く`);
   }
@@ -193,6 +207,14 @@ function validateModelCheck(check, label) {
   return problems;
 }
 
+/** 課題の bin（擬似の機器の道具のフォルダ）の形。inputs/bin だけを書け、inputs に inputs/bin かその下のファイルがある */
+function binProblems(task, label) {
+  if (task.bin !== BIN_DIR) return [`${label}.bin は "${BIN_DIR}" だけを書ける（擬似の機器の道具を置く、課題の入力のフォルダ）`];
+  const inputs = Array.isArray(task.inputs) ? task.inputs : [];
+  const under = inputs.some((p) => isText(p) && `${path.posix.normalize(normalizeRelPath(p)).replace(/\/$/, '')}/`.startsWith(`${BIN_DIR}/`));
+  return under ? [] : [`${label}.inputs に、${BIN_DIR} か、その下のファイルがない（bin のフォルダも、課題の入力として作業フォルダに写す）`];
+}
+
 /** eval.json の1課題を確かめる。誤りの文の並びを返す（なければ空） */
 export function validateTask(task, label = 'eval.json') {
   const problems = [];
@@ -210,6 +232,7 @@ export function validateTask(task, label = 'eval.json') {
       });
     }
   }
+  if ('bin' in task) problems.push(...binProblems(task, label));
   if ('settings' in task) {
     const s = task.settings;
     if (!isObject(s)) {
@@ -389,16 +412,32 @@ const namesOf = (files, max = 3) => {
  * @param {object} [opts]
  * @param {Map<string,string>} [opts.inputs] 写した入力の { 相対の場所 → sha256 }（unchanged に要る）
  * @param {string} [opts.workDir] 作業フォルダ（unchanged に要る）
+ * @param {Array<{ agentName?: string }>} [opts.subagents] その実行で動いたエージェント（test-plugin の記録の subagents。agent_ran に要る）
+ * @param {string|null} [opts.pluginName] 生成プラグインの name（agent_ran で、<name>:<agent> の形の名前も合格にする）
  * @returns {Promise<{ pass: boolean, reason: string }>}
  */
-export async function gradeProgram(check, files, { readText = readArtifactText, inputs = new Map(), workDir } = {}) {
+export async function gradeProgram(check, files, { readText = readArtifactText, inputs = new Map(), workDir, subagents = [], pluginName = null } = {}) {
   if (check.type === 'unchanged') return gradeUnchanged(check, inputs, workDir);
+  if (check.type === 'agent_ran') return gradeAgentRan(check, subagents, pluginName);
   const matcher = globToRegExp(check.file);
   const matched = files.filter((f) => !f.unchangedInput && matcher.test(f.path));
   if (check.type === 'file_exists') return decideProgram(check, matched, []);
   const reads = [];
   for (const file of matched) reads.push(await readText(file.absPath, { maxChars: CHECK_MAX_CHARS }));
   return decideProgram(check, matched, reads);
+}
+
+/**
+ * agent_ran の採点。その実行で subagent.started が出たエージェントの名前に、agent か <プラグインの name>:<agent> があれば合格。
+ * 作業フォルダのファイルは見ない。
+ */
+function gradeAgentRan(check, subagents, pluginName) {
+  const wanted = new Set([check.agent, ...(pluginName ? [`${pluginName}:${check.agent}`] : [])]);
+  const ran = [...new Set((Array.isArray(subagents) ? subagents : []).map((s) => s?.agentName).filter((n) => typeof n === 'string' && n !== ''))];
+  const hit = ran.find((name) => wanted.has(name));
+  if (hit) return { pass: true, reason: `エージェント「${hit}」が動いた（実行の記録にある）` };
+  if (ran.length === 0) return { pass: false, reason: `エージェント「${check.agent}」が動いていない（実行の記録に、動いたエージェントがない）` };
+  return { pass: false, reason: `エージェント「${check.agent}」が動いていない（動いたエージェント：${clip(ran.join('、'), 200)}）` };
 }
 
 /**
@@ -556,6 +595,7 @@ export function inputCheckProblems(task, inputFiles, label = 'eval.json') {
     if (!isObject(c) || c.grading !== 'program' || !isObject(c.check)) return;
     const where = `${label}.criteria[${i}].check`;
     const check = c.check;
+    if (check.type === 'agent_ran') return; // 作業フォルダのファイルを見ない種類
     const matcher = globToRegExp(check.file);
     if (check.type === 'unchanged') {
       if (!inputFiles.some((f) => matcher.test(f.path))) {
@@ -676,13 +716,15 @@ export function parseJudgeReply(reply) {
  * @param {Array} args.files listFiles の結果
  * @param {Map<string,string>} [args.inputs] 写した入力の { 相対の場所 → sha256 }（unchanged の採点に要る）
  * @param {string} [args.workDir] 作業フォルダ（unchanged の採点に要る）
+ * @param {Array} [args.subagents] その実行で動いたエージェント（agent_ran の採点に要る）
+ * @param {string|null} [args.pluginName] 生成プラグインの name（agent_ran の採点に使う）
  * @param {Function} [args.judge] model の基準を判定する関数 ({ criterion, task, artifacts }) => Promise<{ pass, reason }>
  */
-export async function gradeCriterion({ criterion, task, files, judge, readText = readArtifactText, inputs = new Map(), workDir }) {
+export async function gradeCriterion({ criterion, task, files, judge, readText = readArtifactText, inputs = new Map(), workDir, subagents = [], pluginName = null }) {
   const base = { id: criterion.id, text: criterion.text, grading: criterion.grading };
   try {
     if (criterion.grading === 'program') {
-      const out = await gradeProgram(criterion.check, files, { readText, inputs, workDir });
+      const out = await gradeProgram(criterion.check, files, { readText, inputs, workDir, subagents, pluginName });
       return { ...base, pass: out.pass === true, reason: clip(out.reason, REASON_MAX_CHARS) };
     }
     if (typeof judge !== 'function') {
@@ -712,12 +754,14 @@ export function scoreOf(results) {
  * @returns {Promise<{ results: Array, passed: number, total: number, score: number|null, errors: number,
  *   judgments: number, judgeCredits: number, judgeCreditsStatus: string }>}
  *   judgments は model の基準の数、judgeCredits はその判定にモデルを使った AI クレジットの合計。
+ *   subagents は、その実行で動いたエージェント（test-plugin の記録の subagents。省くと空）。pluginName は生成プラグインの name。
+ *   どちらも agent_ran の採点に使う。
  */
-export async function gradeRun({ task, workDir, inputs = new Map(), judge, readText = readArtifactText }) {
+export async function gradeRun({ task, workDir, inputs = new Map(), judge, readText = readArtifactText, subagents = [], pluginName = null }) {
   const files = listFiles(workDir, { inputs });
   const results = [];
   for (const criterion of task.criteria) {
-    results.push(await gradeCriterion({ criterion, task, files, judge, readText, inputs, workDir }));
+    results.push(await gradeCriterion({ criterion, task, files, judge, readText, inputs, workDir, subagents, pluginName }));
   }
   const modelResults = results.filter((r) => r.grading === 'model');
   return {

@@ -10,7 +10,7 @@ import test from 'node:test';
 import * as realSdk from '@anthropic-ai/claude-agent-sdk';
 
 import { createScreen } from '../../../skills/test-plugin/scripts/screen.mjs';
-import { guardSdk, lastToolResultBlocks, startFakeAnthropic } from './fake-anthropic.mjs';
+import { firstUserText, guardSdk, lastToolResultBlocks, startFakeAnthropic } from './fake-anthropic.mjs';
 import { createInnerAdapter, OPEN_FAILED, RECORD_FAILED } from './inner-adapter.mjs';
 import { makeQueryOptions } from './isolation.mjs';
 import { runInnerArm } from './inner-run.mjs';
@@ -32,7 +32,7 @@ const judge = async ({ criterion }) => ({ pass: true, reason: `${criterion.id} �
 test('REQ-005 REQ-007 REQ-008 REQ-012 ありの実行：画面を開く → 設定して開始 → 統括・作業・検証が動く → 終わりを読む → 採点する', { skip: SKIP, timeout: 240_000 }, async (t) => {
   const fixture = buildSamplePlugin();
   const requests = [];
-  const api = await startFakeAnthropic(scriptedModel({ workerDelayMs: 1500, verifierDelayMs: 1500, onRequest: (role, body) => requests.push({ role, model: body.model }) }));
+  const api = await startFakeAnthropic(scriptedModel({ workerDelayMs: 1500, verifierDelayMs: 1500, onRequest: (role, body) => requests.push({ role, model: body.model, first: role === 'orchestrator' ? firstUserText(body) : null }) }));
   const sdk = guardSdk(realSdk, api); // 守り：偽の API につながっていない query は断る（実際のモデルを呼ばない）
   const screen = createScreen({ chromium, env: { ...process.env, PLUGIN_TEST_BROWSER_CHANNEL: 'chromium' } });
   t.after(async () => {
@@ -59,6 +59,10 @@ test('REQ-005 REQ-007 REQ-008 REQ-012 ありの実行：画面を開く → 設�
   assert.ok(byRole('worker').length > 0 && byRole('worker').every((m) => m === 'claude-haiku-5-5'), JSON.stringify(byRole('worker')));
   assert.ok(byRole('verifier').length > 0 && byRole('verifier').every((m) => m === 'claude-opus-5-5'), JSON.stringify(byRole('verifier')));
   assert.ok(byRole('orchestrator').every((m) => m === 'claude-sonnet-5-5'));
+  // REQ-062（BLUEPRINT D3）：統括への最初の指示に、プラグインのフォルダの絶対パスがある（作業・検証が、ルールのスキルを絶対パスで読めるように）
+  const instruction = requests.find((r) => r.role === 'orchestrator')?.first ?? '';
+  assert.ok(instruction.includes(`## プラグインのフォルダ\n${fixture.pluginRoot}\n`), instruction.slice(0, 600));
+  assert.ok(path.isAbsolute(fixture.pluginRoot));
   const failed = result.checks.filter((c) => !c.ok);
   assert.deepEqual(failed, [], JSON.stringify(failed));
   assert.ok(fs.existsSync(path.join(runDir, 'events.jsonl')));

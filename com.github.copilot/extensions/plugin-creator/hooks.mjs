@@ -18,8 +18,14 @@ import { INJECTION_MAX_BYTES } from './constants.mjs';
 export const COMPACTION_NOTICE =
   '会話が自動で要約されました。いまの手順が消えているかもしれません。skill ツールで make-plugin を読み直し、plugin-creator_state を呼んで、段階と、まだ聞いていないことを確かめてから続けてください。';
 
-if (Buffer.byteLength(COMPACTION_NOTICE, 'utf8') >= INJECTION_MAX_BYTES) {
-  throw new Error('会話の自動の要約の後の差し込みが 1KB を超えています');
+/** 今のプラグインを直すとき（記録の change がある）の差し込み。読み直すのは change-plugin（BLUEPRINT 5 C1） */
+export const COMPACTION_NOTICE_CHANGE =
+  '会話が自動で要約されました。いまの手順が消えているかもしれません。skill ツールで change-plugin を読み直し、plugin-creator_state を呼んで、段階と、まだ聞いていないことを確かめてから続けてください。';
+
+for (const notice of [COMPACTION_NOTICE, COMPACTION_NOTICE_CHANGE]) {
+  if (Buffer.byteLength(notice, 'utf8') >= INJECTION_MAX_BYTES) {
+    throw new Error('会話の自動の要約の後の差し込みが 1KB を超えています');
+  }
 }
 
 /** ask_user の結果の文から、答えの種類を見分ける（hearing.md 2.1） */
@@ -102,7 +108,7 @@ export function createHooks({ hearing, store, clock, warn = () => {} }) {
         if (input?.agentId) return undefined; // サブエージェントのツールの呼び出しには差し込まない。次のメインのエージェントの呼び出しまで待つ
         compactionPending = false; // 1回だけ
         if (!hearing.active) return undefined;
-        return { additionalContext: COMPACTION_NOTICE };
+        return { additionalContext: hearing.state?.change ? COMPACTION_NOTICE_CHANGE : COMPACTION_NOTICE };
       } catch (error) {
         warn(`onPreToolUse：${error?.message ?? error}`);
         return undefined;

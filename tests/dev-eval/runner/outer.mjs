@@ -15,6 +15,8 @@
 //   終了コード：0 最後まで動いた（点数が低くても 0）、1 途中で止まった（利用枠の上限、中断）、2 始められなかった。
 //   標準出力は結果の要約の JSON、進み具合は標準エラー出力。結果は <out>/outer-report.json に、実行が 1 つ終わるたびに書き直す。
 //   --inner-runs <n>     内側の EVAL の、あり・なしそれぞれの回数（既定 1）
+//   改善の模擬ユーザー（persona.json の kind が change。testing.md 6章）は、題材のリポジトリの直すフォルダを直させ、outer-grade-change.mjs で採点する
+//   （outer-run.mjs が模擬ユーザーの種類で選ぶ）。
 //
 // 開発者が答える形（testing.md 6.7）。ユーザー役の AI の代わりに、開発者がクリエイターの問いに答える:
 //   node tests/dev-eval/runner/outer.mjs --human --request-file <最初の依頼の文のファイル> [--relay <中継のフォルダ。既定は <out>/relay>]
@@ -76,8 +78,12 @@ export const PERSONAS_DIR = path.join(DEV_EVAL, 'personas');
 export const HELDOUT_DIR = path.join(DEV_EVAL, 'heldout');
 export const CONTROL_DIR = path.join(DEV_EVAL, 'control-creator');
 
-/** 費用の目安（ドル。testing.md 8.1 の試作の値。Claude の定価での見積もり）。実行のたびに変わるので、目安にとどめる */
-export const COST_GUIDE_USD = Object.freeze({ withoutInner: 0.1, withInner: 0.4, control: 0.05, without: 0.05 });
+/**
+ * 費用の目安（ドル。testing.md 8.1。Claude の定価での見積もり）。実行のたびに変わるので、目安にとどめる。
+ *   create：作る流れの外側の EVAL 1回（実測 約7）。change：改善の模擬ユーザーの外側の EVAL 1回（推定 約15）。inner：内側の EVAL を足すとき（約2）。
+ *   control・without：対照とプラグインなし（まだ測っていない。試作の値のまま）
+ */
+export const COST_GUIDE_USD = Object.freeze({ create: 7, change: 15, inner: 2, control: 0.05, without: 0.05 });
 
 export class OuterEvalError extends Error {
   constructor(code, message) {
@@ -345,7 +351,7 @@ export function planRuns({ personas, styles = [], allStyles = false, arms, model
         // 対照とプラグインなしは、クリエイターのモデルを替えても意味が薄いので、最初のモデルだけで動かす
         const armModels = arm === 'with' ? models : models.slice(0, 1);
         for (const model of armModels) {
-          for (let n = 1; n <= runs; n += 1) plan.push({ persona: loaded.persona.id, heldout, style, arm, model, n, inner: inner && arm === 'with' });
+          for (let n = 1; n <= runs; n += 1) plan.push({ persona: loaded.persona.id, kind: loaded.persona.kind === 'change' ? 'change' : 'create', heldout, style, arm, model, n, inner: inner && arm === 'with' });
         }
       }
     }
@@ -354,7 +360,12 @@ export function planRuns({ personas, styles = [], allStyles = false, arms, model
 }
 
 export function estimateUsd(plan) {
-  return Number(plan.reduce((sum, p) => sum + (p.arm === 'with' ? (p.inner ? COST_GUIDE_USD.withInner : COST_GUIDE_USD.withoutInner) : p.arm === 'control' ? COST_GUIDE_USD.control : COST_GUIDE_USD.without), 0).toFixed(2));
+  const one = (p) => {
+    if (p.arm === 'control') return COST_GUIDE_USD.control;
+    if (p.arm === 'without') return COST_GUIDE_USD.without;
+    return (p.kind === 'change' ? COST_GUIDE_USD.change : COST_GUIDE_USD.create) + (p.inner ? COST_GUIDE_USD.inner : 0);
+  };
+  return Number(plan.reduce((sum, p) => sum + one(p), 0).toFixed(2));
 }
 
 // ---- 結果の要約 --------------------------------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { loadTasks } from '../../../skills/test-plugin/scripts/tasks.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const { base, baseFiles, cases } = JSON.parse(fs.readFileSync(path.join(here, 'eval-cases.json'), 'utf8'));
+const { base, baseFiles, pluginFiles, cases } = JSON.parse(fs.readFileSync(path.join(here, 'eval-cases.json'), 'utf8'));
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'eval-parity-'));
 after(() => fs.rmSync(temp, { recursive: true, force: true }));
 
@@ -41,6 +41,11 @@ function writePlugin(c, index) {
   const pluginDir = path.join(temp, String(index));
   const taskDir = path.join(pluginDir, 'tests', 'eval', 'T-01');
   fs.mkdirSync(taskDir, { recursive: true });
+  for (const [rel, content] of Object.entries(pluginFiles ?? {})) {
+    const file = path.join(pluginDir, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
   fs.writeFileSync(path.join(taskDir, 'eval.json'), JSON.stringify(buildTask(c)));
   for (const [rel, content] of Object.entries({ ...baseFiles, ...(c.files ?? {}) })) {
     if (content === null) continue;

@@ -5,7 +5,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, test } from 'node:test';
 
-import { SETTABLE_ITEMS, answers, confirmArgs, internalSymbolsIn, knowledge, listTree, readyToConfirm, startForTest, tempDir, withRun, writeDraft } from './helpers.mjs';
+import {
+  PLUGIN_KNOWLEDGE,
+  SETTABLE_ITEMS,
+  answers,
+  changeConfirmArgs,
+  confirmArgs,
+  internalSymbolsIn,
+  knowledge,
+  listTree,
+  readyToConfirm,
+  readyToConfirmChange,
+  startChange,
+  startForTest,
+  tempDir,
+  withRun,
+  writeDraft,
+  writePluginFolder,
+} from './helpers.mjs';
+import { leftWordsIn } from './words.mjs';
 
 const urlOf = (text) => /画面：(http:\/\/127\.0\.0\.1:\d+\/\?k=\S+)/.exec(text)?.[1];
 
@@ -412,3 +430,117 @@ function makeResultFile(cwd) {
   fs.writeFileSync(file, JSON.stringify({ status: 'passed', stages: [] }), 'utf8');
   return file;
 }
+
+describe('今のプラグインを直すときの状態取得と、記録の置き場所', () => {
+  /** フォルダの中のファイルの一覧と中身（前後で比べる） */
+  const snapshot = (dir) => listTree(dir).map((rel) => [rel, rel.endsWith('/') ? null : fs.readFileSync(path.join(dir, rel), 'utf8')]);
+
+  test('REQ-060 REQ-052 直すときの状態の返り値に、直すプラグイン（フォルダ、名前、今の版）、変えたいこと、引き継いだ決まりの数、足した・直した・外した決まりの4行が出る。最後の行は change-plugin の読み直し', async () => {
+    await withRun(async (run) => {
+      const { folder } = await startChange(run);
+      let text = await run.call('state');
+      const real = fs.realpathSync(folder);
+      assert.deepEqual(text.split('\n').slice(0, 5), [
+        '段階：始まり',
+        `直すプラグイン：${real}（edl-sample、今の版 0.1.0）`,
+        '変えたいこと：KX-200 のクロスコンパイルとデプロイの手順を組み込みたい',
+        '引き継いだ決まり：5件',
+        '足した決まり：なし／直した決まり：なし／外した決まり：なし',
+      ]);
+      assert.match(text, /候補の確かめ：未着手（確かめたいこと 5件）/);
+      assert.match(text, /^直す前の確認：まだです。$/m);
+      assert.equal(text.split('\n').at(-1), 'SKILL.md の本文がコンテキストになければ、skill ツールで change-plugin を読み直してください。');
+
+      // 決まりを直す・外す・足す
+      await run.call('change', { folder, wants: ['デプロイを足したい', '画面は変えない'] });
+      await run.call('record', { knowledge: [{ id: 'K-05', text: '機器を1回 reboot し、だめなら人に伝える', quote: '今はこう' }] }); // K-06
+      await run.call('record', { knowledge: [{ id: 'K-03', status: '外した', quote: 'もう要らない' }] });
+      await run.call('record', { knowledge: [knowledge({ text: 'kxtool で送る' }), knowledge({ text: '確かめ中の決まり', status: '候補', source: 'ファイルから読んで確かめた', quote: 'deploy/SKILL.md' })] }); // K-07、K-08
+      text = await run.call('state');
+      assert.match(text, /^変えたいこと：デプロイを足したい／画面は変えない$/m);
+      assert.match(text, /^足した決まり：K-07／直した決まり：K-05→K-06／外した決まり：K-03$/m);
+      assert.deepEqual(internalSymbolsIn(text), []);
+      assert.deepEqual(leftWordsIn(text), []);
+      assert.ok(Buffer.byteLength(text, 'utf8') < 4096, `数 KB 以内にする：${Buffer.byteLength(text, 'utf8')}バイト`);
+
+      // 確認を受け付けた後
+      await run.call('record', { knowledge: [{ id: 'K-08', status: '外した', quote: '違う' }] });
+      const added = await readyToConfirmChange(run, { carried: ['K-01', 'K-02', 'K-04'] });
+      await run.call('confirm', changeConfirmArgs(['K-01', 'K-02', 'K-04', 'K-06', 'K-07', added]));
+      assert.match(await run.call('state'), /^直す前の確認：受け付け済み（.*）。ユーザーの承認はまだです。$/m);
+    });
+  });
+
+  test('REQ-049 REQ-024 直すときは、確認で足した決まりの出どころと、質問の改善案の対象の理由を「直す前の確認で足した」と示す（「作る前の確認」と言わない）', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: 'KX-200 のクロスコンパイルとデプロイの手順を組み込みたい' }] });
+      await run.call('record', {
+        knowledge: [
+          knowledge({ item: '進め方', source: '生成前の確認で足した', text: '確認で足した', quote: '足したい' }), // K-06：対象
+          knowledge({ item: '進め方', source: '生成前の確認で足した', text: '確認で足した、まだ確かめていない決まり', quote: '足したい', status: '候補' }), // K-07
+        ],
+      });
+      const text = await run.call('state', { include: '振り返りの材料' });
+      assert.match(text, /^ {2}K-06（聞くこと：進め方）：直す前の確認で足した$/m);
+      assert.match(text, /^ {2}K-07（聞くこと：進め方、出どころ：直す前の確認で足した）：確認で足した、まだ確かめていない決まり$/m);
+      assert.ok(!text.includes('作る前の確認'), text);
+      assert.deepEqual(leftWordsIn(text.split('問答の記録のすべて')[0]), []);
+    });
+  });
+
+  test('REQ-060 plugin-creator が作っていないプラグインでは、引き継いだ決まりが0件で、読み取った決まりを1件ずつ確かめることが分かる', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [], version: null } });
+      const text = await run.call('state');
+      assert.match(text, /^直すプラグイン：.*edl-sample（edl-sample、今の版 なし）$/m);
+      assert.match(text, /^引き継いだ決まり：0件（plugin-creator が作っていないプラグインなので、読み取った決まりは1件ずつ確かめる）$/m);
+    });
+  });
+
+  test('REQ-052 同じセッションの番号で起動し直すと、直す記録が読まれて続きから進む（番号は続き、change-plugin の読み直し）', async () => {
+    const home = tempDir('change-resume-home');
+    const cwd = tempDir('change-resume-cwd');
+    try {
+      const first = await startForTest({ sessionId: 'session-change', home, cwd });
+      await startChange(first);
+      await first.call('record', { knowledge: [{ id: 'K-05', text: '新しい文', quote: '今はこう' }] }); // K-06
+      await first.cleanup();
+
+      const second = await startForTest({ sessionId: 'session-change', home, cwd });
+      const text = await second.call('state');
+      assert.match(text, /^直すプラグイン：.*edl-sample（edl-sample、今の版 0\.1\.0）$/m);
+      assert.match(text, /直した決まり：K-05→K-06/);
+      assert.match(text, /skill ツールで change-plugin を読み直してください。$/);
+      assert.match(await second.call('record', { knowledge: [knowledge({ text: '続きの決まり' })] }), /K-07 を追加/);
+      // 同じフォルダで呼び直しても、取り込み直さない
+      await second.call('change', { folder: 'edl-sample', wants: ['続きから'] });
+      assert.equal(second.readState().knowledge.length, 7);
+      await second.cleanup();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  test('REQ-059 REQ-021 直すときも、記録は COPILOT_HOME の下にだけでき、直すプラグインのフォルダの中身は変わらない（ファイルの一覧と中身を前後で比べる）', async () => {
+    await withRun(async (run) => {
+      const homeBefore = listTree(run.home);
+      assert.deepEqual(homeBefore, []);
+      const folder = writePluginFolder(run.cwd);
+      const before = snapshot(folder);
+      await run.call('open');
+      await run.call('change', { folder, wants: ['デプロイを足したい'] });
+      await run.call('change', { folder, wants: ['もう一度'] });
+      const added = await readyToConfirmChange(run);
+      await run.fake.askUser({ message: '質問', answer: 'User responded: はい' });
+      await run.call('confirm', changeConfirmArgs([...PLUGIN_KNOWLEDGE.map((k) => k.id), added]));
+      await run.call('state', { include: '振り返りの材料' });
+      await run.call('progress', { stage: '生成', approvalQuote: 'はい' });
+      assert.deepEqual(snapshot(folder), before, '直すプラグインのフォルダが変わった');
+      for (const entry of listTree(run.home)) assert.match(entry, /^plugin-data(\/plugin-creator(\/hearings(\/[^/]+(\/[^/]+)?)?)?)?\/?$/, `想定外の場所：${entry}`);
+      // 作業フォルダにあるのは、試験が置いた直すフォルダと、作業の定義の案（作業エージェントが書く .plugin-creator-work/）だけ
+      assert.deepEqual(fs.readdirSync(run.cwd).sort(), ['.plugin-creator-work', 'edl-sample']);
+    });
+  });
+});

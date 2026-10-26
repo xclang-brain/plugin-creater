@@ -9,7 +9,21 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-import { EXTENSION_DIR, answerEverything, answers, confirmArgs, internalSymbolsIn, knowledge, readyToConfirm, withRun, writeDraft } from './helpers.mjs';
+import {
+  EXTENSION_DIR,
+  answerEverything,
+  answers,
+  changeConfirmArgs,
+  confirmArgs,
+  internalSymbolsIn,
+  knowledge,
+  readyToConfirm,
+  readyToConfirmChange,
+  startChange,
+  withRun,
+  writeDraft,
+  writePluginFolder,
+} from './helpers.mjs';
 import { LEFT_WORDS, leftWordsIn, withoutComments } from './words.mjs';
 
 describe('言葉の見張り（words.mjs）が、言い換え忘れを見つける', () => {
@@ -199,9 +213,74 @@ describe('ツールの返り値と断る文（REQ-024）', () => {
     });
   });
 
-  test('REQ-024 会話の自動の要約のあとの差し込みの文にも、表の左の言葉が出ない', async () => {
-    const { COMPACTION_NOTICE } = await import(pathToFileURL(path.join(EXTENSION_DIR, 'hooks.mjs')).href);
+  test('REQ-024 会話の自動の要約のあとの差し込みの文にも、表の左の言葉が出ない（作るときと、今のプラグインを直すとき）', async () => {
+    const { COMPACTION_NOTICE, COMPACTION_NOTICE_CHANGE } = await import(pathToFileURL(path.join(EXTENSION_DIR, 'hooks.mjs')).href);
     assert.deepEqual(leftWordsIn(COMPACTION_NOTICE), []);
+    assert.deepEqual(leftWordsIn(COMPACTION_NOTICE_CHANGE), []);
+  });
+
+  test('REQ-024 REQ-052 今のプラグインを直すときの返り値と断る文にも、表の左の言葉と内部の記号が出ない', async () => {
+    await withRun(async (run) => {
+      const seen = [];
+      const call = async (tool, args) => {
+        const r = await run.callSafe(tool, args);
+        seen.push(r.ok ? r.text : r.error);
+        return r;
+      };
+      // 直すフォルダの誤り
+      await call('change', {});
+      await call('change', { folder: 'x' });
+      await call('change', { folder: 'x', wants: [] });
+      await call('change', { folder: 'x', wants: [3] });
+      await call('change', { folder: 'ないフォルダ', wants: ['足したい'] });
+      writePluginFolder(run.cwd, { dir: 'broken', knowledge: '{ 壊れた' });
+      await call('change', { folder: 'broken', wants: ['足したい'] });
+      writePluginFolder(run.cwd, { dir: 'bad-shape', knowledge: [{ id: 'K-1x', kind: 'other', item: '進め方', text: 'x' }] });
+      await call('change', { folder: 'bad-shape', wants: ['足したい'] });
+      writePluginFolder(run.cwd, { dir: 'not-made', knowledge: null });
+      fs.writeFileSync(path.join(run.cwd, 'file.txt'), 'x');
+      await call('change', { folder: 'file.txt', wants: ['足したい'] });
+      await call('change', { folder: '.', wants: ['足したい'] });
+
+      // 記録を作る・呼び直す・違うフォルダ
+      const { folder } = await startChange(run);
+      seen.push((await startChange(run)).text);
+      await call('change', { folder: 'not-made', wants: ['足したい'] });
+
+      // 変えないので聞かない、できていたことの確認、付け直し
+      await call('progress', { items: [{ item: '前回の1回', status: '変えないので聞かない', quote: 'x' }] });
+      await call('progress', { items: [{ item: 'いつもと違うとき', status: '聞いた', quote: 'x' }] });
+      await call('progress', { items: [{ item: 'いつもと違うとき', status: '変えないので聞かない', quote: 'x' }] });
+      await call('progress', { stage: 'できていたことの確認' });
+      await call('progress', { items: [{ item: 'できていたことの確認', status: '聞いた', quote: 'x' }] });
+      await call('record', { knowledge: [{ id: 'K-05', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', quote: '今はこうです' }] });
+      await call('record', { knowledge: [{ id: 'K-05', status: '決まった', quote: '戻したい' }] });
+      await call('state', {});
+
+      // 直す前の確認の断り
+      const added = await readyToConfirmChange(run, { carried: ['K-01', 'K-02', 'K-03', 'K-04'] });
+      const ids = ['K-01', 'K-02', 'K-03', 'K-04', 'K-06', added];
+      await call('confirm', changeConfirmArgs(ids, { rebuild: undefined }));
+      await call('confirm', changeConfirmArgs(ids, { rebuild: { keep: ['x'], change: [] } }));
+      await call('confirm', changeConfirmArgs(ids, { version: undefined }));
+      await call('confirm', changeConfirmArgs(ids, { version: '1.0' }));
+      await call('confirm', changeConfirmArgs(ids, { version: '0.1.0' }));
+      await call('confirm', changeConfirmArgs(ids, { version: 2 }));
+      await call('confirm', changeConfirmArgs(ids, { evalTasks: [changeConfirmArgs(ids).evalTasks[0]] }));
+      const accepted = await call('confirm', changeConfirmArgs(ids));
+      assert.equal(accepted.ok, true, accepted.error);
+      assert.match(accepted.text, /^直す前の確認で示すものを受け付けました。/);
+      await call('state', { include: '振り返りの材料' });
+      assert.ok(folder);
+
+      assert.ok(seen.length >= 25, `${seen.length}件`);
+      if (process.env.SHOW_WORDS) console.log(seen.join("\n---\n"));
+      const found = seen.map((text) => [text, leftWordsIn(text), internalSymbolsIn(text)]).filter(([, words, symbols]) => words.length > 0 || symbols.length > 0);
+      assert.deepEqual(found, [], `表の左の言葉か内部の記号が出ている：\n${found.map(([t, w, s]) => `${[...w, ...s].join('、')} ← ${t}`).join('\n')}`);
+      const all = seen.join('\n');
+      assert.ok(!all.includes('クリエイター'), '「クリエイター」はユーザーに説明していない言葉');
+      for (const word of ['直すプラグイン', '直す前の確認', '変えないので聞かない', '確かめたいこと', '引き継いだ決まり']) assert.ok(all.includes(word), `言葉が1度も出ていない：${word}`);
+    });
   });
 
   test('REQ-024 状態の返り値は、確かめたいこと・お話を聞くこと・仕事のやり方や決まりで話し、出どころも表の言葉で示す', async () => {
@@ -241,6 +320,7 @@ describe('ソースの文（ユーザーに見える文を持つファイルの�
   // ツールの定義（tool-defs.mjs。引数の値を並べるだけ）、定数（constants.mjs）
   const FILES = [
     'creator.mjs',
+    'change.mjs',
     'hearing.mjs',
     'report.mjs',
     'hooks.mjs',

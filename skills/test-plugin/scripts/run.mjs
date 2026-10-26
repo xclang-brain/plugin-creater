@@ -4,14 +4,15 @@
 //
 // 流れ（実行1回）
 //   1. 作業フォルダを作り、課題の入力のファイルだけを写す（OS の一時フォルダの下。生成プラグインのフォルダの外）
-//   2. CopilotClient を起動する。ありのときは `--plugin-dir <生成プラグイン>`、どちらも COPILOT_PLUGIN_DIR_ONLY=true
+//   2. CopilotClient を起動する。ありのときは `--plugin-dir <生成プラグイン>`、どちらも COPILOT_PLUGIN_DIR_ONLY=true。
+//      課題に bin（擬似の機器の道具）があれば、あり・なしのどちらも、作業フォルダに写した bin を PATH の先頭に足す
 //   3. セッションを作る。ありのときは requestExtensions: true。読み込まれたプラグインとエクステンションを確かめ、記録する
 //   4. 課題の頼むときの言葉を送る
 //   5. ありのとき：チャットに出た URL を画面で開き、設定を入れて開始し、終わった理由が出たら結果を読む。なしのとき：手番が終わる（session.idle）まで待つ
 //      ありで、実行が人の判断待ちになり、メインのエージェントの手番が終わったら、決まった返事をチャットに送る（human-wait.mjs）
 //   6. 落ち着くまで待ち（最後の費用のイベントを取りこぼさないため）、セッションとクライアントを閉じる
 //   7. ありのとき、この実行でできた生成プラグインの実行の記録だけを消す（plugin-records.mjs。ふだんの作業の記録と同じ場所に入るため。ユーザーの答え27）
-//   8. 作業フォルダの成果物を、基準で採点する（生成プラグインの検証エージェントの合否は使わない）
+//   8. 作業フォルダの成果物と、動いたエージェント（agent_ran）を、基準で採点する（生成プラグインの検証エージェントの合否は使わない）
 // 試験全体を止める場合：管理設定で人の承認が要る求め、AI クレジットの上限、プラグインやエクステンションが読み込まれない、ブラウザーが起動できない。
 
 import fs from 'node:fs';
@@ -73,12 +74,17 @@ export function readPluginInfo(pluginDir) {
   return { name: json.name, version: typeof json.version === 'string' ? json.version : null, path: pluginDir };
 }
 
-/** ランタイムに渡す環境。ほかのプラグインを読み込ませず、同梱のランタイムを使う（手元の Copilot CLI に替えない） */
-export function runtimeEnv(env) {
+/**
+ * ランタイムに渡す環境。ほかのプラグインを読み込ませず、同梱のランタイムを使う（手元の Copilot CLI に替えない）。
+ * binDir（課題の bin を作業フォルダに写した場所）があれば、PATH の先頭に足す。エージェントが動かすコマンドで、
+ * 機器の道具の名前が、本物より先に差し替えのスクリプト（擬似の機器）に当たるようにするためである。
+ */
+export function runtimeEnv(env, { binDir = null } = {}) {
   const out = {};
   for (const [key, value] of Object.entries(env)) if (typeof value === 'string') out[key] = value;
   out.COPILOT_PLUGIN_DIR_ONLY = 'true';
   delete out.COPILOT_CLI_PATH;
+  if (binDir) out.PATH = out.PATH ? `${binDir}${path.delimiter}${out.PATH}` : binDir;
   return out;
 }
 
@@ -291,6 +297,7 @@ async function runOne(ctx, task, variant, n, where) {
   let permission = null;
   let workDir = null;
   let inputs = new Map();
+  let binDir = null;
   let client = null;
   let session = null;
   let launchProviderOf = null;
@@ -325,8 +332,9 @@ async function runOne(ctx, task, variant, n, where) {
       : null;
 
   try {
-    ({ workDir, inputs } = prepareWorkDir({ task, dir: path.join(workRoot, `${task.id}-${variant}-${n}`) }));
+    ({ workDir, inputs, binDir } = prepareWorkDir({ task, dir: path.join(workRoot, `${task.id}-${variant}-${n}`) }));
     record.workDir = workDir;
+    if (binDir) record.binDir = binDir;
     permission = createPermissionHandler({
       workDir,
       onManaged: ({ summary }) =>
@@ -344,7 +352,7 @@ async function runOne(ctx, task, variant, n, where) {
     // 生成プラグインの実行の記録は、ユーザーのふだんの作業の記録と同じ場所に入る。始める前に、今ある記録の番号を控える
     if (variant === 'with') recordWatch = watchPluginRecords({ pluginName: plugin.name, env: opts.env ?? process.env });
     client = new sdk.CopilotClient({
-      connection: sdk.RuntimeConnection.forStdio({ args: variant === 'with' ? ['--plugin-dir', plugin.path] : [], env: runtimeEnv(opts.env ?? process.env) }),
+      connection: sdk.RuntimeConnection.forStdio({ args: variant === 'with' ? ['--plugin-dir', plugin.path] : [], env: runtimeEnv(opts.env ?? process.env, { binDir }) }),
       workingDirectory: workDir,
       logLevel: 'error',
       ...(launchProvider ? { extensionLaunchProvider: launchProvider } : {}),
@@ -395,7 +403,7 @@ async function runOne(ctx, task, variant, n, where) {
   if (launchProviderOf) record.extensionLaunch = { launched: launchProviderOf.launched, refused: launchProviderOf.skipped };
   if ((record.status === 'completed' || record.status === 'incomplete') && workDir) {
     try {
-      const graded = await gradeRun({ task: task.json, workDir, inputs, judge });
+      const graded = await gradeRun({ task: task.json, workDir, inputs, judge, subagents: record.subagents ?? [], pluginName: plugin.name });
       Object.assign(record, {
         criteria: graded.results.map((r) => ({ id: r.id, text: r.text, grading: r.grading, pass: r.pass, reason: r.reason, ...(r.error ? { error: true } : {}) })),
         passed: graded.passed,
