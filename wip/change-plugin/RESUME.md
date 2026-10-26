@@ -18,8 +18,8 @@
 | 0 | 準備（このファイル、道具：qemu-user、gcc-arm-linux-gnueabihf） | 完了。道具は apt で入る（容器を作り直したら入れ直す：`apt-get install -y qemu-user gcc-arm-linux-gnueabihf libc6-dev-armhf-cross`） |
 | 1 | 仕様：部品の独立性（指示5）を出力の要件に足す | 完了：REQ-062 |
 | 2 | 調べる（ワークフロー wf_dc96d8f8-e8d、結果は research/）：クリエイターの中身（エクステンション、組み立て、make-plugin）、開発の試験の仕組み（外側・内側の EVAL、模擬ユーザー）、スキルの公式仕様、エミュレーターとサンドボックス | 完了：research/*.md（critic.md に矛盾と危険の一覧）。試作は prototypes/ |
-| 3 | 設計書と実装の設計図（BLUEPRINT.md。ワークフロー wf_ae054c55-0a6 で下書き→点検→直し） | 進行中 |
-| 4 | 実装（change-plugin のスキル、エクステンション、組み立て、README） | 未着手 |
+| 3 | 設計書と実装の設計図（BLUEPRINT.md。ワークフロー wf_ae054c55-0a6 で下書き→点検→直し） | 完了：BLUEPRINT.md（D12〜D41）。8.2 の仕様の直し2つ（一時フォルダ、入口のスキルの除外）は反映した。設計書の直しは段階4で C5 として行う |
+| 4 | 実装（BLUEPRINT 5章の C1〜C6。並列） | 進行中 |
 | 5 | 点検と1・2段目の試験 | 未着手 |
 | 6 | 試験の題材（ダミーのスキル、エミュレーター、模擬ユーザー、課題） | 未着手 |
 | 7 | 外側の EVAL（改善・設計変更）と内側の EVAL（エミュレーター） | 未着手 |
