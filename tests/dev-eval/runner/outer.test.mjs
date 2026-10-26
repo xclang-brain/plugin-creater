@@ -26,6 +26,7 @@ import {
   summarizeRecord,
 } from './outer.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
+import { USER_ROLE_FAILED } from './outer-run.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
@@ -255,6 +256,7 @@ test('REQ-015 記録する数は、各回の要約と全体の要約に出る。
     pending: { count: 1, items: ['資産'] },
     aiDecisions: { count: 2 },
     recordRefusals: { total: 3, fixed: 2, unfixed: 1, byTool: {}, samples: [{ tool: 'progress', seq: 1, reason: '抜き書きがありません' }] },
+    nonJapaneseTexts: { count: 2, samples: [{ seq: 7, text: 'Now extract.' }, { seq: 9, text: 'K-25 next.' }] },
   };
   const open = summarizeRecord(record);
   assert.equal(open.counts.questions.total, 5);
@@ -262,6 +264,8 @@ test('REQ-015 記録する数は、各回の要約と全体の要約に出る。
   const hidden = summarizeRecord(record, { heldout: true });
   assert.equal(hidden.counts.questions.total, 5, '数は出す');
   assert.deepEqual(hidden.counts.recordRefusals.samples, [], '理由の文は伏せる');
+  assert.equal(hidden.counts.nonJapaneseTexts.count, 2, '日本語でない文の数は出す');
+  assert.deepEqual(hidden.counts.nonJapaneseTexts.samples, [], '日本語でない文そのものは伏せる（ナレッジの手がかりになりうるため）');
   assert.equal(record.grading.counts.recordRefusals.samples.length, 1, 'もとの記録は変えない');
 
   const second = { ...open, counts: { ...open.counts, askToolCalls: { calls: 1, maxQuestionsPerCall: 3, callsWithMultiple: 1 }, recordRefusals: { total: 1, fixed: 0, unfixed: 1 } } };
@@ -272,8 +276,30 @@ test('REQ-015 記録する数は、各回の要約と全体の要約に出る。
   assert.equal(total.pending, 2);
   assert.equal(total.aiDecisions, 4);
   assert.deepEqual(total.recordRefusals, { total: 4, fixed: 2, unfixed: 2 });
-  assert.deepEqual(aggregateCounts([]), { runs: 0, questions: { total: 0, askTool: 0, text: 0 }, askToolCalls: { calls: 0, maxQuestionsPerCall: 0, callsWithMultiple: 0 }, pending: 0, aiDecisions: 0, recordRefusals: { total: 0, fixed: 0, unfixed: 0 } });
+  assert.equal(total.nonJapaneseTexts, 4, '英語の覚え書きのようなチャットの文の数の合計（数のない古い記録は 0 とする）');
+  assert.equal(aggregateCounts([open, { ...open, counts: { ...open.counts, nonJapaneseTexts: undefined } }]).nonJapaneseTexts, 2);
+  assert.deepEqual(aggregateCounts([]), { runs: 0, questions: { total: 0, askTool: 0, text: 0 }, askToolCalls: { calls: 0, maxQuestionsPerCall: 0, callsWithMultiple: 0 }, pending: 0, aiDecisions: 0, recordRefusals: { total: 0, fixed: 0, unfixed: 0 }, nonJapaneseTexts: 0 });
   const all = summarizeAll([record], [open, second]);
   assert.equal(all.counts['with:claude-opus-5-5'].runs, 2);
   assert.equal(all.counts['with:claude-opus-5-5'].questions.total, 10);
+});
+
+test('REQ-015 ユーザー役が答えられずに止まった回（user_role_failed）は、平均点・合格の数・記録する数・あり・なしの差に入れず、別に数える', () => {
+  const counts = (total) => ({ questions: { total, askTool: total, text: 0 }, askToolCalls: { calls: total, maxQuestionsPerCall: 1, callsWithMultiple: 0 }, pending: { count: 0 }, aiDecisions: { count: 0 }, recordRefusals: { total: 0, fixed: 0, unfixed: 0 }, nonJapaneseTexts: { count: 0 } });
+  const run = (arm, score, verdictOk, stopped, n) => ({ arm, model: 'claude-opus-5-5', stopped, score, verdictOk, costUsd: 1, counts: counts(n) });
+  const all = summarizeAll([], [
+    run('with', 1, true, 'generated', 10),
+    run('with', 0.5, false, USER_ROLE_FAILED, 3),
+    run('without', 0.25, false, 'max_exchanges', 1),
+  ]);
+  assert.deepEqual(all.scores['with:claude-opus-5-5'], { runs: 1, score: 1, verdictOk: 1, userRoleFailed: 1 });
+  assert.deepEqual(all.scores['without:claude-opus-5-5'], { runs: 1, score: 0.25, verdictOk: 0, userRoleFailed: 0 });
+  assert.equal(all.counts['with:claude-opus-5-5'].runs, 1);
+  assert.equal(all.counts['with:claude-opus-5-5'].questions.total, 10);
+  assert.equal(all.delta, 0.75);
+  assert.equal(all.costUsd, 3, '費用は、止まった回の分も数える');
+  // その腕・モデルの回が、すべてユーザー役の失敗で止まったとき
+  const only = summarizeAll([], [run('with', 0.5, false, USER_ROLE_FAILED, 3), run('without', 0.25, false, 'max_exchanges', 1)]);
+  assert.deepEqual(only.scores['with:claude-opus-5-5'], { runs: 0, score: null, verdictOk: 0, userRoleFailed: 1 });
+  assert.equal(only.delta, null);
 });

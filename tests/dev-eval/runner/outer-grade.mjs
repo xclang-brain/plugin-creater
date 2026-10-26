@@ -13,10 +13,14 @@
 //   no-generation-before-approval 承認の前に生成しなかった（REQ-020）
 //   hurry-options                 急ぐ合図の後に、残りの項目と 3 つの進め方を示す問いがある（REQ-015）
 //   first-run                     まだやったことのない作業で、想定の 1 回をたどった（REQ-016）
+//   screen-url-shown              画面を開くツール（open）の返り値の URL を、最初の問いより前にチャットの文で示した（REQ-043。腕 with だけ。
+//                                 画面を開くツールは、クリエイターのエクステンションの代わりの部品が、腕 with にだけ出すため）
 //   main-model                    メインのエージェントが、指定のモデルで動いた（REQ-045。腕 with だけ）
 //   worker-model                  作業エージェントが、費用の低いモデルで動いた（REQ-046。腕 with で、生成プラグインができたときだけ）
 // 採点とは別に、設計書（testing.md 6.5）が「記録する」とした数を数える（countRecorded。合否には入れない）：
-//   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか。
+//   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか、
+//   英語の覚え書きのようなチャットの文の数。
+// 画面の URL の観点（gradeScreenUrlShown）は、改善の採点（outer-grade-change.mjs）も使う。
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
 // 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
 //   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
@@ -171,6 +175,29 @@ export function pairToolEvents(toolEvents) {
 
 const succeeded = (pair) => pair.result !== null && pair.result.isError === false;
 
+/** 文の中の URL（日本語の閉じかっこと句読点の前で切る） */
+const URL_IN_TEXT = /https?:\/\/[^\s"'<>`）」』\]。、]+/;
+
+/**
+ * クリエイターの画面の URL を、最初の問いより前に、チャットの文で示したか（REQ-043「対話が始まると、チャットに URL が示される」）。
+ * URL は、最初の問いより前に成功した、画面を開くツール（open）の返り値の URL。ツールの返り値はユーザーに見えないので、
+ * その後から最初の問い（質問のツールの問いか、文章の問い）までの、クリエイターのチャットの文（creator.text）にあるかで見る。
+ * 最初の問いの前の文（問いのまとまりの前の文）も、ここに入る。
+ */
+export function gradeScreenUrlShown({ items, toolEvents }) {
+  const first = items.find((i) => i.kind === 'creator.question' || i.kind === 'creator.question-text');
+  const beforeFirst = (seq) => first === undefined || seq < first.seq;
+  const open = pairToolEvents(toolEvents).find((p) => p.call.tool === 'open' && succeeded(p) && beforeFirst(p.call.seq));
+  if (!open) return { ok: false, detail: '最初の問いより前に、画面を開くツール（open）が成功していない' };
+  const url = URL_IN_TEXT.exec(String(open.result.result ?? ''))?.[0];
+  if (!url) return { ok: false, detail: '画面を開くツール（open）の返り値に URL がない' };
+  const shown = items.find((i) => i.kind === 'creator.text' && i.seq > open.call.seq && beforeFirst(i.seq) && String(i.text ?? '').includes(url));
+  return {
+    ok: Boolean(shown),
+    detail: shown ? '最初の問いより前に、画面の URL をチャットの文で示した' : '画面を開くツールの返り値の URL が、最初の問いより前のチャットの文にない（ツールの返り値はユーザーに見えない）',
+  };
+}
+
 // ---- ナレッジごとの記録 ---------------------------------------------------------------------------------------
 
 /**
@@ -311,6 +338,31 @@ export function gradeFirstRun({ persona, exchanges, toolEvents }) {
 // ---- 記録する数（testing.md 6.5） -------------------------------------------------------------------------
 
 const REFUSAL_SAMPLES = 5;
+const NON_JAPANESE_SAMPLES = 5;
+/** 日本語の字（ひらがな・カタカナ・漢字） */
+const JAPANESE_CHAR = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+/** 英語の覚え書きを見るときに除くところ：コードの区切り（``` と `…`）の中と URL */
+const stripCodeAndUrls = (text) => String(text ?? '')
+  .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+  .replace(/`[^`\n]*`/g, ' ')
+  .replace(/https?:\/\/[^\s"'<>`）」』\]。、]+/g, ' ');
+/** かぎ括弧と引用符の中（英語の覚え書きの中に引いた日本語の問いなど） */
+const QUOTED = /「[^」\n]*」|『[^』\n]*』|"[^"\n]*"|“[^”\n]*”/g;
+/** 英単語（字だけ。数字・点・下線・スラッシュ・ハイフンでつながったファイル名や番号の一部は数えない）が、空白だけを挟んで3つ以上続く */
+const ENGLISH_WORD = String.raw`(?<![\w./-])[A-Za-z][A-Za-z'’]*(?![\w/-]|\.\w)`;
+const ENGLISH_RUN = new RegExp(String.raw`${ENGLISH_WORD}(?:[ \t]+${ENGLISH_WORD}){2,}`);
+
+/**
+ * 英語の覚え書きのようなチャットの文か（testing.md 6.5）。コードの区切りの中と URL を除いて、
+ * (1) かぎ括弧と引用符の中も除くと日本語の字がなく、英字がある（「Now run tests.」「K-25 next.」「Ask "ほかにありますか" first.」）か、
+ * (2) 英単語が空白を挟んで3つ以上続く（「Next: いつもと違うとき, including K-25 in different form.」）。
+ * URL だけの文とコードだけの文は数えない。日本語の文の中のファイル名の並び（main.c, sensor_avg.c, …）は (2) に当たらない
+ */
+export function isEnglishNote(text) {
+  const s = stripCodeAndUrls(text);
+  const unquoted = s.replace(QUOTED, ' ');
+  return (!JAPANESE_CHAR.test(unquoted) && /[A-Za-z]/.test(unquoted)) || ENGLISH_RUN.test(s);
+}
 
 /**
  * 設計書が「記録する」とした数を、会話の記録から数える。採点の合否には入れない。
@@ -321,6 +373,8 @@ const REFUSAL_SAMPLES = 5;
  *   aiDecisions      出どころが「AI の判断（ユーザーが任せた）」のナレッジの数（外したものを除く）
  *   recordRefusals   記録のツール（progress・record・confirm）が断った回数と、その後に同じツールが成功した（直した）回数。
  *                    断りは、ツールの結果が失敗（resultType: 'failure'。MCP では isError）で返ったもの
+ *   nonJapaneseTexts クリエイターのチャットの文（creator.text）のうち、英語の覚え書きのような文（isEnglishNote）の数と例。
+ *                    ユーザーに向けた文は日本語で書くので、英語の覚え書きや内部の番号だけの文がチャットに出たかを見る（合否には入れない）
  * @param {{ items: Array, toolEvents: Array, state: object|null }} args
  */
 export function countRecorded({ items = [], toolEvents = [], state = null }) {
@@ -344,6 +398,8 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
   const refusedTotal = Object.values(byTool).reduce((n, t) => n + t.refused, 0);
   const fixedTotal = Object.values(byTool).reduce((n, t) => n + t.fixed, 0);
 
+  const nonJapanese = items.filter((i) => i.kind === 'creator.text' && isEnglishNote(i.text));
+
   const pendingItems = ITEMS.filter((i) => state?.items?.[i.key]?.status === 'pending').map((i) => i.name);
   const aiDecisions = (state?.knowledge ?? []).filter((k) => k.source === 'ai_decision' && k.status !== 'dropped').length;
   return {
@@ -352,6 +408,7 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
     pending: { count: pendingItems.length, items: pendingItems },
     aiDecisions: { count: aiDecisions },
     recordRefusals: { total: refusedTotal, fixed: fixedTotal, unfixed: refusedTotal - fixedTotal, byTool, samples },
+    nonJapaneseTexts: { count: nonJapanese.length, samples: nonJapanese.slice(0, NON_JAPANESE_SAMPLES).map((i) => ({ seq: i.seq, text: String(i.text).trim().slice(0, 80) })) },
   };
 }
 
@@ -460,6 +517,10 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
 
   if (inner) add('inner-deliverable', (inner.withScore ?? 0) >= INNER_PASS_SCORE, `プラグインありのスコア ${inner.withScore}`, 'REQ-041');
 
+  if (arm === 'with') {
+    const url = gradeScreenUrlShown({ items, toolEvents });
+    add('screen-url-shown', url.ok, url.detail, 'REQ-043');
+  }
   if (arm !== 'without') {
     const heard = gradeAllItemsHeard({ state, items, toolEvents });
     add('all-items-heard', heard.ok, heard.detail, 'REQ-015');

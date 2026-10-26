@@ -5,6 +5,9 @@
 //   重ねて持つので、ずれは tests/creator/extension/quote.test.mjs が見張る（同じ場合分けを両方に通す）。
 // - 生成前の確認で足したナレッジの quote が、ユーザーが選んだ選択肢の文だけなら、足したことにならない
 //   （「違うところはない」を選んだだけで、AI の案を「ユーザーが足した決まり」として記録した事故。意味の確かめはできないが、この形は見分けられる）。
+// - 直すときに、引き継いだ決まりを中身を変えずに「決まった」にする quote は、その番号を示した ask_user の問いへの答えの中にある
+//   （外側の EVAL（改善）の1回目で、決まりの一覧の問いを飛ばし、一覧を見ていないユーザーの「ほかはそのとおり」で決まったにした事故。hearing.md 7.2）。
+//   もう「決まった」の行を記録し直すときは、hearing.mjs が確かめない（一度この確かめを通っているため）。
 
 /** 抜き書きと答えを比べるための正規化（空白と、句読点・かぎ括弧の違いを無視する） */
 export function normalizeQuote(text) {
@@ -87,4 +90,38 @@ export function isOnlyChosenOption(quote, qa) {
     }
   }
   return false;
+}
+
+/** 値の中の文字をすべて集める（ask_user の引数の形に依らず、問いの文と選択肢の文を拾う） */
+function stringsIn(value, out = []) {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) for (const v of value) stringsIn(v, out);
+  else if (value !== null && typeof value === 'object') for (const v of Object.values(value)) stringsIn(v, out);
+  return out;
+}
+
+/**
+ * quote が、決まりの番号 id（K-01 など）を示した ask_user の問いへの答えの中にあるか。
+ * - 問いは、引数の中のすべての文字（見出し・問いの文・選択肢の文）で見る。番号は、前後が英数字でない形で出ていればよい
+ *   （K-01 は K-010・K-01a・AK-01 に当たらない）。決まりの文は見ない（長い文を縮めて示したときに止まり続けないため。文を示すことはスキルの文に任せる。hearing.md 7.2）。
+ * - 答えは、答えが来た ask_user の答えと、答えが来なかった（取り消した・答えられなかった）ask_user のすぐ次に打った発言である
+ *   （答えが来ないときは、チャットに答えを書くよう示して止まるので、その発言がその問いへの答えになる。hearing.md 5.5）。
+ * - 問答の記録に ask_user が1件もないときは、確かめずに通す（hearing.mjs の quoteInUserWords と同じ理由）。
+ */
+export function quoteInAnswerShowing(quote, id, qa) {
+  const entries = Array.isArray(qa) ? qa : [];
+  if (!entries.some((entry) => entry?.type === 'ask_user')) return true;
+  const escaped = String(id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const shows = new RegExp(`(?<![0-9A-Za-z])${escaped}(?![0-9A-Za-z])`, 'u');
+  const answers = [];
+  entries.forEach((entry, i) => {
+    if (entry?.type !== 'ask_user' || !shows.test(stringsIn(entry.question).join('\n'))) return;
+    if ((entry.outcome ?? 'answered') === 'answered') {
+      if (typeof entry.answer === 'string') answers.push(entry.answer);
+      return;
+    }
+    const next = entries[i + 1];
+    if (next?.type === 'user_prompt' && typeof next.text === 'string') answers.push(next.text);
+  });
+  return quoteFound(quote, answers);
 }

@@ -26,7 +26,7 @@ import { collectGeneratedFiles, gradeOuter, personaFileHashes } from './outer-gr
 import { changeEnded, changePaths, changeRecordOf, collectChangeRepo, manifestOf, placeWorkspace, readBaseline, takeBaseline, takeSnapshot } from './outer-change.mjs';
 import { gradeChange } from './outer-grade-change.mjs';
 import { createCreatorToolkit, REPO_ROOT } from './creator-tools.mjs';
-import { createUserRole, loadQuery } from './user-role.mjs';
+import { createUserRole, LIMIT_PATTERN, loadQuery } from './user-role.mjs';
 import { conversationOf, createMessageRecorder, createRecorder, questionItemData } from './outer-record.mjs';
 import { abandonedQuestionOf, checkReplayAgainstRelay, findSessionTranscript, NO_TEXT_QUESTION, readResumes, replayTranscript, resumeQuestionItem, runDirsOf, writeResumes } from './outer-resume.mjs';
 
@@ -50,8 +50,8 @@ export const DEFAULTS = Object.freeze({
 /** 開発者が答えるときに、クリエイターの Claude Code に足す環境変数（testing.md 6.7）。待ちの期限なしは 0（Claude Code 2.1.310 で、0 以下を期限なしに扱う） */
 export const HUMAN_ENV = Object.freeze({ ENABLE_PROMPT_CACHING_1H: '1', CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS: '0' });
 
-/** 利用枠の上限のエラーの文（agent-sdk-eval.md） */
-export const LIMIT_PATTERN = /hit your (session|usage|weekly)? ?limit|usage limit|rate limit|limit reached|resets at|quota/i;
+/** 利用枠の上限のエラーの文（agent-sdk-eval.md）。ユーザー役の呼び出しでも使うので、user-role.mjs が持つ */
+export { LIMIT_PATTERN };
 
 // ---- 置き換え --------------------------------------------------------------------------------------------
 
@@ -182,6 +182,9 @@ export async function runGeneratedStages(pluginDir, { python = 'python3', env = 
 
 /** 会話が終わったとき（終わりの理由）。生成プラグインができた、または改善の模擬ユーザーで直すフォルダを直した・新しいフォルダに作った */
 export const FINISHED_REASONS = Object.freeze(['generated', 'generated_without_approval', 'changed', 'changed_without_approval', 'generated_new_folder']);
+
+/** ユーザー役が答えられずに会話を止めたときの終わりの理由（試験の仕組みの失敗。クリエイターの誤りではない） */
+export const USER_ROLE_FAILED = 'user_role_failed';
 
 /** 続きから始めたとき、読み直しが確かでなければ採点しない観点（会話の全体にもとづく観点） */
 export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generation-before-approval']);
@@ -373,6 +376,28 @@ export async function runOuterOnce(o) {
     // 人は、質問と一緒にこれを読む。「上のまとめで…」のような質問に答えるために、次の質問と一緒にユーザー役へ渡す（testing.md 6.1）
     const unreadNotes = [];
 
+    // ユーザー役が答えられなかった（呼び直しても呼び出しが失敗した、答えが道具の呼び出しの形のまま。user-role.mjs）ときは、試験の仕組みの
+    // 失敗としてこの会話を止める（理由 user_role_failed）。質問のツールの答えの失敗は、そのままだと Agent SDK がクリエイターに誤りとして渡し、
+    // クリエイターが本物の利用者では起きない問題に対応してしまうので、手番も中断する（testing.md 6.1）。
+    // ユーザー役が利用枠の上限に当たったときは、クリエイターと同じく理由を usage_limit にする（比べる EVAL の全体を止めるため。outer.mjs の runPlan）
+    let userRoleFailure = null;
+    let turnAbort = null;
+    const answerOrStop = async (...args) => {
+      try {
+        return await userRole.answer(...args);
+      } catch (error) {
+        userRoleFailure ??= error;
+        turnAbort?.abort();
+        throw error;
+      }
+    };
+    const userRoleStop = () => {
+      const message = String(userRoleFailure?.message ?? userRoleFailure).slice(0, 300);
+      // user-role.mjs は利用枠の上限を code で知らせる。code のない誤り（別の答えるものなど）は、文で見る
+      const limited = userRoleFailure?.code ? userRoleFailure.code === 'usage_limit' : LIMIT_PATTERN.test(message);
+      return { reason: limited ? 'usage_limit' : USER_ROLE_FAILED, message };
+    };
+
     // 質問のツール（AskUserQuestion）への答え。ユーザー役が答える
     let askGroup = 0; // 質問のツールの呼び出しの番号。1 回の呼び出しの問いの欄の数を数えるため（testing.md 6.5、hearing.md 4.1）
     const onQuestion = async (questions) => {
@@ -389,7 +414,7 @@ export async function runOuterOnce(o) {
         recorder.add('creator.question', item);
         // 1 回の呼び出しの問いの欄の番号と数は、別の答えるもの（開発者の中継）にだけ渡す（ユーザー役の答えの記録を変えないため）
         const meta = { header: q.header ?? '', multiSelect: Boolean(q.multiSelect), ...(createAnswerer ? { group, groupSize: questions.length } : {}) };
-        const entry = await userRole.answer(q.question, options, 'AskUserQuestion', meta, notes);
+        const entry = await answerOrStop(q.question, options, 'AskUserQuestion', meta, notes);
         notes = []; // 1 回の呼び出しに問いの欄が複数あるときも、前の文は最初の欄にだけ付ける（履歴に入るため）
         answers[q.question] = entry.answer;
         recorder.add('user.answer', { index: entry.index, via: 'AskUserQuestion', question: q.question, header: q.header ?? '', choices: entry.choices, answer: entry.answer, rawAnswer: entry.rawAnswer, signal: entry.signal });
@@ -404,6 +429,7 @@ export async function runOuterOnce(o) {
     async function runTurn(prompt, resumeSessionId) {
       turnNumber += 1;
       const abortController = new AbortController();
+      turnAbort = abortController;
       const onAbort = () => abortController.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const options = makeQueryOptions({
@@ -518,6 +544,7 @@ export async function runOuterOnce(o) {
         if (signal?.aborted) { stopped = { reason: 'interrupted' }; break; }
         onProgress({ phase: 'turn', n: exchanges + 1 });
         const turn = await runTurn(prompt, sessionId);
+        if (userRoleFailure) { stopped = userRoleStop(); break; }
         const turnSnapshot = snapshot('turn-end');
         const text = (turn.result?.result ?? '').trim() || turn.lastText.trim();
         if (text) lastCreatorText = text;
@@ -533,7 +560,7 @@ export async function runOuterOnce(o) {
         recorder.add('creator.question-text', { text: question, turn: turn.number });
         // 手番の最後の文は問いそのもの。それより前に書いた文だけを、前の文として渡す
         const notes = unreadNotes.splice(0).filter((n) => n !== question.trim());
-        const entry = await userRole.answer(question, [], 'text', {}, notes);
+        const entry = await answerOrStop(question, [], 'text', {}, notes);
         recorder.add('user.answer', { index: entry.index, via: 'text', question, header: '', choices: [], answer: entry.answer, rawAnswer: entry.rawAnswer, signal: entry.signal });
         toolkit?.recordPrompt(entry.answer);
         onProgress({ phase: 'answer', via: 'text', index: entry.index });
@@ -541,7 +568,7 @@ export async function runOuterOnce(o) {
       }
       if (!stopped) stopped = { reason: 'max_exchanges' };
     } catch (error) {
-      stopped = { reason: 'exception', message: error?.message ?? String(error) };
+      stopped = userRoleFailure ? userRoleStop() : { reason: 'exception', message: error?.message ?? String(error) };
     }
     // 開発者の答えを待つ間などに中断されたら、生成まで進んでいなければ、中断として終える（ユーザー役の AI のときは、これまでどおり）
     if (createAnswerer && signal?.aborted && !FINISHED_REASONS.includes(stopped?.reason)) {

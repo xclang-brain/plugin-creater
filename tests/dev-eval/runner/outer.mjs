@@ -68,7 +68,7 @@ import {
 import { findSessionTranscript, runDirsOf } from './outer-resume.mjs';
 import { sandboxStatus } from './isolation.mjs';
 import { REPO_ROOT } from './creator-tools.mjs';
-import { DEFAULTS, convertPlugin, defaultRunRoot, runOuterOnce } from './outer-run.mjs';
+import { DEFAULTS, USER_ROLE_FAILED, convertPlugin, defaultRunRoot, runOuterOnce } from './outer-run.mjs';
 import { USER_ROLE_MODEL, loadQuery } from './user-role.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -378,7 +378,7 @@ const redactGrade = (g, redact, order) => (redact ? { ...g, id: g.id.replace(/:(
 function redactCounts(counts, heldout) {
   if (!counts) return null;
   if (!heldout) return counts;
-  return { ...counts, recordRefusals: { ...counts.recordRefusals, samples: [] } };
+  return { ...counts, recordRefusals: { ...counts.recordRefusals, samples: [] }, ...(counts.nonJapaneseTexts ? { nonJapaneseTexts: { ...counts.nonJapaneseTexts, samples: [] } } : {}) };
 }
 
 /** 実行の要約の数（counts）を、まとめる。合計と、問いの欄の数の最大 */
@@ -396,6 +396,7 @@ export function aggregateCounts(summaries) {
     pending: sum((c) => c.pending.count),
     aiDecisions: sum((c) => c.aiDecisions.count),
     recordRefusals: { total: sum((c) => c.recordRefusals.total), fixed: sum((c) => c.recordRefusals.fixed), unfixed: sum((c) => c.recordRefusals.unfixed) },
+    nonJapaneseTexts: sum((c) => c.nonJapaneseTexts?.count),
   };
 }
 
@@ -448,15 +449,22 @@ export function evaluateControl(records) {
   return { ok: problems.length === 0, runs: controls.length, problems };
 }
 
-/** 全体の要約。腕・モデルごとの平均点と、あり・なしの差 */
+/**
+ * 全体の要約。腕・モデルごとの平均点と、あり・なしの差。
+ * ユーザー役が答えられずに止まった回（終わりの理由 user_role_failed。試験の仕組みの失敗）は、会話が途中で切れていて、クリエイターの出来を
+ * 表さないので、平均点・合格の数・記録する数の合計・あり・なしの差に入れず、腕・モデルごとに userRoleFailed として別に数える（testing.md 6.5）
+ */
 export function summarizeAll(records, summaries) {
   const key = (s) => `${s.arm}:${s.model}`;
+  const graded = summaries.filter((s) => s.stopped !== USER_ROLE_FAILED);
   const groups = {};
-  for (const s of summaries) (groups[key(s)] ??= []).push(s);
-  const scores = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, { runs: xs.length, score: mean(xs.map((x) => x.score)), verdictOk: xs.filter((x) => x.verdictOk).length }]));
+  for (const s of summaries) groups[key(s)] ??= [];
+  for (const s of graded) groups[key(s)].push(s);
+  const failedOf = (k) => summaries.filter((s) => key(s) === k && s.stopped === USER_ROLE_FAILED).length;
+  const scores = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, { runs: xs.length, score: mean(xs.map((x) => x.score)), verdictOk: xs.filter((x) => x.verdictOk).length, userRoleFailed: failedOf(k) }]));
   const counts = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, aggregateCounts(xs)]));
-  const withScores = summaries.filter((s) => s.arm === 'with').map((s) => s.score);
-  const withoutScores = summaries.filter((s) => s.arm === 'without').map((s) => s.score);
+  const withScores = graded.filter((s) => s.arm === 'with').map((s) => s.score);
+  const withoutScores = graded.filter((s) => s.arm === 'without').map((s) => s.score);
   return {
     scores,
     counts,

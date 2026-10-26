@@ -13,7 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runOuterOnce } from './outer-run.mjs';
+import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
+import { CALL_RETRIES, MARKUP_RETRIES } from './user-role.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
@@ -293,6 +294,75 @@ test('REQ-015 流れ：利用枠の上限のエラーで止まったら、理由
   fs.rmSync(runRoot, { recursive: true, force: true });
 });
 
+test('REQ-015 ユーザー役の答えが道具の呼び出しの形のまま直らなければ、クリエイターに渡さず、試験の仕組みの失敗（user_role_failed）で会話を止める', async () => {
+  const runRoot = tmp('markup');
+  const markup = `${'<'}invoke name="Read">\n${'<'}parameter name="file_path">資料/先週の週報.docx${'<'}/parameter>\n${'<'}/invoke>`;
+  let userCalls = 0;
+  const seen = [];
+  const sdk = createFakeSdk({
+    userRole: () => { userCalls += 1; return markup; },
+    agent: async (ctx) => {
+      seen.push(ctx.turn);
+      const answers = await ctx.ask([{ question: '先週の週報には、何が書いてありますか？', header: '週報', options: [{ label: '答えを書く', description: '' }], multiSelect: false }]);
+      seen.push(`answered:${JSON.stringify(answers)}`);
+      return '分かりました。';
+    },
+  });
+  const record = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 3 });
+  assert.equal(record.stopped.reason, USER_ROLE_FAILED);
+  assert.match(record.stopped.message, /道具の呼び出しの形でした/);
+  assert.equal(userCalls, MARKUP_RETRIES + 1);
+  // クリエイターは答えを受け取らず、次の手番も始まらない。答えの記録も残らない
+  assert.deepEqual(seen, [1]);
+  assert.equal(sdk.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(record.items.filter((i) => i.kind === 'user.answer').length, 0);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
+test('REQ-015 文章の問いへのユーザー役の答えが道具の呼び出しの形のまま直らなくても、同じく user_role_failed で止める', async () => {
+  const runRoot = tmp('markup-text');
+  const sdk = createFakeSdk({
+    userRole: () => `${'<'}function_calls>`,
+    agent: async () => 'ファイルはどこにありますか？',
+  });
+  const record = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 3 });
+  assert.equal(record.stopped.reason, USER_ROLE_FAILED);
+  assert.equal(sdk.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(record.items.filter((i) => i.kind === 'user.answer').length, 0);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
+test('REQ-015 ユーザー役の呼び出しの失敗は呼び直す。呼び直しても失敗したら user_role_failed、利用枠の上限なら呼び直さずに usage_limit で止める', async () => {
+  const runRoot = tmp('call-failed');
+  const ask = async (ctx) => {
+    await ctx.ask([{ question: '成果物は何ですか？', header: '成果物', options: [{ label: '答えを書く', description: '' }], multiSelect: false }]);
+    return '分かりました。';
+  };
+  // 1回だけ失敗する（空の答え）：呼び直した答えで続く
+  let n1 = 0;
+  const once = createFakeSdk({ userRole: () => ((n1 += 1) === 1 ? '' : '成果物は weekly_report.md です'), agent: ask });
+  const r1 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: once.query, maxExchanges: 1 });
+  assert.notEqual(r1.stopped.reason, USER_ROLE_FAILED);
+  assert.equal(r1.items.filter((i) => i.kind === 'user.answer')[0].answer, '成果物は weekly_report.md です');
+  assert.equal(r1.userRole.answers[0].callRetries, 1);
+  // ふつうの失敗が続く：CALL_RETRIES 回呼び直した後、user_role_failed で止め、クリエイターに渡さない
+  let n2 = 0;
+  const failing = createFakeSdk({ userRole: () => { n2 += 1; return new Error('API Error: 500 Internal server error'); }, agent: ask });
+  const r2 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: failing.query, maxExchanges: 3 });
+  assert.equal(r2.stopped.reason, USER_ROLE_FAILED);
+  assert.match(r2.stopped.message, /ユーザー役の呼び出しに失敗しました/);
+  assert.equal(n2, CALL_RETRIES + 1);
+  assert.equal(failing.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(r2.items.filter((i) => i.kind === 'user.answer').length, 0);
+  // 利用枠の上限：呼び直さずに usage_limit で止める（比べる EVAL の全体が止まる）
+  let n3 = 0;
+  const limited = createFakeSdk({ userRole: () => { n3 += 1; return new Error("You've hit your usage limit · resets at 3am"); }, agent: ask });
+  const r3 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: limited.query, maxExchanges: 3 });
+  assert.equal(r3.stopped.reason, 'usage_limit');
+  assert.equal(n3, 1);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
 test('REQ-015 サンドボックスの道具がなければ、始めずに断る（黙って外で動かさない）', async () => {
   const runRoot = tmp('sandbox');
   await assert.rejects(
@@ -340,7 +410,12 @@ test('REQ-020 生成までたどる：本物の記録のツールで承認まで
     },
     agent: async (ctx) => {
       const work = ctx.options.cwd;
-      await ctx.say('お話を聞きます。');
+      // 画面を開き、返った URL を最初の問いより前にチャットに示す（REQ-043。make-plugin の始まりの手番の2）
+      const opened = await ctx.tool(T('open'), {});
+      assert.equal(opened.isError, false, opened.text);
+      const url = /https?:\/\/\S+/.exec(opened.text)?.[0];
+      assert.ok(url, opened.text);
+      await ctx.say(`お話を聞きます。決まったことは plugin-creator の画面で見られます：${url}`);
       await ctx.ask([{ question: '成果物と、週報に書くことを教えてください', header: '成果物', options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }]);
       await ctx.tool(T('progress'), { stage: '始まり' });
       await ctx.tool(T('progress'), { items: SETTABLE.map((item) => ({ item, status: '聞いた', quote: '成果物は weekly_report.md です' })) });
@@ -407,6 +482,7 @@ test('REQ-020 生成までたどる：本物の記録のツールで承認まで
   assert.equal(byId['all-items-heard'].ok, true, byId['all-items-heard'].detail);
   assert.equal(byId['no-generation-before-approval'].ok, true, byId['no-generation-before-approval'].detail);
   assert.equal(byId['one-plugin-generated'].ok, true);
+  assert.equal(byId['screen-url-shown'].ok, true, byId['screen-url-shown'].detail);
   assert.equal(byId['embedded:output'].ok, true, byId['embedded:output'].detail);
   assert.equal(byId['task:output'].ok, true, byId['task:output'].detail);
   assert.equal(byId['main-model'].ok, true, byId['main-model'].detail);

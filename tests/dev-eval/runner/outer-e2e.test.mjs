@@ -16,7 +16,8 @@ import { loadPersona } from '../personas/validate.mjs';
 import { guardSdk, startFakeAnthropic } from './fake-anthropic.mjs';
 import { REPO_ROOT } from './creator-tools.mjs';
 import { sandboxStatus } from './isolation.mjs';
-import { convertPlugin, runOuterOnce } from './outer-run.mjs';
+import { convertPlugin, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
+import { MARKUP_RETRIES } from './user-role.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
@@ -63,7 +64,7 @@ test('REQ-015 本物の SDK で通す：質問のツールにユーザー役が�
   const api = await startFakeAnthropic(script(log));
   t.after(() => api.close());
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-'));
-  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   // 本物の置き換え（クリエイター全体を Claude Code の形にして、claude plugin validate に通す）
   const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
   assert.equal(converted.summary.validate.ok, true);
@@ -123,6 +124,30 @@ test('REQ-015 本物の SDK で通す：質問のツールにユーザー役が�
   assert.equal(record.grading.grades.find((g) => g.id === 'main-model').ok, true);
 });
 
+test('REQ-015 本物の SDK でも、ユーザー役の答えが道具の呼び出しの形のまま直らなければ、手番を中断して user_role_failed で止め、クリエイターに渡さない', { skip: SKIP, timeout: 240_000 }, async (t) => {
+  const loaded = await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true });
+  const log = [];
+  const base = script(log);
+  const markup = `${'<'}invoke name="Read">\n${'<'}parameter name="file_path">資料/先週の週報.docx${'<'}/parameter>\n${'<'}/invoke>`;
+  const api = await startFakeAnthropic((req) => (req.system.includes('あなたは営業チームのリーダー') ? (base(req), { blocks: [{ type: 'text', text: markup }] }) : base(req)));
+  t.after(() => api.close());
+  const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-markup-'));
+  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
+  const guarded = guardSdk(sdk, api);
+  const record = await runOuterOnce({
+    loaded, runRoot, sandbox: false, query: guarded.query, convertedCreator: converted.root, maxExchanges: 2, model: 'claude-opus-5-5',
+    envExtra: { ...FAKE_ENV, ANTHROPIC_BASE_URL: api.url },
+    runStages: async () => ({ skipped: true, reason: 'x' }),
+  });
+  assert.equal(record.stopped.reason, USER_ROLE_FAILED, JSON.stringify(record.stopped));
+  assert.equal(log.filter((l) => l.role === 'user-role').length, MARKUP_RETRIES + 1);
+  // 質問のツールの答え（または誤り）を受けたクリエイターの呼び出しがない（手番を中断した）
+  const creator = log.filter((l) => l.role === 'creator');
+  assert.ok(creator.every((l) => !l.results.some((r) => r.includes('invoke') || r.includes('The user answered'))), JSON.stringify(creator.map((l) => l.results)));
+  assert.equal(record.items.filter((i) => i.kind === 'user.answer').length, 0);
+});
+
 test('REQ-039 サンドボックスの中のコマンドは、cd の後でも、次のコマンドを作業フォルダから始める（生成プラグインのフォルダを、コマンドの始まりのフォルダにしない）', { skip: sandboxStatus().available ? false : 'bwrap か socat がありません', timeout: 240_000 }, async (t) => {
   // サンドボックスは、コマンドを始めたフォルダに、保護するファイル（.mcp.json など）を /dev/null で重ねる。生成プラグインの1段目は、
   // そこに中身のない .mcp.json を見て落ちた（会話例の下読み E1 の 3章の7）。コマンドが生成プラグインのフォルダから始まらないことを、本物の Claude Code で確かめる
@@ -142,7 +167,7 @@ test('REQ-039 サンドボックスの中のコマンドは、cd の後でも、
   });
   t.after(() => api.close());
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-cwd-'));
-  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const guarded = guardSdk(sdk, api);
   const record = await runOuterOnce({
     loaded, runRoot, sandbox: true, arm: 'without', query: guarded.query, maxExchanges: 1, model: 'claude-opus-5-5',

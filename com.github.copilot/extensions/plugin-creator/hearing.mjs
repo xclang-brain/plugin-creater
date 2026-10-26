@@ -14,12 +14,14 @@
 //   - 項目の状態「変えないので聞かない」は、直すときだけ、未着手からだけ使える。「前回の1回」と、作っていないプラグインでは使えない。
 //   - 引き継いだ決まり（carried）の中身を直す記録が来たら、元の行を「外した」にし、新しい番号の行（replaces＝元の番号）を「決まった」で足す（REQ-058）。
 //     中身の直しは、ユーザーが今の中身を答えたときだけなので、状態「決まった」のほかは断る。
+//   - 生成プラグインを直すとき、引き継いだ決まりを中身を変えずに「決まった」にする記録は、抜き書きが、その番号を示した ask_user の問いへの答えの中に
+//     あるときだけ受け付ける（決まりの一覧の問いを飛ばさないため。REQ-054、hearing.md 7.2）。問答の記録に ask_user がなければ、確かめずに通す。
 //   - 段階と項目「できていたことの確認」は使わない（できていたことは、すべて引き継ぐ。REQ-054）。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
-import { isOnlyChosenOption, quoteFound, userWords } from './quote.mjs';
+import { isOnlyChosenOption, quoteFound, quoteInAnswerShowing, userWords } from './quote.mjs';
 
 import {
   ASSET_STATUSES,
@@ -392,6 +394,18 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
         }
         replaced.push([existing.id, renumber(next, existing, fields, text(e.quote))]);
         return;
+      }
+      // もう「決まった」の行（この確かめを通ったもの）を記録し直すときは確かめない。断ると、決めた一覧の問いをもう一度させてしまうため
+      if (
+        existing.carried &&
+        next.change?.generated &&
+        fields.status === 'decided' &&
+        existing.status !== 'decided' &&
+        !quoteInAnswerShowing(e.quote, existing.id, store.readQa())
+      ) {
+        throw new Refusal(
+          `仕事のやり方や決まり ${existing.id} は引き継いだ決まりです。中身を変えずに「決まった」にできるのは、その番号と文を示した問いへの答えの中に、抜き書き（quote）があるときだけです。引き継いだ決まりのすべての番号と文を1つの問いの文に入れて聞き、その答えの言葉を、そのまま写してください。`,
+        );
       }
       Object.assign(existing, fields, { quote: text(e.quote), updatedAt: iso() });
       if (fields.item !== undefined) existing.itemName = itemIndex.nameOf(existing.item); // 項目を直したときも、日本語の名前をそろえる

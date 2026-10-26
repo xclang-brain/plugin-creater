@@ -1324,6 +1324,54 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     });
   });
 
+  test('REQ-054 生成プラグインを直すとき、引き継いだ決まりを中身を変えずに「決まった」にできるのは、その番号を示した問いへの答えの抜き書きでだけ。ほかは断り、何も変えない。中身の直し・外す記録・足した決まりは、この確かめをしない', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      // 範囲の確かめ（決まりの一覧を示していない問い）の答えで、ユーザーが番号を話した
+      const scopeAnswer = '止まる条件が古いです。決まりの一覧（K-01〜K-05）で古くなったのは K-05 だけで、ほかは今もそのとおりです。';
+      await run.fake.askUser({ message: '今のプラグインは、次のことができます。1. 不具合を調べて直す。今回は、デプロイのやり方を足します。違うところと足りないところを書いてください。', answer: `User responded: ${scopeAnswer}` });
+      const refused = await run.callSafe('record', { knowledge: ['K-01', 'K-02'].map((id) => ({ id, status: '決まった', quote: 'ほかは今もそのとおりです' })) });
+      assert.equal(refused.ok, false);
+      assert.equal(
+        refused.error,
+        '仕事のやり方や決まり K-01 は引き継いだ決まりです。中身を変えずに「決まった」にできるのは、その番号と文を示した問いへの答えの中に、抜き書き（quote）があるときだけです。引き継いだ決まりのすべての番号と文を1つの問いの文に入れて聞き、その答えの言葉を、そのまま写してください。',
+      );
+      assert.deepEqual(internalSymbolsIn(refused.error), []);
+      assert.deepEqual(leftWordsIn(refused.error), []);
+      assert.deepEqual(run.readState().knowledge.map((k) => k.status), ['candidate', 'candidate', 'candidate', 'candidate', 'candidate'], '断ったときは何も変えない');
+      // 中身の直し（付け直し）は、ユーザーが今の中身を答えたときなので、この確かめをしない
+      const renumbered = await run.callSafe('record', { knowledge: [{ id: 'K-05', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', quote: '止まる条件が古いです' }] });
+      assert.equal(renumbered.ok, true, renumbered.error);
+      // 決まりの一覧（番号と文）を示した問いの答えなら受け付ける
+      const list = PLUGIN_KNOWLEDGE.map((k) => `${k.id} ${k.text}`).join('\n');
+      await run.fake.askUser({ message: `今のプラグインの決まりは次のとおりです。\n${list}\nこの中で、今と違うものと、古くなったものの番号を書いてください。`, answer: 'User responded: K-05 だけです' });
+      const ok = await run.callSafe('record', { knowledge: ['K-01', 'K-02', 'K-03'].map((id) => ({ id, status: '決まった', quote: 'K-05 だけです' })) });
+      assert.equal(ok.ok, true, ok.error);
+      // 外す記録と、この会話で足した決まりは、この確かめをしない
+      assert.equal((await run.callSafe('record', { knowledge: [{ id: 'K-04', status: '外した', quote: 'もう使っていない' }] })).ok, true);
+      assert.equal((await run.callSafe('record', { knowledge: [knowledge({ quote: '止まる条件が古いです' })] })).ok, true);
+      assert.deepEqual(
+        run.readState().knowledge.map((k) => [k.id, k.status]),
+        [['K-01', 'decided'], ['K-02', 'decided'], ['K-03', 'decided'], ['K-04', 'dropped'], ['K-05', 'dropped'], ['K-06', 'decided'], ['K-07', 'decided']],
+      );
+      // もう「決まった」の引き継いだ決まりを記録し直すときは確かめない（一覧の問いをもう一度させないため）
+      const again = await run.callSafe('record', { knowledge: [{ id: 'K-01', status: '決まった', quote: '止まる条件が古いです' }] });
+      assert.equal(again.ok, true, again.error);
+    });
+  });
+
+  test('REQ-054 決まりの一覧を示した問いが取り消され、そのすぐ次にユーザーがチャットに答えを打ったときは、その答えの抜き書きで引き継いだ決まりを「決まった」にできる', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const list = PLUGIN_KNOWLEDGE.map((k) => `${k.id} ${k.text}`).join('\n');
+      await run.fake.askUser({ message: `今のプラグインの決まりは次のとおりです。\n${list}\nこの中で、今と違うものと、古くなったものの番号を書いてください。`, answer: 'User cancelled the request.' });
+      await run.hook('onUserPromptSubmitted', { prompt: '古いのは K-05 だけです' });
+      const ok = await run.callSafe('record', { knowledge: ['K-01', 'K-02'].map((id) => ({ id, status: '決まった', quote: '古いのは K-05 だけです' })) });
+      assert.equal(ok.ok, true, ok.error);
+      assert.deepEqual(run.readState().knowledge.slice(0, 2).map((k) => k.status), ['decided', 'decided']);
+    });
+  });
+
   test('REQ-054 D29 決まりの一覧・作業の定義・外した決まりの一覧・課題・plugin.json が壊れているときは、理由を返して断り、記録を作らない', async () => {
     const cases = [
       [{ knowledge: '[ 壊れた' }, /^直すプラグインの tests\/knowledge\.json を、JSON として読めません（/],

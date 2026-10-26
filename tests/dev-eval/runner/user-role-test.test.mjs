@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CONFIRM_CHOICES, loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { REASK_QUESTION } from './user-role.mjs';
+import { MARKUP_RETRY_NOTE, REASK_QUESTION } from './user-role.mjs';
 import { REPS, THRESHOLDS, parseArgs, testUserRole } from './user-role-test.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -165,4 +165,35 @@ test('REQ-015 コマンドの引数：模擬ユーザーのフォルダ・話し
   assert.throws(() => parseArgs([]), /模擬ユーザーのフォルダ/);
   assert.throws(() => parseArgs(['p', '--reps']), /値が要ります/);
   assert.throws(() => parseArgs(['p', '--wat']), /知らない引数/);
+});
+
+test('REQ-015 ユーザー役の試験：道具の呼び出しの形で答えるユーザー役は、呼び直して直っても落ちる。直らない質問は、その質問だけ答えを空にして試験を続ける', async () => {
+  const LT = '<';
+  const markupAnswer = `${LT}invoke name="Read">\n${LT}parameter name="file_path">週報.docx${LT}/parameter>\n${LT}/invoke>`;
+  const good = oracle(loadedWeekly.persona);
+  const target = loadedWeekly.persona.userRoleTests.unknown[0];
+  // 1回目だけ道具の呼び出しの形（呼び直しで直る）
+  const seen = new Map();
+  const once = (req) => {
+    const q = questionOf(req.prompt);
+    if (q !== target) return good(req);
+    seen.set(req.prompt, (seen.get(req.prompt) ?? 0) + 1);
+    return req.prompt.endsWith(MARKUP_RETRY_NOTE) ? good(req) : markupAnswer;
+  };
+  const fixed = await run(loadedWeekly, once);
+  assert.equal(fixed.ok, false);
+  assert.equal(fixed.observations.toolMarkup.count, REPS.unknown);
+  assert.equal(fixed.observations.toolMarkup.fixed, REPS.unknown);
+  assert.equal(fixed.observations.unknown.rate, 1, '直った答えで、その観点は見る');
+  assert.match(fixed.failures.join('\n'), /道具の呼び出しの形で答えない/);
+  assert.equal(fixed.samples.toolMarkup[0].q, target);
+  // ずっと道具の呼び出しの形（直らない）：全体は落ちずに結果を返し、その質問は空の答えとして不合格になる
+  const always = (req) => (questionOf(req.prompt) === target ? markupAnswer : good(req));
+  const broken = await run(loadedWeekly, always);
+  assert.equal(broken.ok, false);
+  assert.equal(broken.observations.toolMarkup.unfixed, REPS.unknown);
+  assert.ok(broken.observations.unknown.rate < 1);
+  assert.equal(broken.questions, fixed.questions, '直らなかった質問も、聞いた数に入る');
+  // 見本のユーザー役では 0 件
+  assert.equal((await run(loadedWeekly, good)).observations.toolMarkup.count, 0);
 });

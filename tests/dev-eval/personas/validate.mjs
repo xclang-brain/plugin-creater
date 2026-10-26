@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 
 import { documentText } from '../../../com.github.copilot/extensions/plugin-creator/doc-text.mjs';
+import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { gradeProgram, inputCheckProblems, listFiles, normalizeRelPath, validateTask } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { listInputFiles, prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
 
@@ -59,11 +60,13 @@ const CHANGE_KEYS = ['workspace', 'target', 'device', 'expect'];
 const WORKSPACE_KEYS = ['repo'];
 const REPO_KEYS = ['place', 'fixture', 'commitDate', 'staged', 'origin'];
 const STAGED_KEYS = ['path', 'append'];
-const EXPECT_KEYS = ['carriedMax', 'replaced', 'deviceTool', 'userSkills', 'screenAsked', 'lastTimeAsked', 'explained'];
+const EXPECT_KEYS = ['carriedMax', 'replaced', 'deviceTool', 'userSkills', 'screenUnchanged', 'screenAsked', 'lastTimeAsked', 'explained'];
+/** 作業の画面の3つの項目（クリエイターの項目の記号。names.mjs）。expect.screenUnchanged には、この名前（か記号）を書く */
+const SCREEN_ITEM_KEYS = ['settings', 'running_view', 'result_view'];
 /** 生成プラグインのファイルを見る markers（改善の模擬ユーザーでは、題材と流用される資産の文字に当たってはいけない） */
 const PLUGIN_MARKERS = ['embedded', 'excluded', 'task'];
 const FILE_KEYS = ['src', 'place', 'role', 'describe', 'reveal'];
-const KNOWLEDGE_KEYS = ['id', 'fact', 'reveal', 'volunteer', 'from', 'file', 'markers'];
+const KNOWLEDGE_KEYS = ['id', 'fact', 'reveal', 'volunteer', 'from', 'stance', 'file', 'markers'];
 const KNOWLEDGE_FILE_KEYS = ['path', 'evidence', 'kind', 'answer', 'detail'];
 const MARKER_KEYS = ['asked', 'answered', 'leak', 'embedded', 'excluded', 'task'];
 const TEST_KEYS = ['generic', 'recall', 'compound', 'unknown', 'abstain', 'context', 'options', 'confirm'];
@@ -202,6 +205,10 @@ function validateKnowledge(persona, errors, warnings, context) {
     if (!isText(k.reveal)) errors.push(`${name}.reveal（答える条件）がない`);
     if (typeof k.volunteer !== 'boolean') errors.push(`${name}.volunteer は true か false で書く`);
     if (!FROMS.includes(k.from)) errors.push(`${name}.from は ${FROMS.join(' か ')} で書く`);
+    // 答え方の立場（生成プラグインに入る決まりではない）。話の中で出るもので、生成プラグインのファイルを見る markers を持たない
+    const stance = k.stance === true;
+    if ('stance' in k && typeof k.stance !== 'boolean') errors.push(`${name}.stance は true か false で書く`);
+    if (stance && k.from !== 'talk') errors.push(`${name} は stance（答え方の立場）なので、from を talk にする`);
 
     let detailText = '';
     if (k.from === 'file') {
@@ -251,8 +258,10 @@ function validateKnowledge(persona, errors, warnings, context) {
     if ('embedded' in m) checkRegexList(m.embedded, `${name}.markers.embedded`, errors);
     if ('excluded' in m) checkRegexList(m.excluded, `${name}.markers.excluded`, errors);
     if ('task' in m) checkRegexList(m.task, `${name}.markers.task`, errors);
-    if (!hasEmbedded && !hasExcluded && k.id !== 'first-run') {
-      errors.push(`${name}.markers に embedded か excluded を書く（first-run だけは省ける）`);
+    if (stance) {
+      for (const key of PLUGIN_MARKERS) if (key in m) errors.push(`${name} は stance（答え方の立場）なので、markers.${key} は書かない（生成プラグインに入る決まりではない）`);
+    } else if (!hasEmbedded && !hasExcluded && k.id !== 'first-run') {
+      errors.push(`${name}.markers に embedded か excluded を書く（first-run と stance のナレッジだけは省ける）`);
     }
     if (k.from === 'file' && isObject(k.file)) {
       if ((k.file.kind === 'incidental' || k.file.kind === 'wrong') && !hasExcluded) {
@@ -548,6 +557,14 @@ function validateChange(persona, errors, context) {
       if (skills.length === 0) errors.push('files に role が skill のファイル（ユーザーの既存のスキル）がない');
       for (const f of skills) if (!under(f.place, ex.userSkills)) errors.push(`files の「${f.place}」が、expect.userSkills「${ex.userSkills}」の下にない`);
     }
+    if ('screenUnchanged' in ex) {
+      const names = SCREEN_ITEM_KEYS.map((key) => itemIndex.nameOf(key));
+      const given = Array.isArray(ex.screenUnchanged) ? ex.screenUnchanged : null;
+      const keys = given?.map((x) => (SCREEN_ITEM_KEYS.includes(x) ? x : itemIndex.keyOf(x))) ?? [];
+      if (!given || !keys.every((key) => SCREEN_ITEM_KEYS.includes(key))) {
+        errors.push(`expect.screenUnchanged は、変えないはずの画面の項目の名前（${names.join('・')}）の並びで書く`);
+      } else if (new Set(keys).size !== keys.length) errors.push('expect.screenUnchanged に、同じ項目が重なっている');
+    }
     checkRegex(ex.screenAsked, 'expect.screenAsked', errors);
     checkRegex(ex.lastTimeAsked, 'expect.lastTimeAsked', errors);
     checkRegexList(ex.explained, 'expect.explained', errors);
@@ -569,6 +586,11 @@ function validateChange(persona, errors, context) {
   // 当たると、ほかの決まりを組み込んだだけで、この決まりも組み込んだ（または入ってはいけない書き方が入った）ことになる
   const others = [...context.knowledgeById].map(([id, k]) => ({ id, text: `${k.fact ?? ''}\n${k.file?.detail ?? ''}` }));
   for (const [id, k] of context.knowledgeById) {
+    // 聞かれないと話さないナレッジの answered も、ほかのナレッジの文に当たらない言葉にする。外側の EVAL は、answered に当たり
+    // asked に当たらない答えを「聞かれずに話した」にするので、当たると、ほかのナレッジを話しただけで漏れになる
+    const answered = k.volunteer === false && isText(k.markers?.answered) ? regexOf(k.markers.answered) : null;
+    const otherAnswered = answered ? others.find((o) => o.id !== id && answered.test(o.text)) : null;
+    if (otherAnswered) errors.push(`ナレッジ「${id}」の markers.answered「${k.markers.answered}」が、ナレッジ「${otherAnswered.id}」の文に当たる（ほかのナレッジを話しただけで、聞かれずに話したことになる）`);
     for (const key of PLUGIN_MARKERS) {
       for (const pattern of Array.isArray(k.markers?.[key]) ? k.markers[key] : []) {
         const re = regexOf(pattern);

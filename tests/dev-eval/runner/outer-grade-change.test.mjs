@@ -11,6 +11,9 @@ const BASE = 'b'.repeat(40);
 const HEAD = 'c'.repeat(40);
 const K = (id, text, kind = 'other', item = '進め方') => ({ id, kind, item, text });
 const BEFORE = [K('K-01', '手順どおりに進める。'), K('K-02', '失敗したら人に伝える。', 'other', 'いつもと違うとき')];
+const SCREEN_URL = 'http://127.0.0.1:41234/?k=abcDEF123_-xyz';
+/** 決まりの確かめの問いの選択肢（hearing.md 6.1。クリエイターは説明を付けずに名前だけを並べる） */
+const CONFIRM_OPTIONS = ['そうしないときもある', '違う', '決まりではなく、たまたま', 'このとおり'].map((label) => ({ label, description: '' }));
 
 /** すべての観点に合格する1回分の材料。mutate で1か所ずつ壊す */
 function goodCase() {
@@ -50,12 +53,13 @@ function goodCase() {
   // 最後に承認の問いを聞く（make-plugin の confirm.md の3・4、change-confirm.md の3・4）。承認の問いそのものには、4つの言葉がない
   const items = [
     { seq: 1, kind: 'user.request', text: 'demo を直してください' },
+    { seq: 1.5, kind: 'creator.text', text: `決まったことは plugin-creator の画面で見られます：${SCREEN_URL}\nこれから、今のプラグインを読んで、変えるところだけをお聞きします。` },
     { seq: 2, kind: 'creator.text', text: '今の決まりの一覧です。ログは printf で足します。\n- K-01 手順どおりに進める。\n- K-02 失敗したら人に伝える。' },
     snap(3, 'question'),
     { seq: 4, kind: 'creator.question', header: '決まり', question: '違うもの・古いものはありますか？', options: [{ label: 'すべてこのとおり', description: '' }] },
     { seq: 5, kind: 'user.answer', index: 0, via: 'AskUserQuestion', question: '違うもの・古いものはありますか？', answer: 'K-02 は古い。今は1回 reboot してやり直す' },
     snap(6, 'question'),
-    { seq: 7, kind: 'creator.question', header: '決まり', question: '「KX では DBG_LOG で出す」という決まりですか？', options: [{ label: 'このとおり', description: '' }] },
+    { seq: 7, kind: 'creator.question', header: '決まり', question: '「KX では DBG_LOG で出す」という決まりですか？', options: CONFIRM_OPTIONS },
     { seq: 8, kind: 'user.answer', index: 1, via: 'AskUserQuestion', question: '「KX では DBG_LOG で出す」という決まりですか？', answer: 'このとおり' },
     { seq: 9, kind: 'creator.question-text', text: '最近実際にやった1回を、最初から教えてください。', turn: 2 },
     { seq: 10, kind: 'user.answer', index: 2, via: 'text', question: '最近実際にやった1回を、最初から教えてください。', answer: 'ログを足してビルドした' },
@@ -74,6 +78,8 @@ function goodCase() {
     { seq: 24, kind: 'creator.text', text: '直して 0.2.0 にしました。戻すときは git revert です。Copilot CLI を起動し直してください。' },
   ];
   const toolEvents = [
+    { seq: 1.2, type: 'tool.call', callId: 9, tool: 'open', args: {} },
+    { seq: 1.3, type: 'tool.result', callId: 9, tool: 'open', isError: false, result: `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${SCREEN_URL}` },
     { seq: 10.5, type: 'tool.call', callId: 1, tool: 'confirm', args: { knowledgeIds: ['K-01', 'K-03', 'K-04'], version: '0.2.0' } },
     { seq: 10.6, type: 'tool.result', callId: 1, tool: 'confirm', isError: false, result: '確認を記録しました' },
     { seq: 21, type: 'tool.call', callId: 2, tool: 'progress', args: { stage: '生成', approvalQuote: 'この内容で直してよい' } },
@@ -149,7 +155,7 @@ test('REQ-052〜062 作り例：すべての観点に合格する。観点はす
   assert.deepEqual(grading.verdict.required, grading.grades.map((g) => g.id));
   assert.equal(grading.exampleCandidate, false);
   assert.deepEqual(grading.grades.map((g) => g.id), [
-    'change-skill-used', 'no-new-folder', 'unchanged-before-approval', 'confirm-contents', 'version-approved', 'rules-list-once', 'rule-replaced', 'ids-kept',
+    'change-skill-used', 'no-new-folder', 'screen-url-shown', 'unchanged-before-approval', 'confirm-contents', 'version-approved', 'rules-list-once', 'rule-replaced', 'ids-kept',
     'added-rule-confirmed', 'embedded:cc-gcc', 'not-embedded:cc-pull', 'embedded:log-dbg', 'embedded:k15-now', 'skill-names-differ', 'user-skills-unchanged',
     'assets-reused', 'unchanged-items', 'no-screen-questions', 'last-time-asked', 'stage1', 'stage2', 'tests-added', 'commit-scoped', 'nothing-outside',
     'not-pushed', 'explained', 'main-model', 'worker-model',
@@ -318,6 +324,48 @@ test('REQ-054 added-rule-confirmed：決まりの一覧の問いだけでは、1
   }, ['added-rule-confirmed']);
 });
 
+test('REQ-054 added-rule-confirmed：決まりの確かめの問い（4つの答えの選択肢か、「という決まりですか」）だけを数える。まとめの問いや、はい・いいえの問いは数えない', () => {
+  /** 書き足された決まりの問い（seq 7）を書き換える */
+  const ask = (a, question, options = [{ label: 'ない', description: '' }, { label: '違う・足りないところを書く', description: '' }]) => {
+    const q = a.items.find((i) => i.seq === 7);
+    q.question = question;
+    q.options = options;
+    a.items.find((i) => i.seq === 8).question = question;
+  };
+  // 最近の1回のまとめ（外側の EVAL（改善）1回目の [207]）：番号の行が並ぶ
+  const summary = '最近の1回は、次のように理解しました。\n1. ソースに DBG_LOG でログを足す\n2. kx-build.sh でビルドする\n3. mkkximg.py で .kximg にする\nこの中で、違うところと足りないところを書いてください。';
+  const g = expectOnlyFails((a) => ask(a, summary), ['added-rule-confirmed']);
+  assert.match(g['added-rule-confirmed'].detail, /まとめの問い/);
+  // 「・」の箇条書きでも同じ
+  expectOnlyFails((a) => ask(a, 'まとめです。\n・書き方：ログは DBG_LOG\n・道具：kxtool\n違うところはありますか？'), ['added-rule-confirmed']);
+  // まとめを前の文に書き、問いで決まりの文字に触れるだけの問い
+  expectOnlyFails((a) => {
+    ask(a, '上のまとめで、ログは DBG_LOG で出すことも含めて、違うところはありますか？');
+    a.items.splice(a.items.findIndex((i) => i.seq === 7), 0, { seq: 6.5, kind: 'creator.text', text: '最近の1回のまとめ：\n1. DBG_LOG でログを足す\n2. kx-build.sh でビルドする\n3. kxtool で送る' });
+  }, ['added-rule-confirmed']);
+  // 1行に並べたまとめの問い
+  expectOnlyFails((a) => ask(a, 'DBG_LOG でログを足し、kx-build.sh でビルドし、mkkximg.py で .kximg にし、kxtool で送る、で合っていますか？'), ['added-rule-confirmed']);
+  // はい・いいえの問い（「という決まりですか」の確かめでない）
+  expectOnlyFails((a) => ask(a, 'skills/rules/SKILL.md に「KX では DBG_LOG で出す」と書き足されています。今もこのとおりですか？', [{ label: 'はい', description: '' }, { label: 'いいえ', description: '' }]), ['added-rule-confirmed']);
+  // 決まりの確かめの問い（4つの答えの選択肢）なら、並べた形でも数える（選択肢の説明つきの名前も、名前で見る）
+  const confirmed = goodCase();
+  ask(confirmed, '『次の順で作業する：\n1. DBG_LOG でログを足す\n2. ビルドする』という決まりですか？', ['そうしないときもある（どんなときか）', '違う（本当はどうか）', '決まりではなく、たまたま', 'このとおり'].map((label) => ({ label, description: '' })));
+  assert.equal(gradesOf(confirmed)['added-rule-confirmed'].ok, true, gradesOf(confirmed)['added-rule-confirmed'].detail);
+  // 問いに「という決まりですか」があれば、選択肢が4つの答えでなくても数える
+  const phrased = goodCase();
+  ask(phrased, '「KX では DBG_LOG で出す」という決まりですか？（skills/rules/SKILL.md より）', [{ label: 'はい', description: '' }]);
+  assert.equal(gradesOf(phrased)['added-rule-confirmed'].ok, true, gradesOf(phrased)['added-rule-confirmed'].detail);
+  // 文章の問いでも同じ
+  const text = goodCase();
+  const q7 = text.items.find((i) => i.seq === 7);
+  Object.assign(q7, { kind: 'creator.question-text', text: '「KX では DBG_LOG で出す」という決まりですか？', turn: 1 });
+  delete q7.question;
+  delete q7.options;
+  delete q7.header;
+  Object.assign(text.items.find((i) => i.seq === 8), { via: 'text', question: q7.text });
+  assert.equal(gradesOf(text)['added-rule-confirmed'].ok, true, gradesOf(text)['added-rule-confirmed'].detail);
+});
+
 test('REQ-055 embedded・not-embedded：足した行で見る。決まりの一覧・写した資産・課題の入力は証拠にしない。repo のファイルの決まりは直した後のファイルで見る', () => {
   // ルールが足した行にないと落ちる（決まりの一覧にだけあっても数えない）
   expectOnlyFails((a) => {
@@ -384,6 +432,79 @@ test('REQ-056 unchanged-items・no-screen-questions・last-time-asked', () => {
     q.text = '作業の流れを教えてください。';
     a.items.find((i) => i.seq === 10).question = q.text;
   }, ['last-time-asked']);
+});
+
+test('REQ-056 unchanged-items：見る画面の項目は expect.screenUnchanged（記号か日本語の名前）。省くと3つすべて。画面の項目でないものがあれば落ちる', () => {
+  // ユーザーが画面の設定の変更を頼んだ模擬ユーザー：設定は聞いてよく、ほかの2つは変えないので聞かない
+  const partial = goodCase();
+  partial.persona.expect.screenUnchanged = ['running_view', 'result_view'];
+  partial.state.items.settings.status = 'asked';
+  assert.equal(gradesOf(partial)['unchanged-items'].ok, true, gradesOf(partial)['unchanged-items'].detail);
+  const g = expectOnlyFails((a) => {
+    a.persona.expect.screenUnchanged = ['running_view', 'result_view'];
+    a.state.items.settings.status = 'asked';
+    a.state.items.running_view.status = 'asked';
+  }, ['unchanged-items']);
+  assert.match(g['unchanged-items'].detail, /実行中に見たいこと/);
+  assert.doesNotMatch(g['unchanged-items'].detail, /開始前に設定したいこと/);
+  // 日本語の名前でも書ける
+  const named = goodCase();
+  named.persona.expect.screenUnchanged = ['実行中に見たいこと', '終わった後に見たい結果と見せ方'];
+  named.state.items.settings.status = 'asked';
+  assert.equal(gradesOf(named)['unchanged-items'].ok, true);
+  // 省いたときは、これまでどおり3つすべて
+  expectOnlyFails((a) => { delete a.persona.expect.screenUnchanged; a.state.items.settings.status = 'asked'; }, ['unchanged-items']);
+  // 画面の項目でないもの（書き誤り）は、合格にしない
+  const wrong = expectOnlyFails((a) => { a.persona.expect.screenUnchanged = ['running_view', 'procedure']; }, ['unchanged-items']);
+  assert.match(wrong['unchanged-items'].detail, /画面の項目でないものがある：procedure/);
+  // 変えないので聞かない項目が1つもなければ、これまでどおり落ちる
+  expectOnlyFails((a) => { a.persona.expect.screenUnchanged = []; a.state.items = { procedure: { status: 'asked' } }; }, ['unchanged-items']);
+});
+
+test('REQ-055 embedded・not-embedded：ユーザーのスキルの決まりは、ルールのスキル（入口のスキルを除く SKILL.md と references/）の足した行だけで見る', () => {
+  const AGENT = 'com.github.copilot/agents/worker.agent.md';
+  // エージェントの定義にだけ書いた決まりは数えない
+  const g = expectOnlyFails((a) => {
+    a.repo.added[0].text = '- 失敗したら1回 reboot してやり直す（K-04）';
+    a.repo.added.push({ rel: AGENT, text: '- arm-gcc でビルドする', sha256: 'h-agent' });
+  }, ['embedded:cc-gcc']);
+  assert.match(g['embedded:cc-gcc'].detail, /ルールのスキル/);
+  // 入口のスキル（本文に <名前>_open があるスキル）にだけ書いた決まりも数えない
+  expectOnlyFails((a) => {
+    a.repo.added[0].text = '- 失敗したら1回 reboot してやり直す（K-04）';
+    a.repo.added.push({ rel: 'skills/start/SKILL.md', text: '- arm-gcc でビルドする', sha256: 'h-entry' });
+    a.repo.targetFiles.push({ rel: 'skills/start/SKILL.md', sha256: 'h-entry', text: '1. demo_open を呼ぶ\n- arm-gcc でビルドする' });
+  }, ['embedded:cc-gcc']);
+  // <名前>_open のあるスキルが見つからなければ、プラグインの名前のスキルを入口とする
+  expectOnlyFails((a) => {
+    a.repo.added[0].text = '- 失敗したら1回 reboot してやり直す（K-04）';
+    a.repo.added.push({ rel: 'skills/demo/SKILL.md', text: '- arm-gcc でビルドする', sha256: 'h-entry' });
+  }, ['embedded:cc-gcc']);
+  // ルールのスキルの references/ に書いたものは数える
+  const refs = goodCase();
+  refs.repo.added[0].text = '- 失敗したら1回 reboot してやり直す（K-04）';
+  refs.repo.added.push({ rel: 'skills/build-rules/references/build.md', text: '- arm-gcc でビルドする', sha256: 'h-ref' });
+  assert.equal(gradesOf(refs)['embedded:cc-gcc'].ok, true);
+  // たまたまの書き方は、ルールのスキルに入ったら落ちる
+  expectOnlyFails((a) => { a.repo.added.push({ rel: 'skills/build-rules/references/build.md', text: '- ビルドの前に git pull する', sha256: 'h-ref' }); }, ['not-embedded:cc-pull']);
+  // 入ってはいけない書き方は、ルールのスキルの外（エージェントの定義、決まりの一覧）に入っても落ちる。その書き方で作業されるため（REQ-055 の受け入れ基準3）
+  const agentHit = expectOnlyFails((a) => { a.repo.added.push({ rel: AGENT, text: '- ビルドの前に git pull する', sha256: 'h-agent' }); }, ['not-embedded:cc-pull']);
+  assert.match(agentHit['not-embedded:cc-pull'].detail, /足した行/);
+  expectOnlyFails((a) => { a.repo.added.push({ rel: 'tests/knowledge.json', text: '{ "id": "K-05", "text": "ビルドの前に git pull する" }', sha256: 'h-list' }); }, ['not-embedded:cc-pull']);
+  // 話の中の決まり（role が skill のファイルでないもの）は、これまでどおり足した行のすべてで見る
+  const talk = goodCase();
+  talk.repo.added[0].text = '- arm-gcc でビルドする（K-05）';
+  talk.repo.added.push({ rel: AGENT, text: '- 失敗したら1回 reboot してやり直す（K-04）', sha256: 'h-agent' });
+  assert.equal(gradesOf(talk)['embedded:k15-now'].ok, true);
+});
+
+test('REQ-043 screen-url-shown：画面を開くツールの返り値の URL を、最初の問いより前にチャットに書かないと落ちる', () => {
+  const g = expectOnlyFails((a) => { a.items = a.items.filter((i) => i.seq !== 1.5); }, ['screen-url-shown']);
+  assert.match(g['screen-url-shown'].detail, /最初の問いより前のチャットの文にない/);
+  // 最初の問いの後に書いても遅い
+  expectOnlyFails((a) => { a.items.find((i) => i.seq === 1.5).seq = 6.2; a.items.sort((x, y) => x.seq - y.seq); }, ['screen-url-shown']);
+  // 画面を開くツールを呼んでいない
+  expectOnlyFails((a) => { a.toolEvents = a.toolEvents.filter((e) => e.tool !== 'open'); }, ['screen-url-shown']);
 });
 
 test('REQ-061 stage1・stage2・tests-added：1・2段目の不合格・動かせなかった、足した課題がない・擬似の機器の口がそろわないと落ちる', () => {

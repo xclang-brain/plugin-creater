@@ -11,8 +11,10 @@
 //   options      選択肢で済ませない：選択肢の言葉だけでなく、具体的に答える
 //   confirm      決まりの確かめに、ファイルの決まりの種類に合う選択肢で答える
 //   instruction  指示のことを話さない：すべての答えを見る
+//   toolMarkup   道具の呼び出しの形で答えない：すべての質問を見る。呼び直して直った答えも数える（user-role.mjs の answerOnce が返す
+//                呼び直しの回数）。呼び直しても直らなかった質問は、その質問の答えを空にし（その観点では不合格になりうる）、試験の全体は続ける
 // 合格の条件（このファイルが決める。testing.md 6.2 は割合を決めていない）
-//   leak と instruction は 0 件。ほかは 90% 以上。どちらも、結果のファイルに残す。
+//   leak・instruction・toolMarkup は 0 件。ほかは 90% 以上。どちらも、結果のファイルに残す。
 //
 // 使い方（実際のモデルを使う。統括がユーザーの承認をとってから動かす）
 //   node tests/dev-eval/runner/user-role-test.mjs <模擬ユーザーのフォルダ>… [--style 名前]… [--all-styles] [--reps 1] [--out <フォルダ>] [--model <ID>]
@@ -29,7 +31,7 @@ import { INSTRUCTION_WORDS, REASK_QUESTION, USER_ROLE_MODEL, askUserRole, loadQu
 /** 同じ質問を聞く回数（試作の値。--reps で何倍かにする） */
 export const REPS = Object.freeze({ generic: 5, recall: 2, compound: 3, unknown: 2, context: 3, options: 3, confirm: 2 });
 /** 合格の条件 */
-export const THRESHOLDS = Object.freeze({ maxLeaks: 0, maxInstructionWords: 0, minRate: 0.9 });
+export const THRESHOLDS = Object.freeze({ maxLeaks: 0, maxInstructionWords: 0, maxToolMarkup: 0, minRate: 0.9 });
 
 const regexOf = (p) => new RegExp(p);
 const rate = (xs) => ({ passed: xs.filter(Boolean).length, total: xs.length, rate: xs.length ? xs.filter(Boolean).length / xs.length : 1 });
@@ -69,11 +71,25 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
   const hidden = persona.knowledge.filter((k) => !k.volunteer && (k.markers?.leak ?? k.markers?.answered));
   const byId = new Map(persona.knowledge.map((k) => [k.id, k]));
   const answers = [];
+  /** 道具の呼び出しの形の答えが出た質問（呼び直して直ったもの・直らなかったもの） */
+  const markup = [];
   let cost = 0;
 
   const ask = async (question, choices = [], history = []) => {
-    const r = await askUserRole(persona, question, choices, { history, styleName, query, model });
+    let r;
+    try {
+      r = await askUserRole(persona, question, choices, { history, styleName, query, model });
+    } catch (error) {
+      // 呼び直しても道具の呼び出しの形のままなら、その質問の答えを空にして続ける（ほかの失敗は、試験を止める）
+      if (error?.code !== 'tool_markup') throw error;
+      cost += error.cost ?? 0;
+      markup.push({ q: question, fixed: false, error: String(error.message).slice(0, 200) });
+      answers.push('');
+      onProgress({ phase: 'asked', n: answers.length });
+      return '';
+    }
     cost += r.cost;
+    if (r.retries) markup.push({ q: question, fixed: true, retries: r.retries });
     answers.push(r.text);
     onProgress({ phase: 'asked', n: answers.length });
     return r.text;
@@ -160,10 +176,14 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
     options: rate(rec.options.map((r) => r.ok)),
     confirm: rate(rec.confirm.map((r) => r.ok)),
     instruction: { passed: answers.length - instruction.length, total: answers.length, count: instruction.length },
+    toolMarkup: { passed: answers.length - markup.length, total: answers.length, count: markup.length, fixed: markup.filter((m) => m.fixed).length, unfixed: markup.filter((m) => !m.fixed).length },
   };
   const failures = [];
   if (observations.leak.leaks > thresholds.maxLeaks) failures.push(`漏らさない：聞かれないと話さないナレッジが ${observations.leak.leaks} 回漏れた`);
   if (observations.instruction.count > thresholds.maxInstructionWords) failures.push(`指示のことを話さない：指示の言葉が ${observations.instruction.count} 回の答えに出た`);
+  if (observations.toolMarkup.count > (thresholds.maxToolMarkup ?? 0)) {
+    failures.push(`道具の呼び出しの形で答えない：${observations.toolMarkup.count} 回の質問で道具の呼び出しの形の答えが出た（呼び直して直った ${observations.toolMarkup.fixed} 回、直らなかった ${observations.toolMarkup.unfixed} 回）`);
+  }
   for (const key of ['recall', 'compound', 'unknown', 'context', 'options', 'confirm']) {
     if (observations[key].total > 0 && observations[key].rate < thresholds.minRate) failures.push(`${labelOf(key)}：${observations[key].passed}/${observations[key].total}（${Math.round(observations[key].rate * 100)}%）が基準の ${Math.round(thresholds.minRate * 100)}% 未満`);
   }
@@ -188,6 +208,7 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
       options: rec.options.filter((r) => !r.ok).slice(0, 3),
       confirm: rec.confirm.filter((r) => !r.ok).slice(0, 3),
       instruction: instruction.slice(0, 3),
+      toolMarkup: markup.slice(0, 3),
     },
   };
 }

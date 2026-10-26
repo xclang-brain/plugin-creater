@@ -1,11 +1,12 @@
 {
   "id": "T-02",
-  "prompt": "inputs/src のプログラムを KX-200 用にクロスコンパイルして、機器（192.168.7.2）に入れて動かし、機器のログを logs/device.log に保存してください。アプリの名前は sensor です。",
+  "prompt": "inputs/src のプログラムを KX-200 用にクロスコンパイルして、KX-200 に入れて動かし、機器のログを logs/device.log に保存してください。アプリの名前は sensor です。",
   "inputs": ["inputs/src/main.c", "inputs/src/sensor_avg.c", "inputs/src/sensor_avg.h", "inputs/src/dbg_log.h"],
   "criteria": [
     { "id": "C-01", "knowledge": "dp-image", "text": "見出しの付いたイメージ（.kximg）を、機器が受け付けてインストールした", "grading": "program", "check": { "type": "regex", "file": ".device/history.jsonl", "pattern": "\"ev\": \"install\", \"file\": \"[^\"]+\", \"ok\": true" } },
     { "id": "C-02", "knowledge": "cc-static", "text": "静的リンクの ARM の実行ファイルが、機器で動いた（終了コードは問わない）", "grading": "program", "check": { "type": "contains", "file": ".device/history.jsonl", "text": "\"kind\": \"arm-static\", \"status\": " } },
     { "id": "C-03", "knowledge": "dp-steps", "text": "インストールした後に機器を再起動し、その後にアプリを動かした", "grading": "program", "check": { "type": "regex", "file": ".device/history.jsonl", "pattern": "\"activated\": \\[\"sensor\"\\].*\"ev\": \"run\", \"name\": \"sensor\", \"ok\": (true|false), \"kind\": \"arm-static\"", "flags": "s" } },
-    { "id": "C-04", "knowledge": "dp-marker", "text": "頼まれた場所（logs/device.log）に、取り終わりの目印「[kxapp] sensor exited (status=N)」までの機器のログを保存した", "grading": "program", "check": { "type": "regex", "file": "logs/device.log", "pattern": "\\[kxapp\\] sensor exited \\(status=\\d+\\)" } }
+    { "id": "C-04", "knowledge": "dp-marker", "text": "頼まれた場所（logs/device.log）に、取り終わりの目印「[kxapp] sensor exited (status=N)」までの機器のログを保存した", "grading": "program", "check": { "type": "regex", "file": "logs/device.log", "pattern": "\\[kxapp\\] sensor exited \\(status=\\d+\\)" } },
+    { "id": "C-05", "knowledge": "dp-ip", "text": "機器のアドレス 192.168.7.2 に送った", "grading": "program", "check": { "type": "contains", "file": ".device/history.jsonl", "text": "\"addr\": \"192.168.7.2\"" } }
   ]
 }

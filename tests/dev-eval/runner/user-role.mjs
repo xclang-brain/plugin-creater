@@ -6,6 +6,9 @@
 // - モデルは ID で固定する（claude-sonnet-5-5）。別名は、プロバイダーで解決先が変わるので使わない。ユーザー役の試験
 //   （user-role-test.mjs）に通ったモデルと指示を、比べる EVAL のあいだで変えない（6.2）。
 // - 話し方 hurry の signal：afterAnswers 回答えた後の次の答えに text を足し、足した位置を記録する（6.5 の REQ-015）。
+// - 答えが道具の呼び出しの形（TOOL_CALL_MARKUP）なら、2回まで呼び直し、それでもだめなら試験の仕組みの失敗として投げる（6.1）。
+//   呼び出しの失敗（誤りの結果、空の答え、例外）も、2回まで呼び直す。利用枠の上限（LIMIT_PATTERN）なら、呼び直さずに投げる。
+//   呼ぶ側（outer-run.mjs）は、その会話を止める（利用枠の上限なら、比べる EVAL の全体も止める）。
 // - 実際の Agent SDK の query() は、引数 query で差し替えられる（実際のモデルを使わない試験のため）。
 
 import fs from 'node:fs';
@@ -42,10 +45,24 @@ export const USER_RULES = Object.freeze([
   'これまでのやり取りを踏まえて答える。「それ」「その2つ」などは、前の質問と答えを指す。AI が質問の前にチャットに書いた文も、読んだものとして踏まえる。',
   '質問の意味が分からないときは、短く聞き返す。質問が「上の〜」「先ほどの〜」と、あなたが読んでいないものを指していて、これまでのやり取りにも AI がチャットに書いた文にも、その中身がないときは、「上の〜とは、どれのことですか？」のように聞き返す。中身を読んでいないのに、「違いはない」「特にない」と答えない。「見えません」「表示されていません」のような、機械の言い方はしない。',
   '持っているファイルは、聞かれたときだけ、置いてある場所と中身の説明で答える。自分から示さない。持っていないファイルは、あるとは言わない。',
+  'ファイルを開いて見る道具はない。ファイルの中身は、知っていることの範囲で答える。',
   '持っているファイルの決まりについて「〜という決まりですか？」と確かめられたら、4つの選択肢（そうしないときもある／違う／決まりではなく、たまたま／このとおり）のうち、そのファイルの決まりに書いてある答えを選ぶ。選んだ言葉の後に、決まりに書いてある具体的な中身を足す。選択肢の言葉だけで済ませない。',
   'この決まり、答える条件、「自分から話す」のことは口に出さない。なぜ答えるのか、なぜ答えないのかも説明しない。ふつうの人として話す。',
   'チャットで担当者に話す人の言葉で書く。同じ意味の言葉を「（　）」で重ねて書かない（「分からない（覚えていない）」のように）。説明書きのような、かしこまった型の言い方を続けない。',
 ]);
+
+/**
+ * 答えに混ざった、道具の呼び出しの形の文。ユーザー役は道具を使えない（tools: []）のに、持っているファイルの中身を聞かれると、
+ * ファイルを読む呼び出しの形の文を答えにすることがある（外側の EVAL（改善）1回目の診断 1.4）。人はこう答えないので、クリエイターに渡さない
+ */
+export const TOOL_CALL_MARKUP = /<\/?(?:antml:)?(?:invoke|function_calls|parameter)\b|antml:/;
+/** 答えが道具の呼び出しの形だったときに呼び直す回数の上限と、呼び直しで質問の後に足す文（testing.md 6.1） */
+export const MARKUP_RETRIES = 2;
+export const MARKUP_RETRY_NOTE = '答えの文だけを書いてください。道具は使えません。';
+/** 呼び出しが失敗した（誤りの結果、空の答え、例外）ときに呼び直す回数の上限（testing.md 6.1） */
+export const CALL_RETRIES = 2;
+/** 利用枠の上限のエラーの文（agent-sdk-eval.md）。ユーザー役でもクリエイターでも、当たったら呼び直さずに止める（outer-run.mjs も使う） */
+export const LIMIT_PATTERN = /hit your (session|usage|weekly)? ?limit|usage limit|rate limit|limit reached|resets at|quota/i;
 
 /** 話し方 hurry のときだけ足す決まり。急ぐ合図の後の進め方の問いに、ユーザー役がどれを選ぶかを決めておく（以後の流れを測るため） */
 export const HURRY_CHOICE_RULE = '「このまま続ける」「残りを手早く聞く」「ここでやめて後で続ける」のような、進め方を選ぶ質問が出たら、「残りを手早く聞く」を選ぶ。急いでいても、聞かれたことには答える。';
@@ -174,8 +191,53 @@ export async function queryOnce({ query, system, prompt, model = USER_ROLE_MODEL
 }
 
 /**
+ * ユーザー役の答えを 1 つ得る。
+ * - 呼び出しが失敗した（誤りの結果、空の答え、例外）ら、CALL_RETRIES 回まで呼び直す。それでも失敗したら投げる（code が call_failed）。
+ *   失敗の文が利用枠の上限（LIMIT_PATTERN）に当たるときは、呼び直さずに投げる（code が usage_limit）。
+ * - 答えが道具の呼び出しの形（TOOL_CALL_MARKUP）なら、質問の後に MARKUP_RETRY_NOTE を足して、MARKUP_RETRIES 回まで呼び直す。
+ *   それでも直らなければ、試験の仕組みの失敗として投げる（code が tool_markup。クリエイターに渡さない）。
+ * 投げる Error の cost は、それまでの呼び出しの費用。
+ * @returns {Promise<{ text: string, cost: number, retries: number, callRetries: number }>} retries は道具の呼び出しの形での呼び直しの回数、
+ *   callRetries は呼び出しの失敗での呼び直しの回数
+ */
+export async function answerOnce({ prompt, ...rest }) {
+  let cost = 0;
+  let retries = 0;
+  let callRetries = 0;
+  for (;;) {
+    let r;
+    try {
+      r = await queryOnce({ ...rest, prompt: retries ? `${prompt}\n${MARKUP_RETRY_NOTE}` : prompt });
+    } catch (error) {
+      r = { text: '', cost: 0, subtype: 'exception', isError: true, message: error?.message ?? String(error) };
+    }
+    cost += r.cost;
+    if (r.isError || r.text === '') {
+      const detail = String(r.message ?? r.text ?? '');
+      const limited = LIMIT_PATTERN.test(detail);
+      if (!limited && callRetries < CALL_RETRIES) {
+        callRetries += 1;
+        continue;
+      }
+      throw Object.assign(
+        new Error(`ユーザー役の呼び出しに失敗しました（${r.subtype}${callRetries ? `。${callRetries + 1} 回続けて` : ''}）${detail ? `：${detail.slice(0, 200)}` : ''}`),
+        { code: limited ? 'usage_limit' : 'call_failed', cost },
+      );
+    }
+    if (!TOOL_CALL_MARKUP.test(r.text)) return { text: r.text, cost, retries, callRetries };
+    if (retries >= MARKUP_RETRIES) {
+      throw Object.assign(
+        new Error(`ユーザー役の答えが、${retries + 1} 回続けて道具の呼び出しの形でした（試験の仕組みの失敗。クリエイターには渡していません）：${r.text.slice(0, 200)}`),
+        { code: 'tool_markup', cost },
+      );
+    }
+    retries += 1;
+  }
+}
+
+/**
  * ユーザー役に 1 つ質問する（履歴は呼ぶ側が渡す）。
- * @returns {Promise<{ text: string, cost: number }>}
+ * @returns {Promise<{ text: string, cost: number, retries: number, callRetries: number }>} retries と callRetries は answerOnce と同じ
  */
 export async function askUserRole(persona, question, choices, { history = [], notes = '', styleName = 'normal', query, model = USER_ROLE_MODEL, home, cwd, envExtra, base } = {}) {
   const system = buildSystemPrompt(persona, { styleName });
@@ -184,11 +246,7 @@ export async function askUserRole(persona, question, choices, { history = [], no
   const useHome = home ?? fs.mkdtempSync(path.join(os.tmpdir(), 'user-role-home-'));
   const useCwd = cwd ?? fs.mkdtempSync(path.join(os.tmpdir(), 'user-role-cwd-'));
   try {
-    const r = await queryOnce({ query, system, prompt, model, home: useHome, cwd: useCwd, envExtra, base });
-    if (r.isError || r.text === '') {
-      throw new Error(`ユーザー役の呼び出しに失敗しました（${r.subtype}）${r.text ? `：${r.text.slice(0, 200)}` : ''}`);
-    }
-    return { text: r.text, cost: r.cost };
+    return await answerOnce({ query, system, prompt, model, home: useHome, cwd: useCwd, envExtra, base });
   } finally {
     if (ownHome) fs.rmSync(useHome, { recursive: true, force: true });
     if (cwd === undefined) fs.rmSync(useCwd, { recursive: true, force: true });
@@ -223,9 +281,12 @@ export function createUserRole({ persona, styleName = 'normal', query, model = U
     const system = buildSystemPrompt(persona, { styleName });
     const noteText = joinNotes(notes);
     const prompt = buildUserPrompt({ question, choices, history, notes: noteText });
-    const r = await queryOnce({ query, system, prompt, model, home, cwd: workCwd, envExtra, base });
-    if (r.isError || r.text === '') {
-      throw new Error(`ユーザー役の呼び出しに失敗しました（${r.subtype}）${r.text ? `：${r.text.slice(0, 200)}` : ''}`);
+    let r;
+    try {
+      r = await answerOnce({ query, system, prompt, model, home, cwd: workCwd, envExtra, base });
+    } catch (error) {
+      cost += error.cost ?? 0;
+      throw error;
     }
     cost += r.cost;
     const index = answers.length;
@@ -238,7 +299,7 @@ export function createUserRole({ persona, styleName = 'normal', query, model = U
       signals.push(signal);
     }
     history.push({ ...(noteText ? { notes: noteText } : {}), question, answer: text });
-    const entry = { index, via, question, ...(noteText ? { notes: noteText } : {}), choices: normalizeChoices(choices), answer: text, rawAnswer: r.text, cost: r.cost, signal: signal !== null, ...meta };
+    const entry = { index, via, question, ...(noteText ? { notes: noteText } : {}), choices: normalizeChoices(choices), answer: text, rawAnswer: r.text, cost: r.cost, signal: signal !== null, ...(r.retries ? { markupRetries: r.retries } : {}), ...(r.callRetries ? { callRetries: r.callRetries } : {}), ...meta };
     answers.push(entry);
     return entry;
   }

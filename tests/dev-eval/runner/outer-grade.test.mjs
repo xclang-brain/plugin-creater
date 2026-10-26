@@ -19,6 +19,7 @@ import {
   gradeModels,
   gradeNoGenerationBeforeApproval,
   gradeOuter,
+  gradeScreenUrlShown,
   knowledgeTrace,
   normalizeModelId,
   normalizeQuote,
@@ -59,8 +60,17 @@ function script() {
       toolEvents.push({ seq: (seq += 1), type: 'tool.call', callId, tool: 'progress', args });
       toolEvents.push({ seq: (seq += 1), type: 'tool.result', callId, tool: 'progress', isError, result: isError ? '断った' : '記録しました' });
     },
+    /** 画面を開くツール（open）の成功した呼び出しと、返り値の URL をチャットに書いた文（REQ-043） */
+    open(url = SCREEN_URL) {
+      callId += 1;
+      toolEvents.push({ seq: (seq += 1), type: 'tool.call', callId, tool: 'open', args: {} });
+      toolEvents.push({ seq: (seq += 1), type: 'tool.result', callId, tool: 'open', isError: false, result: `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${url}` });
+      items.push({ seq: (seq += 1), kind: 'creator.text', text: `決まったことは plugin-creator の画面で見られます：${url}` });
+    },
   };
 }
+
+const SCREEN_URL = 'http://127.0.0.1:41234/?k=abcDEF123_-xyz';
 
 const allItemsState = (overrides = {}) => ({ stage: 'confirm', rebuild: false, items: Object.fromEntries(ITEM_KEYS.map((k) => [k, { status: 'asked' }])), ...overrides });
 
@@ -312,6 +322,7 @@ test('REQ-039 生成プラグインのファイルを読む：.git・tests/resul
 /** 全部の観点に合格する会話と生成物 */
 function passingRun() {
   const s = script();
+  s.open();
   s.use('Write', { file_path: '/w/.plugin-creator-work/draft/task.json', content: '{}' });
   s.answer('成果物は？ ファイルの名前を教えてください', '成果物は weekly_report.md です', { via: 'text' });
   s.progress({ items: ITEM_NAMES.map((item) => ({ item, status: '聞いた', quote: 'weekly_report.md' })) });
@@ -393,7 +404,7 @@ test('REQ-015 開発者が答えたとき（testing.md 6.7）：ナレッジの�
   const persona = { id: 'human', title: '開発者が答える', experience: 'done', request: '作って', profile: '', files: [], knowledge: [], styles: { normal: { label: '開発者', instruction: '' } } };
   const args = { persona, personaFiles: [], items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: goodFiles(), stages: { stage1: { ok: true }, stage2: { ok: true } }, inner: null, userSignals: [], model: 'claude-opus-5-5' };
   const human = gradeOuter({ ...args, answerer: 'human' });
-  assert.deepEqual(human.grades.map((g) => g.id), ['one-plugin-generated', 'stage1', 'stage2', 'all-items-heard', 'no-generation-before-approval']);
+  assert.deepEqual(human.grades.map((g) => g.id), ['one-plugin-generated', 'stage1', 'stage2', 'screen-url-shown', 'all-items-heard', 'no-generation-before-approval']);
   assert.ok(human.grades.every((g) => g.ok), JSON.stringify(human.grades));
   assert.deepEqual(human.trace, []);
   assert.deepEqual(human.faults, []);
@@ -499,6 +510,96 @@ test('REQ-015 記録する数は、採点の合否に入らない：数が多く
   assert.equal(noisy.score, base.score);
   assert.deepEqual(noisy.verdict, base.verdict);
   assert.ok(base.counts.questions.total >= 0 && base.counts.recordRefusals.total === 0);
+});
+
+test('REQ-015 記録する数：英語の覚え書きのようなチャットの文（日本語の字を含まない文、内部の番号だけの文）を数える。合否には入れない', () => {
+  const items = [
+    { seq: 1, kind: 'creator.text', text: 'Need the carried knowledge list from state.json.' },
+    { seq: 2, kind: 'creator.text', text: '画面の URL は http://127.0.0.1:1/?k=x です。' },
+    { seq: 3, kind: 'creator.text', text: 'K-25 next.' },
+    { seq: 4, kind: 'creator.text', text: '   ' },
+    { seq: 5, kind: 'creator.question', question: 'Which file?' },
+    { seq: 6, kind: 'creator.text', text: 'カタカナだけ：OK' },
+    { seq: 7, kind: 'user.answer', answer: 'OK' },
+  ];
+  const c = countRecorded({ items, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(c.count, 2, '質問・ユーザーの答え・空の文は数えない');
+  assert.deepEqual(c.samples, [{ seq: 1, text: 'Need the carried knowledge list from state.json.' }, { seq: 3, text: 'K-25 next.' }]);
+  const many = Array.from({ length: 8 }, (_, i) => ({ seq: i + 1, kind: 'creator.text', text: `Note ${i} ${'x'.repeat(100)}` }));
+  const m = countRecorded({ items: many, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(m.count, 8);
+  assert.equal(m.samples.length, 5);
+  assert.equal(m.samples[0].text.length, 80);
+  assert.deepEqual(countRecorded({ items: [], toolEvents: [], state: null }).nonJapaneseTexts, { count: 0, samples: [] });
+});
+
+test('REQ-015 記録する数：日本語が混ざった英語の覚え書きも数える。URL だけ・コードだけの文と、日本語の文の中のファイル名の並びは数えない', () => {
+  const counted = [
+    'Next: いつもと違うとき, including K-25 in different form.', // 英単語が3つ以上続く（外側の EVAL〔改善〕1回目の [345]）
+    'Ask "ほかにありますか" first.', // 引用の中の日本語を除くと英語だけ（同じく [427]）
+    '直しました。\nNow run tests.', // 日本語の文の後の英語の行
+    'Passed. Commit.',
+  ];
+  const skipped = [
+    'http://127.0.0.1:41234/?k=abcDEF123_-xyz',
+    '```\nnpm test --prefix tests\n```',
+    '`git -C market log --oneline`',
+    '直すファイル：main.c, sensor_avg.c, sensor_avg.h, dbg_log.h, Makefile.target を見ます。',
+    'Copilot CLI を起動し直してください。戻すときは `git revert HEAD` です。',
+    '画面：http://127.0.0.1:1/?k=x を開いてください。',
+    '0.2.0',
+  ];
+  const items = [...counted, ...skipped].map((text, n) => ({ seq: n + 1, kind: 'creator.text', text }));
+  const c = countRecorded({ items, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(c.count, counted.length, JSON.stringify(c.samples));
+  assert.deepEqual(c.samples.map((x) => x.seq), counted.map((_, n) => n + 1));
+});
+
+test('REQ-043 画面の URL：画面を開くツールの返り値の URL が、最初の問いより前のチャットの文にあれば合格', () => {
+  const URL = 'http://127.0.0.1:37889/?k=CYfGZLjd7c7BOkfTZOh38tH9n5ZjIdl_';
+  const opened = (seq, isError = false, result = `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${URL}`) => [
+    { seq, type: 'tool.call', callId: seq, tool: 'open', args: {} },
+    { seq: seq + 0.5, type: 'tool.result', callId: seq, tool: 'open', isError, result },
+  ];
+  const question = (seq) => ({ seq, kind: 'creator.question', header: 'ファイル', question: 'ファイルはどこにありますか？', options: [] });
+  const ok = gradeScreenUrlShown({ items: [{ seq: 1, kind: 'user.request', text: '頼み' }, { seq: 3, kind: 'creator.text', text: `plugin-creator の画面：${URL}。決まったことはここで見られます。` }, question(4)], toolEvents: opened(2) });
+  assert.equal(ok.ok, true, ok.detail);
+  // 文章の問いが最初の問いでも、その前の文で見る
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: `画面：${URL}` }, { seq: 4, kind: 'creator.question-text', text: 'ファイルはどこですか？' }], toolEvents: opened(2) }).ok, true);
+  // URL がツールの返り値にしかない（チャットに書いていない）。外側の EVAL（改善）1回目と同じ
+  const hidden = gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: 'Need the carried knowledge list.' }, question(4), { seq: 6, kind: 'creator.text', text: `画面：${URL}` }], toolEvents: opened(2) });
+  assert.equal(hidden.ok, false);
+  assert.match(hidden.detail, /ツールの返り値はユーザーに見えない/);
+  // 合言葉を落とした URL は、開けないので数えない
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: '画面：http://127.0.0.1:37889/' }, question(4)], toolEvents: opened(2) }).ok, false);
+  // 画面を開くツールが、最初の問いより後・失敗だけ・呼んでいない
+  assert.match(gradeScreenUrlShown({ items: [question(1), { seq: 4, kind: 'creator.text', text: URL }], toolEvents: opened(2) }).detail, /最初の問いより前に、画面を開くツール/);
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: URL }, question(4)], toolEvents: opened(2, true, 'open に失敗しました') }).ok, false);
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: URL }, question(4)], toolEvents: [] }).ok, false);
+  // 失敗の後に成功した呼び出しの URL で見る。返り値に URL がなければ落ちる
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 5, kind: 'creator.text', text: `画面：${URL}` }, question(6)], toolEvents: [...opened(2, true, 'だめ'), ...opened(3)] }).ok, true);
+  assert.match(gradeScreenUrlShown({ items: [question(6)], toolEvents: opened(2, false, '用意ができました') }).detail, /URL がない/);
+});
+
+test('REQ-043 作る流れの採点（gradeOuter）も、腕 with では画面の URL を見る。示さないと、思考力の高いモデルの合格と会話例の候補が落ちる。対照とプラグインなしの腕には入れない', () => {
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const files = goodFiles();
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const run = (s, o = {}) => gradeOuter({ persona, personaFiles, items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages: { stage1: { ok: true }, stage2: { ok: true } }, inner: null, userSignals: [], model: 'claude-opus-5-5', ...o });
+  const ok = run(passingRun());
+  assert.deepEqual(ok.grades.filter((g) => g.id === 'screen-url-shown').map((g) => [g.ok, g.req]), [[true, 'REQ-043']]);
+  // URL を、画面を開くツールの返り値にしか出していない（チャットに書いていない）
+  const hidden = passingRun();
+  hidden.items.splice(hidden.items.findIndex((i) => i.kind === 'creator.text'), 1);
+  const bad = run(hidden);
+  assert.deepEqual(bad.verdict.failed, ['screen-url-shown']);
+  assert.equal(bad.exampleCandidate, false);
+  // Haiku のクリエイターの合格は、2 点のまま
+  assert.equal(run(hidden, { model: 'claude-haiku-5-5' }).verdict.ok, true);
+  // 画面を開くツールは腕 with にだけあるので、対照とプラグインなしの腕には入れない
+  for (const arm of ['control', 'without']) assert.ok(!run(hidden, { arm }).grades.some((g) => g.id === 'screen-url-shown'), arm);
 });
 
 // ---- モデル（REQ-045・REQ-046。X2-09 の(1)） ----------------------------------------------------------------

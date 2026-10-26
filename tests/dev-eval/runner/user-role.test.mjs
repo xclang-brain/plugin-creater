@@ -13,6 +13,11 @@ import { createFakeSdk } from './outer-fake-sdk.mjs';
 import {
   HISTORY_LIMITS,
   INSTRUCTION_WORDS,
+  CALL_RETRIES,
+  LIMIT_PATTERN,
+  MARKUP_RETRIES,
+  MARKUP_RETRY_NOTE,
+  TOOL_CALL_MARKUP,
   USER_ROLE_MODEL,
   USER_RULES,
   askUserRole,
@@ -112,6 +117,33 @@ test('REQ-015 askUserRole は Agent SDK を道具なし・1手番・設定なし
 test('REQ-015 askUserRole は呼び出しが失敗したら、平易な日本語の Error を投げる', async () => {
   const sdk = createFakeSdk({ userRole: () => new Error('limit') });
   await assert.rejects(() => askUserRole(weekly, 'q', [], { query: sdk.query }), /ユーザー役の呼び出しに失敗しました/);
+});
+
+test(`REQ-015 呼び出しの失敗（誤りの結果・空の答え・例外）は ${CALL_RETRIES} 回まで呼び直す。利用枠の上限なら呼び直さずに usage_limit で投げる`, async () => {
+  // 失敗の後に直れば、その答えを返し、呼び直しの回数を返す（道具の呼び出しの形の呼び直しとは別に数える）
+  let n = 0;
+  const flaky = createFakeSdk({ userRole: () => { n += 1; return n === 1 ? new Error('API Error: 529 Overloaded') : n === 2 ? '' : '特に決まっていません'; } });
+  const ok = await askUserRole(weekly, 'q', [], { query: flaky.query });
+  assert.deepEqual([ok.text, ok.callRetries, ok.retries, n], ['特に決まっていません', 2, 0, 3]);
+  // query() が例外を投げても、呼び直す
+  let m = 0;
+  const throwing = (params) => { m += 1; if (m === 1) throw new Error('process exited with code 1'); return flaky.query(params); };
+  assert.equal((await askUserRole(weekly, 'q', [], { query: throwing })).text, '特に決まっていません');
+  // 続けて失敗すれば call_failed
+  let k = 0;
+  const failing = createFakeSdk({ userRole: () => { k += 1; return new Error('API Error: 500'); } });
+  await assert.rejects(() => askUserRole(weekly, 'q', [], { query: failing.query }), (error) => {
+    assert.equal(error.code, 'call_failed');
+    assert.match(error.message, /3 回続けて/);
+    return true;
+  });
+  assert.equal(k, CALL_RETRIES + 1);
+  // 利用枠の上限は、呼び直さない
+  let l = 0;
+  const limited = createFakeSdk({ userRole: () => { l += 1; return new Error("You've hit your session limit · resets at 3pm"); } });
+  await assert.rejects(() => askUserRole(weekly, 'q', [], { query: limited.query }), (error) => error.code === 'usage_limit');
+  assert.equal(l, 1);
+  assert.ok(LIMIT_PATTERN.test('Claude AI usage limit reached'));
 });
 
 test('REQ-015 createUserRole は答えとやり取りを記録し、次の質問に履歴を渡す', async () => {
@@ -240,6 +272,69 @@ test('REQ-017 決まりの確かめ：足す中身（例外・本当のやり方
   assert.equal(withDetail.length, weekly.knowledge.filter((k) => k.from === 'file' && k.file.detail).length);
   assert.ok(withDetail.every((b) => b.includes('「このとおり」を選ぶ')));
   assert.ok(blocks.length > withDetail.length, '足す中身のない決まり（このとおり・たまたま）には付かない');
+});
+
+// ---- 道具の呼び出しの形の答え（外側の EVAL（改善）1回目の診断 1.4、testing.md 6.1） --------------------------------
+
+/** 道具の呼び出しの形の文（試験の文字そのものに書くと紛らわしいので、組み立てる） */
+const LT = '<';
+const markupAnswer = (prefix = '') => `${LT}${prefix}invoke name="Read">\n${LT}${prefix}parameter name="file_path">kx200-firmware/.github/skills/cross-compile/scripts/kx-build.sh${LT}/${prefix}parameter>\n${LT}/${prefix}invoke>`;
+
+test('REQ-015 ユーザー役への指示に、ファイルを開いて見る道具はないことと、知っていることの範囲で答えることを書く', () => {
+  const system = buildSystemPrompt(weekly);
+  const rule = 'ファイルを開いて見る道具はない。ファイルの中身は、知っていることの範囲で答える。';
+  assert.ok(system.includes(rule));
+  assert.equal(INSTRUCTION_WORDS.test(rule), false, 'ユーザー役がこの文を口にしても、指示の言葉の見張りには当たらない（ふつうの言い方）');
+});
+
+test('REQ-015 道具の呼び出しの形の見分け：invoke・function_calls・parameter の印と antml: に当たり、ふつうの答えには当たらない', () => {
+  for (const text of [markupAnswer(), markupAnswer('antml:'), `${LT}function_calls>`, `${LT}parameter name="x">1`, 'antml:invoke']) {
+    assert.ok(TOOL_CALL_MARKUP.test(text), text);
+  }
+  for (const text of ['このとおり。-O2 でビルドしています。', 'kx-build.sh の --src と --name を渡します', '引数（parameter）は3つです', '<tmp> に送ります']) {
+    assert.equal(TOOL_CALL_MARKUP.test(text), false, text);
+  }
+});
+
+test('REQ-015 答えが道具の呼び出しの形なら、「答えの文だけを書いてください。道具は使えません。」を足して呼び直し、直った答えを使う', async () => {
+  const prompts = [];
+  const sdk = createFakeSdk({ userRole: ({ prompt }) => { prompts.push(prompt); return prompts.length === 1 ? markupAnswer() : 'このとおり。0 以外はビルドの失敗です。'; } });
+  const home = tmp();
+  const role = createUserRole({ persona: weekly, query: sdk.query, home });
+  const entry = await role.answer('終了コードの決まりですか？', [], 'AskUserQuestion');
+  assert.equal(entry.answer, 'このとおり。0 以外はビルドの失敗です。');
+  assert.equal(entry.markupRetries, 1);
+  assert.equal(prompts.length, 2);
+  assert.ok(!prompts[0].includes(MARKUP_RETRY_NOTE));
+  assert.ok(prompts[1].endsWith(MARKUP_RETRY_NOTE));
+  // 履歴には直った答えだけが残り、呼び直しの費用も数える
+  assert.deepEqual(role.history.map((h) => h.answer), ['このとおり。0 以外はビルドの失敗です。']);
+  assert.ok(Math.abs(role.cost - 0.002) < 1e-9);
+  // 直らなかった問いは、askUserRole（ユーザー役の試験）でも同じに呼び直す
+  let n = 0;
+  const sdk2 = createFakeSdk({ userRole: () => ((n += 1) <= 2 ? markupAnswer('antml:') : '特に決まっていません') });
+  const r = await askUserRole(weekly, 'q', [], { query: sdk2.query });
+  assert.equal(r.text, '特に決まっていません');
+  assert.equal(n, 3);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test(`REQ-015 呼び直しても道具の呼び出しの形のままなら（${MARKUP_RETRIES} 回まで）、試験の仕組みの失敗として投げ、答えを履歴に入れない`, async () => {
+  let calls = 0;
+  const sdk = createFakeSdk({ userRole: () => { calls += 1; return markupAnswer(); } });
+  const home = tmp();
+  const role = createUserRole({ persona: weekly, query: sdk.query, home });
+  await assert.rejects(() => role.answer('q', [], 'AskUserQuestion'), (error) => {
+    assert.equal(error.code, 'tool_markup');
+    assert.match(error.message, /3 回続けて道具の呼び出しの形でした（試験の仕組みの失敗。クリエイターには渡していません）/);
+    return true;
+  });
+  assert.equal(calls, MARKUP_RETRIES + 1);
+  assert.equal(role.answerCount, 0);
+  assert.equal(role.history.length, 0);
+  assert.ok(Math.abs(role.cost - 0.003) < 1e-9, '失敗した呼び出しの費用も数える');
+  await assert.rejects(() => askUserRole(weekly, 'q', [], { query: sdk.query }), /道具の呼び出しの形でした/);
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 function USER_ROLE_RULES_TEXT() {

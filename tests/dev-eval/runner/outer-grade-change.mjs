@@ -4,6 +4,8 @@
 // 採点の観点（grades の id → 要件）。すべて必須（BLUEPRINT D36）
 //   change-skill-used          記録のスキルに change-plugin がある。make-plugin を始めていない（REQ-052）
 //   no-new-folder              新しいプラグインのフォルダができていない（REQ-052・059）
+//   screen-url-shown           画面を開くツール（open）の返り値の URL が、最初の問いより前のチャットの文にある（REQ-043。outer-grade.mjs の
+//                              gradeScreenUrlShown）
 //   unchanged-before-approval  承認（段階を「生成」に進める記録）より前のスナップショットで、HEAD が初めのまま、直すフォルダの status が空。
 //                              承認の抜き書きが、直前の質問のツールへの答えにある（REQ-057）
 //   confirm-contents           確認が受け付けられてから承認の問いまでの問いと前の文に、新しい版・土台・擬似の機器・課題の言葉。確認の rebuild の
@@ -16,17 +18,22 @@
 //   rule-replaced              expect.replaced の番号が knowledge-removed.json のほかのどのファイルにもなく、その replacedBy が knowledge.json にあり、
 //                              元の番号の最大より大きい（REQ-054・058）
 //   ids-kept                   引き継いだ番号の中身が前と同じ。新しい番号はすべて元の最大より大きい。外した番号を使っていない（REQ-058）
-//   added-rule-confirmed       作った後に書き足された決まり（role が repo のファイルのナレッジ）が、それだけを確かめる問いに出て、決まりの一覧に入った
-//                              （REQ-054「1件ずつ確認の質問として示される」）。問いそのもの（見出し・問い・選択肢）に、その決まりの文字（file.evidence）が
-//                              あるものを数える。決まりの一覧の問い（元の番号がすべて出る問い）と、確認より後の問いは数えない
+//   added-rule-confirmed       作った後に書き足された決まり（role が repo のファイルのナレッジ）が、決まりの確かめの問いに出て、決まりの一覧に入った
+//                              （REQ-054「その決まりを『〜という決まりですか？』と1件ずつ確かめる」「1件ずつ確認の質問として示される」）。問いそのもの
+//                              （見出し・問い・選択肢）に、その決まりの文字（file.evidence）があり、決まりの確かめの問い（選択肢の名前に4つの答えがそろうか、
+//                              問いに「という決まりですか」がある）を数える。決まりの一覧の問い（元の番号がすべて出る問い）と、確認より後の問いは数えない
 //   embedded:<ナレッジ>        決まりが組み込まれた（markers.embedded にすべて当たる。REQ-055・054）
 //   not-embedded:<ナレッジ>    「違う」「たまたま」の決まりが入っていない（markers.excluded に1つも当たらない。REQ-055）
 //                              どちらも、初めのコミットから HEAD までの差分の足した行で見る。ただし、role が repo のファイルの決まり（作る前から
-//                              直すプラグインにある）は、直した後のファイルで見る（足した行だけで見ると、そのまま残したときに落ちるため）
+//                              直すプラグインにある）は、直した後のファイルで見る（足した行だけで見ると、そのまま残したときに落ちるため）。
+//                              role が skill のファイル（ユーザーのスキル）の決まりの embedded は、ルールのスキル（入口のスキルを除く skills/*/ の
+//                              SKILL.md と references/）の足した行だけで見る（REQ-055「ルールのスキルに入っている」。エージェントの定義や試験にだけ
+//                              書いても数えない）。not-embedded は、ほかの決まりと同じく足した行のすべて（決まりの一覧も含む）で見る（エージェントの
+//                              定義や決まりの一覧に入っても、その書き方で作業されるため。REQ-055 の受け入れ基準3）
 //   skill-names-differ         直したプラグインの skills/*/SKILL.md の name が、ユーザーのスキルの name と重ならない（REQ-055）
 //   user-skills-unchanged      ユーザーのスキルのファイルが、前と後で同じ（REQ-055）
 //   assets-reused              role が skill のファイルのうち SKILL.md でないもの（スクリプトなど）と同じ中身のファイルが、skills/*/scripts/ にある（REQ-055・062）
-//   unchanged-items            記録に「変えないので聞かない」の項目があり、画面の3項目がそれ（REQ-056）
+//   unchanged-items            記録に「変えないので聞かない」の項目があり、画面の項目のうち expect.screenUnchanged（省くと3つすべて）がそれ（REQ-056）
 //   no-screen-questions        expect.screenAsked に当たる問いがない（REQ-056）
 //   last-time-asked            expect.lastTimeAsked に当たる問いがある（REQ-056）
 //   stage1 / stage2            直したプラグインの tests/run.py --json（REQ-059・061・062）
@@ -41,11 +48,13 @@
 //                              （版の形の数は、元の版や IP アドレスの一部にも当たるため）。記録に確認の版がなければ、正規表現のまま見る
 //   main-model / worker-model  作る流れと同じ（outer-grade.mjs の gradeModels。REQ-045・046）
 //   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ）
+// 英語の覚え書きのようなチャットの文の数は、作る流れと同じく counts（countRecorded の nonJapaneseTexts。outer-grade.mjs の isEnglishNote）に出す。合否には入れない
 
 import { compareVersions } from '../../../com.github.copilot/extensions/plugin-creator/change.mjs';
 import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
+import { CONFIRM_ANSWERS } from '../personas/validate.mjs';
 import {
-  countRecorded, exchangesOf, gradeModels, INNER_PASS_SCORE, knowledgeTrace, matchesAll, pairToolEvents, quoteFound, userRoleFaults,
+  countRecorded, exchangesOf, gradeModels, gradeScreenUrlShown, INNER_PASS_SCORE, knowledgeTrace, matchesAll, pairToolEvents, quoteFound, userRoleFaults,
 } from './outer-grade.mjs';
 
 /** 画面の項目（REQ-056：画面を変えない頼みでは、聞かない） */
@@ -57,6 +66,9 @@ const REMOVED_LIST = 'tests/knowledge-removed.json';
 const SANDBOX_LEFTOVER = '.claude/.cc-writes/';
 const WORK_DIR = '.plugin-creator-work/';
 const TAG_BASE = 'plugin-creator-generated';
+/** スキルの SKILL.md と、ルールのスキルとして見るファイル（SKILL.md と references/ の下。scripts/ は流用した資産なので入れない） */
+const SKILL_MD = /^skills\/([^/]+)\/SKILL\.md$/;
+const RULE_SKILL_FILE = /^skills\/([^/]+)\/(?:SKILL\.md$|references\/)/;
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** 版の形の数（IP アドレスの一部には当たらない。FORMAT.md 2.5 の expect.explained と同じ形）。確認の版が記録にないときだけ使う */
@@ -107,6 +119,16 @@ export function questionUnits(items) {
 const questionText = (u) => `${u.header} ${u.question} ${(u.options ?? []).map((o) => `${o.label ?? ''} ${o.description ?? ''}`).join(' ')}`;
 /** 問いと、その前の文 */
 const unitText = (u) => `${u.notes}\n${questionText(u)}`;
+
+/** 選択肢の名前（「（」の前）に、決まりの確かめの4つの答えがそろう（hearing.md 6.1） */
+const isConfirmQuestion = (u) => {
+  const labels = new Set((u.options ?? []).map((o) => String(o.label ?? '').replace(/[（(].*$/s, '').trim()));
+  return CONFIRM_ANSWERS.every((a) => labels.has(a));
+};
+/** 決まりの確かめの文（REQ-054・055、make-plugin の rules.md「問いは『〜という決まりですか？』のままにする」） */
+const ASKS_RULE = /という決まりですか/;
+/** 決まりの確かめの問い：選択肢の名前に4つの答えがそろうか、問いに「という決まりですか」がある（文章の問いも数える） */
+const confirmsRule = (u) => isConfirmQuestion(u) || ASKS_RULE.test(`${u.header}\n${u.question}`);
 
 /** 承認（段階を「生成」に進める、成功した progress）の呼び出しと結果 */
 function approvalOf(toolEvents) {
@@ -279,8 +301,11 @@ function gradeIdsKept({ persona, repo }) {
 }
 
 /**
- * 作った後に書き足された決まり（role が repo のファイルのナレッジ）。それだけを確かめる問いがあり、rule・exception は一覧に入り、incidental・wrong は入らない。
- * 問いは、問いそのもの（見出し・問い・選択肢）に決まりの文字（file.evidence）があるもの（make-plugin の rules.md：問いに決まりの文を書く）。
+ * 作った後に書き足された決まり（role が repo のファイルのナレッジ）。決まりの確かめの問いがあり、rule・exception は一覧に入り、incidental・wrong は入らない。
+ * 問いは、問いそのもの（見出し・問い・選択肢）に決まりの文字（file.evidence）があるもの（make-plugin の rules.md：問いに決まりの文を書く）で、
+ * 決まりの確かめの問い（選択肢に4つの答えがそろうか、問いに「という決まりですか」がある。REQ-054「『〜という決まりですか？』と1件ずつ確かめる」）。
+ * まとめの問い（前の文や問いにいくつもの手順を並べ、「違うところはありますか」と聞く問い）は、決まりの文字があっても、その決まりを確かめたことにならない
+ * （外側の EVAL（改善）1回目の診断 2.2 の4）。
  * 決まりの一覧の問い（rules-list-once と同じく、問いと前の文に元の番号がすべて出る問い）は、元の決まりと一緒に示しただけなので数えない。
  * markers.asked は、元の決まりの文字（例：printf）にも当たるので使わない
  */
@@ -289,18 +314,18 @@ function gradeAddedRules({ persona, units, repo, repoPlaces, confirm }) {
   if (added.length === 0) return null;
   const ids = (repo.baseline.knowledgeBefore ?? []).map((k) => k.id);
   const listsRules = (u) => ids.length >= 2 && countIds(ids, unitText(u)) === ids.length;
-  const single = beforeConfirm(units, confirm).filter((u) => !listsRules(u));
+  const single = beforeConfirm(units, confirm).filter((u) => !listsRules(u) && confirmsRule(u));
   const problems = [];
   for (const k of added) {
     const evidence = new RegExp(escapeRegex(k.file.evidence), 'i');
     const asked = single.some((u) => evidence.test(questionText(u)));
-    if (!asked) problems.push(`${k.id}：書き足された決まり（${k.file.evidence}）だけを確かめる問いがない（問いそのものに決まりの文字がある問い。決まりの一覧の問いと、確認より後の問いは数えない）`);
+    if (!asked) problems.push(`${k.id}：書き足された決まり（${k.file.evidence}）を確かめる問いがない（問いそのものに決まりの文字がある、決まりの確かめの問い〔4つの答えの選択肢か、「という決まりですか」〕。決まりの一覧の問い、まとめの問い、確認より後の問いは数えない）`);
     const patterns = k.markers?.embedded?.length ? k.markers.embedded : [escapeRegex(k.file.evidence)];
     const inList = (repo.knowledgeAfter ?? []).some((row) => matchesAll(patterns, String(row?.text ?? '')));
     const shouldBe = ['rule', 'exception'].includes(k.file.kind);
     if (inList !== shouldBe) problems.push(`${k.id}：決まりの一覧に${shouldBe ? '入っていない' : '入っている'}`);
   }
-  return { ok: problems.length === 0, detail: problems.join(' / ') || `書き足された決まり ${added.length} 件を確かめ、答えのとおりに決まりの一覧に入れた` };
+  return { ok: problems.length === 0, detail: problems.join(' / ') || `書き足された決まり ${added.length} 件を決まりの確かめの問いで確かめ、答えのとおりに決まりの一覧に入れた` };
 }
 
 function gradeCommitScoped({ repo }) {
@@ -374,6 +399,16 @@ function gradeExplained({ persona, items, state }) {
   return { ok: missing.length === 0, detail: missing.length ? `コミットの後の文に当たらない：${missing.join('、')}` : `コミットの後の文に ${patterns.length} 件すべてが出た` };
 }
 
+/**
+ * 入口のスキルのフォルダの名前。本文に <プラグインの名前>_open があるスキル（1段目の standalone の検査と同じ見分け方）。
+ * 見つからなければ、プラグインの名前のフォルダ（testing.md 7章の確かめ B と同じ）
+ */
+function entrySkillDirs(files, pluginName) {
+  if (!pluginName) return new Set();
+  const found = files.filter((f) => f.text !== null && SKILL_MD.test(f.rel) && f.text.includes(`${pluginName}_open`)).map((f) => SKILL_MD.exec(f.rel)[1]);
+  return new Set(found.length ? found : [pluginName]);
+}
+
 // ---- 全体 -------------------------------------------------------------------------------------------------------
 
 /**
@@ -407,6 +442,8 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
   const make = skills.some((s) => /(^|:)make-plugin$/.test(s));
   add('change-skill-used', used && !make, `呼んだスキル：${list(skills) || 'なし'}${make ? '（make-plugin を始めた）' : ''}`, 'REQ-052');
   add('no-new-folder', repo.newPlugins.length === 0, repo.newPlugins.length ? `新しいプラグインのフォルダができた：${list(repo.newPlugins)}` : '', 'REQ-059');
+  const url = gradeScreenUrlShown({ items, toolEvents });
+  add('screen-url-shown', url.ok, url.detail, 'REQ-043');
 
   const before = gradeUnchangedBeforeApproval({ items, approval, units, baseline: repo.baseline });
   add('unchanged-before-approval', before.ok, before.detail, 'REQ-057');
@@ -438,19 +475,31 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
   };
   const finalFiles = repo.targetFiles.filter((f) => f.text !== null && usable(f));
   const finalScope = { embedded: join(finalFiles.filter((f) => !KNOWLEDGE_LISTS.has(f.rel))), excluded: join(finalFiles), task: '' };
+  // ユーザーのスキルの決まりが入ったかは、ルールのスキル（入口のスキルを除く）の足した行だけで見る（REQ-055「ルールのスキルに入っている」）。
+  // 入ってはいけない書き方は、足した行のすべてで見る（エージェントの定義や決まりの一覧に入っても、その書き方で作業されるため）
+  const entryDirs = entrySkillDirs(repo.targetFiles, repo.pluginNameAfter ?? repo.baseline.pluginName);
+  const inRuleSkill = (rel) => {
+    const m = RULE_SKILL_FILE.exec(rel);
+    return m !== null && !entryDirs.has(m[1]);
+  };
+  const ruleText = join(repo.added.filter((f) => usable(f) && inRuleSkill(f.rel)));
+  const ruleScope = { embedded: ruleText, excluded: addedScope.excluded, task: '' };
   const inRepoFile = (k) => k.from === 'file' && repoPlaces.has(k.file?.path);
+  const skillPlaces = new Set((persona.files ?? []).filter((f) => f.role === 'skill').map((f) => f.place));
+  const inUserSkill = (k) => k.from === 'file' && skillPlaces.has(k.file?.path);
   const traceOf = (knowledge, scope) => knowledgeTrace({ persona: { knowledge }, exchanges, scope });
   const traced = new Map([
-    ...traceOf(persona.knowledge.filter((k) => !inRepoFile(k)), addedScope),
+    ...traceOf(persona.knowledge.filter((k) => !inRepoFile(k) && !inUserSkill(k)), addedScope),
     ...traceOf(persona.knowledge.filter(inRepoFile), finalScope),
+    ...traceOf(persona.knowledge.filter(inUserSkill), ruleScope),
   ].map((t) => [t.id, t]));
   const trace = persona.knowledge.map((k) => traced.get(k.id));
-  const skillPlaces = new Set((persona.files ?? []).filter((f) => f.role === 'skill').map((f) => f.place));
+  const whereOf = (k) => (inRepoFile(k) ? '直した後のファイル' : inUserSkill(k) ? 'ルールのスキル（入口のスキルを除く SKILL.md と references/）の足した行' : '足した行');
   for (const k of persona.knowledge) {
     const t = traced.get(k.id);
-    const req = k.from === 'file' && skillPlaces.has(k.file?.path) ? 'REQ-055' : 'REQ-054';
-    if (t.embedded !== null) add(`embedded:${k.id}`, t.embedded, `${inRepoFile(k) ? '直した後のファイルに' : '足した行に'}決まりが入ったか`, req);
-    if (t.excludedHit !== null) add(`not-embedded:${k.id}`, !t.excludedHit, '入ってはいけない書き方が入っていない', req);
+    const req = inUserSkill(k) ? 'REQ-055' : 'REQ-054';
+    if (t.embedded !== null) add(`embedded:${k.id}`, t.embedded, `${whereOf(k)}に決まりが入ったか`, req);
+    if (t.excludedHit !== null) add(`not-embedded:${k.id}`, !t.excludedHit, `${inRepoFile(k) ? '直した後のファイル' : '足した行'}に、入ってはいけない書き方が入っていない`, req);
   }
 
   const userNames = new Set(repo.baseline.userSkillNames ?? []);
@@ -466,11 +515,16 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
 
   const itemStates = state?.items ?? {};
   const unchanged = Object.entries(itemStates).filter(([, v]) => v?.status === 'unchanged').map(([k]) => itemIndex.nameOf(k));
-  const screenAsked = SCREEN_ITEMS.filter((k) => itemStates[k]?.status !== 'unchanged').map((k) => itemIndex.nameOf(k));
+  // 変えないはずの画面の項目（模擬ユーザーの expect.screenUnchanged。記号か日本語の名前。省くと3つすべて）
+  const screenExpected = (expect.screenUnchanged ?? SCREEN_ITEMS).map((x) => ({ given: x, key: SCREEN_ITEMS.includes(x) ? x : itemIndex.keyOf(x) }));
+  const notScreen = screenExpected.filter((x) => !SCREEN_ITEMS.includes(x.key)).map((x) => x.given);
+  const screenAsked = screenExpected.filter((x) => SCREEN_ITEMS.includes(x.key) && itemStates[x.key]?.status !== 'unchanged').map((x) => itemIndex.nameOf(x.key));
   add(
     'unchanged-items',
-    unchanged.length > 0 && screenAsked.length === 0,
-    screenAsked.length ? `画面の項目が「変えないので聞かない」になっていない：${screenAsked.join('、')}` : `変えないので聞かない項目：${list(unchanged, 20) || 'なし'}`,
+    unchanged.length > 0 && screenAsked.length === 0 && notScreen.length === 0,
+    notScreen.length
+      ? `expect.screenUnchanged に画面の項目でないものがある：${notScreen.join('、')}`
+      : screenAsked.length ? `画面の項目が「変えないので聞かない」になっていない：${screenAsked.join('、')}` : `変えないので聞かない項目：${list(unchanged, 20) || 'なし'}`,
     'REQ-056',
   );
   if (expect.screenAsked) {
