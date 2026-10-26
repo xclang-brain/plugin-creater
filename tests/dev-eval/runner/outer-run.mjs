@@ -106,6 +106,21 @@ export function findGeneratedPlugins(workDir, depth = 3) {
   return found.sort();
 }
 
+/** 始める前から作業フォルダにあったプラグイン（作り直しで示した元のプラグイン）の記録。実行のフォルダに置き、続きから始めるときも使う */
+export const PREEXISTING_PLUGINS_FILE = 'preexisting-plugins.json';
+
+/**
+ * 始める前から作業フォルダにあったプラグインを、作業フォルダからの相対の場所で記録して返す。続きから始めるときは、記録を読む（なければ空）。
+ * 作り直しでは、示したファイルに元のプラグインが入るので、これを生成プラグインと取り違えないためである。
+ */
+export function preexistingPlugins(runDir, workDir, { resume = false } = {}) {
+  const file = path.join(runDir, PREEXISTING_PLUGINS_FILE);
+  if (resume) return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
+  const list = findGeneratedPlugins(workDir).map((d) => path.relative(workDir, d).split(path.sep).join('/'));
+  fs.writeFileSync(file, `${JSON.stringify(list, null, 2)}\n`);
+  return list;
+}
+
 // ---- 1・2段目 ----------------------------------------------------------------------------------------------
 
 /**
@@ -247,6 +262,8 @@ export async function runOuterOnce(o) {
   const dirs = runDirsOf(runDir);
   for (const d of [dirs.work, dirs.agentHome, dirs.copilotHome, dirs.userHome]) fs.mkdirSync(d, { recursive: true });
   if (!resume) placePersonaFiles(dirs.work, personaFiles);
+  const preexisting = preexistingPlugins(runDir, dirs.work, { resume: Boolean(resume) });
+  const generatedPlugins = () => findGeneratedPlugins(dirs.work).filter((d) => !preexisting.includes(path.relative(dirs.work, d).split(path.sep).join('/')));
   // 続きから始めるときのセッションの番号と、その記録（ここで探せなければ、何も動かさずに断る）
   const transcript = resume ? findSessionTranscript(dirs.agentHome, resume.sessionId) : null;
 
@@ -403,7 +420,7 @@ export async function runOuterOnce(o) {
     const readState = () => (toolkit ? toolkit.readState() : null);
     /** 生成プラグインができて手番が終わったら、会話は終わり。承認（段階「生成」）の記録がないまま作られたときは、その理由で終える（採点で落ちる） */
     const finishedReason = () => {
-      if (findGeneratedPlugins(dirs.work).length === 0) return null;
+      if (generatedPlugins().length === 0) return null;
       return arm === 'with' && readState()?.stage !== 'generate' ? 'generated_without_approval' : 'generated';
     };
 
@@ -491,7 +508,7 @@ export async function runOuterOnce(o) {
     userRole.setStatus?.({ phase: 'grading' });
 
     // ---- 生成プラグインの採点 ----
-    const plugins = findGeneratedPlugins(dirs.work);
+    const plugins = generatedPlugins();
     const pluginDir = plugins.length === 1 ? plugins[0] : null;
     let generatedFiles = null;
     let stages = null;

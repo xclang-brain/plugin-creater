@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, readConvertedAgentModel, runOuterOnce } from './outer-run.mjs';
+import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runOuterOnce } from './outer-run.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
@@ -63,6 +63,23 @@ test('REQ-037 作業フォルダに、模擬ユーザーの示すファイルが
   fs.writeFileSync(path.join(work, '.plugin-creator-work', 'x', 'plugin.json'), '{}');
   assert.deepEqual(findGeneratedPlugins(work), [path.join(work, 'out', 'weekly')]);
   fs.rmSync(work, { recursive: true, force: true });
+});
+
+test('REQ-032 作り直しで示した元のプラグインは、始める前からあったものとして記録し、続きから始めるときも同じ記録を読む', () => {
+  const runDir = tmp('preexisting');
+  const work = path.join(runDir, 'work');
+  fs.mkdirSync(path.join(work, 'repo', 'plugins', 'old'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'repo', 'plugins', 'old', 'plugin.json'), '{}');
+  assert.deepEqual(preexistingPlugins(runDir, work), ['repo/plugins/old']);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(runDir, PREEXISTING_PLUGINS_FILE), 'utf8')), ['repo/plugins/old']);
+  fs.mkdirSync(path.join(work, 'new-plugin'), { recursive: true });
+  fs.writeFileSync(path.join(work, 'new-plugin', 'plugin.json'), '{}');
+  // 続きから始めるときは、作業フォルダを探し直さず、記録を読む（生成プラグインを元のプラグインに数えない）
+  assert.deepEqual(preexistingPlugins(runDir, work, { resume: true }), ['repo/plugins/old']);
+  // 記録のない古い実行のフォルダでは、空とする
+  fs.rmSync(path.join(runDir, PREEXISTING_PLUGINS_FILE));
+  assert.deepEqual(preexistingPlugins(runDir, work, { resume: true }), []);
+  fs.rmSync(runDir, { recursive: true, force: true });
 });
 
 test('REQ-037 会話の全文の組み立て：クリエイターの発言（質問を含む）とユーザー役の答えが、順に全文で残る', () => {

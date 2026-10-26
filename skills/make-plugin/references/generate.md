@@ -27,7 +27,7 @@
 2. 課題の仮の入力のファイルを、生成前の確認で示した中身のまま、`.plugin-creator-work/parts/files/tests/eval/<課題の番号>/inputs/<名前>` に書く。
 3. `<作業フォルダ>/.plugin-creator-work/parts/manifest.json` を書く。形：`{ "plugin_name", "plugin_description", "entry_skill": { "name", "description" }, "workers": [{ "agent", "label", "extra_tools": [] }], "verifier": { "extra_tools": [] }, "eval_inputs": [{ "from", "to" }] }`。
    - `extra_tools` は MCP のツール（`サーバー名/ツール名`）など、役ごとに足すツールである。
-   - `eval_inputs` は、課題の実物の入力のファイルの一覧である。`from` は実物の絶対パスで、`plugin-creator_confirm` の入力のファイルの `path` に書いたものと同じにする。`to` は `tests/eval/<課題の番号>/inputs/<名前>`。組み立てのスクリプトが写すので、実物は `parts/files/` に写さない。同じ場所が両方にあると、組み立てが断る。
+   - `eval_inputs` は、課題の実物の入力のファイルの一覧である。`from` は実物の絶対パスで、`plugin-creator_confirm` の入力のファイルの `path` に書いたものと同じにする。`to` は `tests/eval/<課題の番号>/inputs/<名前>`。同じ実物を2つ以上の課題で使うときは、課題ごとに1項目ずつ書く（`from` は同じで、`to` はそれぞれの課題のフォルダ）。組み立てのスクリプトが写すので、実物は `parts/files/` に写さない。同じ場所が両方にあると、組み立てが断る。
 
 ## 2. 作業エージェントに書かせる
 

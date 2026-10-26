@@ -179,6 +179,14 @@ export function writeDraft(cwd, overrides = {}) {
   return file;
 }
 
+/** EVAL の課題の実物の入力のファイルを、作業フォルダの inputs/ に置き、絶対パスを返す（確認のツールは、実物があるファイルの絶対パスだけを受け付ける） */
+export function writeRealInput(cwd, name = '実績.xlsx') {
+  const file = path.join(cwd, 'inputs', name);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '実績');
+  return file;
+}
+
 /** 生成前の確認の引数（決まったナレッジの番号、振る舞いの案、作業の定義の案、EVAL の課題） */
 export function confirmArgs(overrides = {}) {
   return {

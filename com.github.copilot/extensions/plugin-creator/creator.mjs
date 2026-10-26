@@ -195,6 +195,19 @@ export function createCreator({
     return out;
   }
 
+  /** 実物の入力のファイルの場所が、あるファイルの絶対パスかを確かめる（組み立てのスクリプトの eval_inputs の決まりと同じ） */
+  function realInputProblem(p, i) {
+    const where = `試しに動かして採点する試験の課題 ${i + 1} の入力のファイル ${p}`;
+    if (!path.isAbsolute(p)) throw new Refusal(`${where} は、実物のファイルの絶対パスで渡してください（仮のファイルなら provisional を true にしてください）。`);
+    let stat;
+    try {
+      stat = fs.statSync(p);
+    } catch {
+      throw new Refusal(`${where} がありません。`);
+    }
+    if (!stat.isFile()) throw new Refusal(`${where} はファイルではありません。フォルダは渡せないので、フォルダの中で使うファイルを1つずつ渡してください。`);
+  }
+
   function validateConfirmArgs(args) {
     const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
     const text = (v) => (typeof v === 'string' ? v.trim() : '');
@@ -207,7 +220,10 @@ export function createCreator({
       const inputs = (Array.isArray(t.inputs) ? t.inputs : []).map((f) => {
         const p = typeof f === 'string' ? f : f?.path;
         if (!text(p)) throw new Refusal(`試しに動かして採点する試験の課題 ${i + 1} の入力のファイルに、場所（path）がありません。`);
-        return { path: text(p), provisional: typeof f === 'object' && f?.provisional === true };
+        const provisional = typeof f === 'object' && f?.provisional === true;
+        // 実物は、組み立てのスクリプトがファイルごとに写す。フォルダや無いファイルは、承認の後の組み立てで初めて断られ、確認をやり直せなくなるので、ここで断る
+        if (!provisional) realInputProblem(text(p), i);
+        return { path: text(p), provisional };
       });
       return { prompt: text(t.prompt), inputs, criteria: (Array.isArray(t.criteria) ? t.criteria : []).map(String), settings: parseSettings(t.settings, i) };
     });

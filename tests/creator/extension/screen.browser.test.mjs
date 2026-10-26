@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
 
-import { answerEverything, confirmArgs, knowledge, readyToConfirm, tempDir, withRun, writeDraft } from './helpers.mjs';
+import { answerEverything, confirmArgs, knowledge, readyToConfirm, tempDir, withRun, writeDraft, writeRealInput } from './helpers.mjs';
 import { leftWordsIn } from './words.mjs';
 
 // ---- Playwright を見つける（見つからなければ、この試験を飛ばす） ------------------------------------
@@ -230,7 +230,7 @@ describe('クリエイターの画面（ブラウザー）', { skip: skipReason 
           'confirm',
           confirmArgs({
             evalTasks: [
-              { prompt: '今週の週報を作ってください。', inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: 'inputs/実績.xlsx' }], criteria: ['K-02'], settings: { maxIterations: 2, task: { week: '2026-W42', style: '詳細' } } },
+              { prompt: '今週の週報を作ってください。', inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: writeRealInput(run.cwd) }], criteria: ['K-02'], settings: { maxIterations: 2, task: { week: '2026-W42', style: '詳細' } } },
               { prompt: '先週の分も作ってください。', criteria: ['K-02'] },
             ],
           }),

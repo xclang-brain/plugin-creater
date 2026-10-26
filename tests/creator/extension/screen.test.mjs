@@ -10,7 +10,7 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { EXTENSION_DIR, TEMPLATE_EXTENSION_DIR, confirmArgs, internalSymbolsIn, knowledge, readyToConfirm, startForTest, tempDir, withRun } from './helpers.mjs';
+import { EXTENSION_DIR, TEMPLATE_EXTENSION_DIR, confirmArgs, internalSymbolsIn, knowledge, readyToConfirm, startForTest, tempDir, withRun, writeRealInput } from './helpers.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -240,7 +240,7 @@ describe('クリエイターの画面のサーバー', () => {
       await readyToConfirm(run);
       const text = await run.call('confirm', confirmArgs({
           evalTasks: [
-            { prompt: '今週の週報を作ってください。', inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: 'inputs/実績.xlsx' }], criteria: ['K-02'], settings: { maxIterations: 2, task: { week: '2026-W42', style: '詳細' } } },
+            { prompt: '今週の週報を作ってください。', inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: writeRealInput(run.cwd) }], criteria: ['K-02'], settings: { maxIterations: 2, task: { week: '2026-W42', style: '詳細' } } },
             { prompt: '先週の分も作ってください。', criteria: ['K-02'], settings: { task: { week: '2026-W41' } } },
           ],
         }),
@@ -256,7 +256,7 @@ describe('クリエイターの画面のサーバー', () => {
       assert.deepEqual(c.evalTasks, [
         {
           prompt: '今週の週報を作ってください。',
-          inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: 'inputs/実績.xlsx', provisional: false }],
+          inputs: [{ path: 'inputs/前回の週報.docx', provisional: true }, { path: path.join(run.cwd, 'inputs', '実績.xlsx'), provisional: false }],
           criteria: [{ id: 'K-02', text: '見出しが「今週の実績」「来週の予定」の順に並んでいれば合格' }],
           // 作業ごとの設定は、案の設定の見出し（label）を添えて出す（X4-13）
           settings: { maxIterations: 2, task: [{ key: 'week', label: '対象の週', value: '2026-W42' }, { key: 'style', label: '書き方', value: '詳細' }] },
