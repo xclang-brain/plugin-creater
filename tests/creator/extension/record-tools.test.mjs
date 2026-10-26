@@ -507,6 +507,31 @@ describe('生成前の確認（plugin-creator_confirm）と、段階「生成」
     });
   });
 
+  test('REQ-038 EVAL の課題の実物の入力は、あるファイルの絶対パスだけを受け付け、フォルダ・無いファイル・相対パスは確認の前に断る', async () => {
+    await withRun(async (run) => {
+      await readyToConfirm(run);
+      const task = (inputs) => ({ evalTasks: [{ ...confirmArgs().evalTasks[0], inputs }] });
+      const folder = path.join(run.cwd, 'sample-target');
+      fs.mkdirSync(folder, { recursive: true });
+      const cases = [
+        [[{ path: folder }], /入力のファイル .*sample-target はファイルではありません。フォルダは渡せないので、フォルダの中で使うファイルを1つずつ渡してください/],
+        [[{ path: path.join(run.cwd, 'ない.xlsx') }], /入力のファイル .*ない\.xlsx がありません/],
+        [[{ path: 'inputs/実績.xlsx' }], /入力のファイル inputs\/実績\.xlsx は、実物のファイルの絶対パスで渡してください/],
+      ];
+      for (const [inputs, pattern] of cases) {
+        const r = await run.callSafe('confirm', confirmArgs(task(inputs)));
+        assert.equal(r.ok, false, JSON.stringify(inputs));
+        assert.match(r.error, pattern);
+      }
+      // あるファイルの絶対パスと、仮のファイル（まだない置き場所）は受け付ける
+      const file = path.join(folder, 'src', 'reader.c');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'int main(void) { return 0; }\n');
+      const ok = await run.callSafe('confirm', confirmArgs(task([{ path: file }, { path: 'tests/eval/T-01/inputs/仮.md', provisional: true }])));
+      assert.equal(ok.ok, true, ok.error);
+    });
+  });
+
   test('REQ-038 EVAL の課題の基準にできるのは、示すナレッジのうち「合否の決め方」のものだけ', async () => {
     await withRun(async (run) => {
       await readyToConfirm(run);

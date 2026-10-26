@@ -1030,6 +1030,19 @@ class ConfirmedEvals(Base):
         self.edit_confirmed(lambda t: t["inputs"].append({"path": gone, "provisional": False}))
         self.assertMentions(self.refusal(), gone, "eval_inputs の from にありません")
 
+    def test_REQ_038_one_real_file_can_be_used_by_two_tasks(self):
+        real = os.path.join(self.root, "実物", "共通.txt")
+        self.write(real, "共通の実物\n")
+        self.add_task()
+        for directory, index in (("T-01", 0), ("T-02", 1)):
+            self.edit_json(self.part("files/tests/eval/%s/eval.json" % directory), lambda e: e["inputs"].append("inputs/共通.txt"))
+            self.edit_confirmed(lambda t: t["inputs"].append({"path": real, "provisional": False}), index=index)
+        self.edit_manifest(lambda m: m.update(eval_inputs=[{"from": real, "to": "tests/eval/T-01/inputs/共通.txt"},
+                                                           {"from": real, "to": "tests/eval/T-02/inputs/共通.txt"}]))
+        self.build()
+        self.assertEqual(self.read("tests/eval/T-01/inputs/共通.txt"), "共通の実物\n")
+        self.assertEqual(self.read("tests/eval/T-02/inputs/共通.txt"), "共通の実物\n")
+
     def test_REQ_038_a_real_file_in_eval_inputs_that_was_not_confirmed_is_refused(self):
         real = os.path.join(self.root, "実物", "秘密.txt")
         self.write(real, "x")
