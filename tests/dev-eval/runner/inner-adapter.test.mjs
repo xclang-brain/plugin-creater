@@ -8,7 +8,7 @@ import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { addTools, createInnerAdapter, describeOpened, OPEN_FAILED, ORCHESTRATOR_BUILTIN_TOOLS, RECORD_FAILED, rewriteField, rewriteModel } from './inner-adapter.mjs';
+import { ANSWER_FAILED, addTools, createInnerAdapter, describeOpened, OPEN_FAILED, ORCHESTRATOR_BUILTIN_TOOLS, RECORD_FAILED, rewriteField, rewriteModel } from './inner-adapter.mjs';
 import { buildSamplePlugin, pythonHasModules, tmpDir } from './inner-test-support.mjs';
 
 const SKIP = !pythonHasModules() ? 'Python に PyYAML と jsonschema がありません' : false;
@@ -51,12 +51,13 @@ function fakeSdk() {
   return { sdk, queries };
 }
 
-async function setup(t) {
+async function setup(t, extra = {}) {
   const fixture = buildSamplePlugin();
   const { sdk, queries } = fakeSdk();
   const events = [];
   const adapter = await createInnerAdapter({
     sdk, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, workDir: tmpDir('adapter-work'), runDir: tmpDir('adapter-run'), record: (entry) => events.push(entry),
+    ...extra,
   });
   t.after(() => adapter.shutdown());
   return { fixture, adapter, queries, events, neutral: () => events.filter((e) => e.t === 'event').map((e) => e.e) };
@@ -196,7 +197,7 @@ test('REQ-011 記録のツール：呼んだエージェントを、フックの
   const { tools } = await client.listTools();
   const planTool = tools.find((x) => x.name === 'plan');
   assert.deepEqual(planTool.inputSchema, adapter.core.toolDefinitions.find((d) => d.shortName === 'plan').parameters);
-  assert.deepEqual(tools.map((x) => x.name).sort(), ['finish', 'issue', 'open', 'plan', 'review', 'show', 'verdict']);
+  assert.deepEqual(tools.map((x) => x.name).sort(), ['answer', 'ask', 'finish', 'issue', 'open', 'plan', 'review', 'show', 'verdict']);
   await client.close();
 });
 
@@ -460,6 +461,7 @@ test('V1 の直しへの合わせ：Copilot CLI 用のつなぎ口（adapter.mjs
   }
   assert.equal(OPEN_FAILED, constant('OPEN_FAILED'));
   assert.equal(RECORD_FAILED, constant('RECORD_FAILED'));
+  assert.equal(ANSWER_FAILED, constant('ANSWER_FAILED'));
   // 理由の文を返す形（RecordRefusal は理由をそのまま失敗の結果にする）も、adapter.mjs にある
   assert.match(source, /error instanceof RecordRefusal\) return \{ textResultForLlm: error\.message, resultType: 'failure' \}/);
   // 画面を開くツールの返り値の文は、同じ入力で同じ文になる
@@ -484,7 +486,7 @@ test('REQ-010 REQ-011 統括の起動：統括の定義に tools がなければ
   // 組み込みの4つの後ろに、統括が呼ぶ記録のツール（core/tools.mjs の並び順）
   const written = toolsLine(copy, 'orchestrator').split(', ');
   assert.deepEqual(written.slice(0, 4), ['Agent', 'Read', 'Grep', 'Glob']);
-  assert.deepEqual(written.slice(4).sort(), ['finish', 'issue', 'plan', 'review', 'show'].map(mcp).sort());
+  assert.deepEqual(written.slice(4).sort(), ['ask', 'finish', 'issue', 'plan', 'review', 'show'].map(mcp).sort());
   assert.deepEqual(adapter.runs()[0].orchestratorTools, written);
   assert.deepEqual(events.find((e) => e.t === 'orchestrator_tools'), { t: 'orchestrator_tools', run: 'orch-1', tools: written });
   // 元の置き換えた版は変えない。作業・検証の tools は、統括の tools に絞らない（そのまま）
@@ -536,4 +538,79 @@ test('REQ-010 REQ-011 統括の使ってよいツール：Copilot CLI 用のつ�
   assert.deepEqual([...new Set(theirs.map((name) => toClaude[name]).filter(Boolean))].sort(), [...ORCHESTRATOR_BUILTIN_TOOLS].sort());
   // 記録のツールは、どちらも core/tools.mjs の TOOL_DEFS で caller に orchestrator を持つもの
   assert.match(source, /TOOL_DEFS\.filter\(\(def\) => String\(def\.caller\)\.split\(','\)\.includes\('orchestrator'\)\)/);
+});
+
+// ---- 人の判断待ち（生成プラグインの設計書 4.15）：待っている統括に送ると、同じ会話を resume した query() で続く ----
+
+async function mcpClient(server) {
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await server.instance.connect(serverSide);
+  const client = new Client({ name: 'test', version: '1' });
+  await client.connect(clientSide);
+  return client;
+}
+
+test('REQ-051 人の判断待ち：統括が質問を記録して手番を終えると待ちになり、メインのエージェントの答えで、同じ会話を resume した query() が同じ統括の番号で始まる', { skip: SKIP }, async (t) => {
+  const turnEnds = [];
+  const { adapter, queries, neutral, events } = await setup(t, { onOrchestratorTurnEnd: (turn) => turnEnds.push(turn) });
+  await startRun(adapter);
+  const q = queries[0];
+  const orch = await mcpClient(q.options.mcpServers['weekly-report']);
+  q.push({ type: 'system', subtype: 'init', session_id: 'sess-orch-1', model: 'claude-sonnet-5-5' });
+  await hookOf(q, 'PreToolUse')({ tool_name: 'mcp__weekly-report__ask', tool_use_id: 'toolu_a', tool_input: {} });
+  const asked = await orch.callTool({ name: 'ask', arguments: { question: 'ビルドが失敗しました。どうしますか？' }, _meta: { 'claudecode/toolUseId': 'toolu_a' } });
+  assert.notEqual(asked.isError, true, JSON.stringify(asked.content));
+  q.push({ type: 'result', subtype: 'success', is_error: false, result: '人の判断待ち\nビルドが失敗しました。どうしますか？', session_id: 'sess-orch-1' });
+  q.end();
+  await adapter.whenRunsEnded();
+  await adapter.core.whenIdle();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(adapter.core.getState().run.status, 'waiting_human');
+  assert.deepEqual(turnEnds.map((x) => [x.id, x.turns, x.lastText]), [['orch-1', 1, '人の判断待ち\nビルドが失敗しました。どうしますか？']]);
+  assert.equal(neutral().filter((e) => e.type === 'agent.completed').length, 1);
+
+  // メインのエージェントが、答えを渡すツールで渡す
+  const main = await mcpClient(adapter.mainParts().mcpServers['weekly-report']);
+  const answered = await main.callTool({ name: 'answer', arguments: { answer: 'パスは /opt/arm/bin です' } });
+  assert.notEqual(answered.isError, true, JSON.stringify(answered.content));
+  assert.equal(queries.length, 2, '同じ統括の続きの query() が始まる');
+  assert.equal(queries[1].options.resume, 'sess-orch-1', '同じ会話を resume する');
+  assert.match(String(queries[1].prompt), /パスは \/opt\/arm\/bin です/);
+  assert.equal(queries[1].options.agent, 'weekly-report:orchestrator');
+  assert.equal(adapter.core.getState().run.status, 'running');
+  assert.equal(adapter.agents().find((a) => a.agentId === 'orch-1').status, 'running');
+  assert.ok(events.some((e) => e.t === 'orchestrator_resumed' && e.run === 'orch-1'));
+
+  // 2回目からの手番の終わりは agent.idle（最後の返事つき）。統括の番号は同じ
+  queries[1].push({ type: 'result', subtype: 'success', is_error: false, result: '続けました', session_id: 'sess-orch-1' });
+  queries[1].end();
+  await adapter.whenRunsEnded();
+  const idle = neutral().filter((e) => e.type === 'agent.idle');
+  assert.deepEqual(idle.map((e) => [e.agentId, e.response]), [['orch-1', '続けました']]);
+  assert.equal(adapter.runs()[0].turns, 2);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(turnEnds.map((x) => x.turns), [1, 2]);
+  await orch.close();
+  await main.close();
+});
+
+test('REQ-051 待っている統括に送れないとき（取り消した、会話の番号が分からない、ない番号）は、例外ではなく sent が偽', { skip: SKIP }, async (t) => {
+  const { adapter, queries } = await setup(t);
+  await startRun(adapter);
+  assert.deepEqual(await adapter.port.sendMessage('orch-1', 'x'), { sent: false, error: 'Agent not found or not accepting messages' }, '会話の番号がまだ分からない');
+  assert.deepEqual(await adapter.port.sendMessage('orch-9', 'x'), { sent: false, error: 'Agent not found or not accepting messages' });
+  queries[0].push({ type: 'system', subtype: 'init', session_id: 'sess-1' });
+  await new Promise((resolve) => setImmediate(resolve));
+  await adapter.port.cancelAgent('orch-1');
+  assert.deepEqual(await adapter.port.sendMessage('orch-1', 'x'), { sent: false, error: 'Agent not found or not accepting messages' });
+  assert.equal(queries.length, 1);
+});
+
+test('REQ-051 答えを渡すツールは、人の判断待ちでないときは断りの文を失敗の結果で返す', { skip: SKIP }, async (t) => {
+  const { adapter } = await setup(t);
+  const main = await mcpClient(adapter.mainParts().mcpServers['weekly-report']);
+  const result = await main.callTool({ name: 'answer', arguments: { answer: 'x' } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /人の判断を待っていません/);
+  await main.close();
 });

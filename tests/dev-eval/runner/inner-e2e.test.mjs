@@ -14,7 +14,7 @@ import { guardSdk, lastToolResultBlocks, startFakeAnthropic } from './fake-anthr
 import { createInnerAdapter, OPEN_FAILED, RECORD_FAILED } from './inner-adapter.mjs';
 import { makeQueryOptions } from './isolation.mjs';
 import { runInnerArm } from './inner-run.mjs';
-import { buildSamplePlugin, pythonHasModules, scriptedModel, tmpDir } from './inner-test-support.mjs';
+import { HUMAN_QUESTION, buildSamplePlugin, pythonHasModules, scriptedModel, tmpDir } from './inner-test-support.mjs';
 
 let chromium = null;
 try {
@@ -366,11 +366,11 @@ test('REQ-010 REQ-011 統括は、使ってよいツールだけを持つ（書�
   const orchestrator = toolsByRole.get('orchestrator');
   assert.ok(orchestrator, '統括の呼び出しが届いていない');
   // 統括が持つもの：Agent、読む・探す、統括の記録のツール
-  for (const name of ['Agent', 'Read', 'Grep', 'Glob', mcp('plan'), mcp('review'), mcp('issue'), mcp('finish'), mcp('show')]) {
+  for (const name of ['Agent', 'Read', 'Grep', 'Glob', mcp('plan'), mcp('review'), mcp('issue'), mcp('finish'), mcp('show'), mcp('ask')]) {
     assert.ok(orchestrator.includes(name), `統括のツールに ${name} がない：${orchestrator.join(', ')}`);
   }
   // 統括が持たないもの：書き込み・コマンド・スキル・質問・Web、メインと検証の記録のツール
-  for (const name of ['Write', 'Edit', 'Bash', 'Skill', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'NotebookEdit', mcp('open'), mcp('verdict')]) {
+  for (const name of ['Write', 'Edit', 'Bash', 'Skill', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'NotebookEdit', mcp('open'), mcp('verdict'), mcp('answer')]) {
     assert.ok(!orchestrator.includes(name), `統括のツールに ${name} がある：${orchestrator.join(', ')}`);
   }
   // 作業・検証は、統括の tools に絞られず、自分の定義のツールを持つ（統括は Write を持たないが、作業は Write で成果物を作れる）
@@ -386,7 +386,7 @@ test('REQ-010 REQ-011 統括は、使ってよいツールだけを持つ（書�
   const written = events.find((e) => e.t === 'orchestrator_tools');
   assert.ok(written, 'orchestrator_tools の記録がない');
   assert.deepEqual(written.tools.slice(0, 4), ['Agent', 'Read', 'Grep', 'Glob']);
-  assert.deepEqual(written.tools.slice(4).sort(), ['finish', 'issue', 'plan', 'review', 'show'].map(mcp).sort());
+  assert.deepEqual(written.tools.slice(4).sort(), ['ask', 'finish', 'issue', 'plan', 'review', 'show'].map(mcp).sort());
 });
 
 test('REQ-007 質問のツールを呼ぶ応答の中の、質問の前にチャットに書いた文が、本物の Agent SDK でも、その問いと一緒にユーザー役へ渡る', { skip: SKIP, timeout: 120_000 }, async (t) => {
@@ -403,4 +403,43 @@ test('REQ-007 質問のツールを呼ぶ応答の中の、質問の前にチャ
   assert.equal(userRole.calls.length, 1);
   assert.deepEqual(userRole.calls[0].notes, ['上のまとめのとおり、今週と先週のどちらかを決めます。']);
   assert.equal(result.history[0].notes, '上のまとめのとおり、今週と先週のどちらかを決めます。');
+});
+
+test('REQ-051 ありの実行：統括が人の判断を求めて手番を終えると、メインのエージェントに知らせ、チャットの質問にユーザー役が答え、答えを渡すツールで同じ統括が続きを始める。結果は 1 つの実行にまとまる', { skip: SKIP, timeout: 240_000 }, async (t) => {
+  const fixture = buildSamplePlugin();
+  const requests = [];
+  const api = await startFakeAnthropic(scriptedModel({ humanWait: true, onRequest: (role, body) => requests.push({ role, body }) }));
+  const sdk = guardSdk(realSdk, api);
+  const screen = createScreen({ chromium, env: { ...process.env, PLUGIN_TEST_BROWSER_CHANNEL: 'chromium' } });
+  t.after(async () => {
+    await screen.close();
+    await api.close();
+  });
+  const asked = [];
+  const result = await runInnerArm({
+    arm: 'with', task: fixture.task, runDir: tmpDir('run-human'), sdk, judge, screen,
+    userRole: async (request) => {
+      asked.push(request);
+      return 'ツールチェーンは /opt/arm/bin です。続けてください';
+    },
+    pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot,
+    envExtra: { ...FAKE_ENV, ANTHROPIC_BASE_URL: api.url }, timeoutMs: 180_000, pollMs: 300,
+  });
+  assert.equal(result.status, 'completed', `${result.reason} / ${JSON.stringify(result.mainError)} / ${result.screenError} / ${result.notifyError}`);
+  assert.equal(result.screen.endReason.kind, 'all_passed');
+  assert.equal(result.humanWaits, 1);
+  // ユーザー役は、チャットに出た質問を読んで答えた
+  const humanTurn = result.history.find((h) => h.via === 'human-wait');
+  assert.ok(humanTurn, JSON.stringify(result.history));
+  assert.ok(humanTurn.question.includes(HUMAN_QUESTION));
+  // 画面には、待っているあいだ「人の判断待ち」が出た
+  assert.ok(result.screen.snapshots.some((s) => s.status === 'waiting_human'), JSON.stringify(result.screen.snapshots.map((s) => s.status)));
+  // 同じ統括（起動は 1 回）が、答えを受けて 2 回目の手番で続けた。答えは言い換えずに届いた
+  assert.equal(result.orchestratorRuns.length, 1);
+  assert.equal(result.orchestratorRuns[0].turns, 2);
+  const resumed = requests.filter((r) => r.role === 'orchestrator' && JSON.stringify(r.body.messages).includes('人の判断の答えが届きました'));
+  assert.ok(resumed.length > 0, '答えのメッセージが統括に届いた');
+  assert.ok(JSON.stringify(resumed[0].body.messages).includes('ツールチェーンは /opt/arm/bin です。続けてください'));
+  assert.ok(fs.existsSync(path.join(result.workDir, 'out', 'weekly.md')));
+  assert.equal(result.grading.passed, 2);
 });

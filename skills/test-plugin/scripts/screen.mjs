@@ -1,5 +1,6 @@
 // 生成プラグインの Web管理画面を、Playwright で人と同じ流れ（設定 → 開始 → 監視 → 結果）で操作する（testing.md 10.4）。
 // 実行中の確認（許可の求めなど）には、画面では答えない（答えるのは run.mjs の onPermissionRequest と onUserInputRequest）。
+// 人の判断待ちにも、画面では答えない。状態の要点（onSnapshot）に質問を入れ、run.mjs がチャットに決まった返事を送る（human-wait.mjs）。
 // 生成プラグインには、試験のためだけの機能を足さない。画面の部品は、ひな形の ui/static（app.js、render.js）が作るものを使う。
 //   開始前の設定の欄   #setting-<key>（key の \w と - 以外は _）。最大の繰り返しの回数は #setting-maxIterations
 //   開始のボタン      #start。開始できないときの理由は #start-message
@@ -85,6 +86,8 @@ function snapshotOf(state) {
     iteration: run?.iteration ?? null,
     agents: agentsOf(state),
     waits: (run?.waits ?? []).map((w) => w.kind),
+    // 人の判断待ちの質問（generated-plugin-structure.md 4.15）。waiting は、統括が手番を終えて答えを待っているか。run.mjs が決まった返事を送るのに使う
+    humanWait: run?.humanWait ? { question: run.humanWait.question ?? '', askedAt: run.humanWait.askedAt ?? null, waiting: Boolean(run.humanWait.waiting) } : null,
   };
 }
 

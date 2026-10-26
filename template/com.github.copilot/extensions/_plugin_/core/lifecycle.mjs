@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, UNSTOPPED_HOW_TO } from './constants.mjs';
+import { EFFORT_LEVELS, INSTRUCTION_HEAD, LIMITS, ROLE_LABELS, SUMMARY_END_KINDS, UNSTOPPED_HOW_TO } from './constants.mjs';
 import { effortAgents } from './task-def.mjs';
 import { analyzeEntries, buildMechanicalSummary, numberIssues } from './analysis.mjs';
 import { logEntry } from './log.mjs';
@@ -198,7 +198,7 @@ function activeTreeAgents(run, tasks) {
 // 一覧が取れなかったとき、止まったと確かめられないエージェント
 function unconfirmedAgents(run) {
   return [...run.tree.values()]
-    .filter((rec) => rec.status === 'running' || rec.status === 'waiting' || (rec.agentId === run.rootId && rec.status !== 'stopped' && rec.status !== 'failed'))
+    .filter((rec) => rec.status === 'running' || rec.status === 'waiting' || rec.status === 'waiting_human' || (rec.agentId === run.rootId && rec.status !== 'stopped' && rec.status !== 'failed'))
     .map((rec) => rec.agentId);
 }
 
@@ -532,7 +532,7 @@ function finalizeRun(ctx, run, state) {
   const taskById = new Map((state.tasks ?? []).map((t) => [t.agentId, t]));
   for (const rec of run.tree.values()) {
     ctx.deny.add(rec.agentId);
-    if (rec.status !== 'running' && rec.status !== 'waiting') continue;
+    if (rec.status !== 'running' && rec.status !== 'waiting' && rec.status !== 'waiting_human') continue;
     if (unstoppedIds.has(rec.agentId)) rec.status = 'unstopped';
     else {
       const ts = taskById.get(rec.agentId)?.status;
@@ -546,7 +546,7 @@ function finalizeRun(ctx, run, state) {
   run.unstopped = state.unstopped;
   run.waits = [];
 
-  const normalEnd = endReason.kind === 'all_passed' || endReason.kind === 'max_iterations';
+  const normalEnd = SUMMARY_END_KINDS.includes(endReason.kind); // まとめ中に入って終わった（4.8、4.15）
   const drafts = analyzeEntries(run.entries, {
     pluginName: ctx.pluginName,
     runId: run.id,

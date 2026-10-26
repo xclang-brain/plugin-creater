@@ -24,6 +24,7 @@ const TASK_TOOL = 'task'; // 統括が作業・検証を呼ぶ Copilot CLI の�
 // 予期しない失敗のときにモデルへ返す文。内部の情報（エラーの文、場所、スタック）は出さない。くわしくは標準エラーに残す。
 const OPEN_FAILED = 'Web管理画面を開けませんでした。ユーザーに、開けなかったことを伝えてください。';
 const RECORD_FAILED = '記録のツールの処理で、予期しない失敗が起きました。もう一度呼んでも同じなら、作業を終えてください。';
+const ANSWER_FAILED = '答えを渡す処理で、予期しない失敗が起きました。ユーザーに、答えを渡せなかったことを伝えてください。';
 
 // ---- プラグインの名前と根 --------------------------------------------------------------------------------
 
@@ -86,7 +87,7 @@ function readField(input, key) {
   }
 }
 
-// 統括が呼ぶ記録のツールの、名前の後ろの部分（plan・review・issue・finish・show）
+// 統括が呼ぶ記録のツールの、名前の後ろの部分（plan・review・issue・finish・show・ask）
 const ORCHESTRATOR_RECORD_SHORT_NAMES = TOOL_DEFS.filter((def) => String(def.caller).split(',').includes('orchestrator')).map((def) => def.name);
 
 function orchestratorToolsOf(pluginName) {
@@ -204,10 +205,14 @@ function createEventConverter({ pluginName, ownAgentNames }) {
       }
       case 'subagent.failed':
         return agentId ? { type: 'agent.failed', at, agentId, error: data.error } : null;
-      case 'system.notification':
-        return data.kind?.type === 'agent_idle' && typeof data.kind.agentId === 'string'
-          ? { type: 'agent.idle', at, agentId: data.kind.agentId }
-          : null;
+      // 手番の終わり。2回目からの手番の終わりには subagent.completed が出ず、これだけが出るので、覚えた最後の返事を付ける（設計書 11章 #19）
+      case 'system.notification': {
+        if (data.kind?.type !== 'agent_idle' || typeof data.kind.agentId !== 'string') return null;
+        const idleId = data.kind.agentId;
+        const response = lastReplies.get(idleId);
+        lastReplies.delete(idleId);
+        return { type: 'agent.idle', at, agentId: idleId, response };
+      }
 
       case 'tool.execution_start':
         if (typeof data.toolCallId === 'string') {
@@ -276,6 +281,11 @@ function createPort(session, converter) {
     },
     async cancelAgent(agentId) {
       await session.rpc.tasks.cancel({ id: agentId });
+    },
+    // 待っている統括に、続きのメッセージを送る（人の判断待ちの答え。設計書 4.15）。送れなかったときは例外ではなく { sent: false, error } が返る（11章 #19）
+    async sendMessage(agentId, message) {
+      const result = await session.rpc.tasks.sendMessage({ id: agentId, message: String(message) });
+      return { sent: result?.sent === true, ...(typeof result?.error === 'string' && result.error !== '' ? { error: result.error } : {}) };
     },
     // tasks.list にはシェルなどのタスクも入る。エージェントだけを返す（R2 の (2) の 14）。
     async listTasks() {
@@ -362,11 +372,13 @@ export async function startAdapter({ joinSession }) {
     try {
       const readyCore = await ready;
       if (shortName === 'open') return describeOpened(await readyCore.open({ requestText: args?.requestText }));
+      if (shortName === 'answer') return await readyCore.relayHumanAnswer({ answer: args?.answer }, { agentId: invocation?.agentId });
       return await readyCore.handleTool(shortName, args, { agentId: invocation?.agentId });
     } catch (error) {
       if (error instanceof RecordRefusal) return { textResultForLlm: error.message, resultType: 'failure' };
       console.error(`[つなぎ口] ツール「${pluginName}_${shortName}」の処理で予期しない失敗が起きました：`, error);
-      return { textResultForLlm: shortName === 'open' ? OPEN_FAILED : RECORD_FAILED, resultType: 'failure' };
+      const text = shortName === 'open' ? OPEN_FAILED : shortName === 'answer' ? ANSWER_FAILED : RECORD_FAILED;
+      return { textResultForLlm: text, resultType: 'failure' };
     }
   }
 

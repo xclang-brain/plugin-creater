@@ -335,6 +335,90 @@ describe('許可の求めと質問', () => {
     assert.deepEqual(result.runs[0].questionTexts, ['保存先はどこですか？']);
   });
 
+  test('REQ-051 ありで、実行が人の判断待ちになり、メインのエージェントが手番を終えたら、質問と同じ決まった返事をチャットで送る（質問ごとに1回）', async () => {
+    const FIXED = '課題に書いたこと以外は決まっていません。判断して進めてください';
+    const waitingSnap = (question, askedAt) => ({ t: 0, status: 'waiting_human', phase: null, iteration: 1, agents: ['orchestrator:waiting_human'], waits: [], humanWait: { question, askedAt, waiting: true } });
+    const runningSnap = { t: 0, status: 'running', phase: 'do', iteration: 1, agents: ['orchestrator:running'], waits: [], humanWait: null };
+    const until = async (check, what) => {
+      const end = Date.now() + 3000;
+      while (!check()) {
+        if (Date.now() > end) throw new Error(`待ちきれなかった：${what}`);
+        await sleep(5);
+      }
+    };
+    const world = createWorld({
+      outputs: GOOD,
+      behavior: {
+        onSend: async (session, options) => {
+          if (options.prompt !== FIXED) return world.defaultOnSend(session);
+          // メインのエージェントが、チャットの答えを <名前>_answer で渡して、手番を終える
+          session.emit('tool.execution_start', { toolCallId: `a${session.sent.length}`, toolName: 'weekly-report_answer', arguments: { answer: options.prompt } });
+          session.emit('session.idle', {});
+        },
+      },
+      screen: {
+        operate: async ({ onSnapshot }) => {
+          const session = world.sdk.sessions.find((s) => s.variant === 'with');
+          const askAndShow = (question, askedAt) => {
+            onSnapshot(waitingSnap(question, askedAt));
+            // 統括の手番の終わりがメインのエージェントに知らされ、メインのエージェントが質問をチャットに示して手番を終える
+            session.emit('system.notification', { kind: { type: 'agent_idle', agentId: 'orch-1' } });
+            session.emit('assistant.message', { content: `統括エージェントから質問です：${question}` });
+            session.emit('session.idle', {});
+          };
+          onSnapshot(runningSnap);
+          askAndShow('ビルドが失敗しました。どうしますか？', 1);
+          await until(() => session.sent.length === 2, '1つ目の決まった返事');
+          onSnapshot({ ...runningSnap, iteration: 2 });
+          askAndShow('どちらの書式にしますか？', 2);
+          await until(() => session.sent.length === 3, '2つ目の決まった返事');
+          await sleep(100);
+          writeWorkFile(world, 'out/週報.md', GOOD.with['out/週報.md']);
+          return finishedScreen();
+        },
+      },
+    });
+    const result = await run(world);
+    const session = world.sdk.sessions.find((s) => s.variant === 'with');
+    assert.deepEqual(session.sent.map((s) => s.prompt), [sampleTask().prompt, FIXED, FIXED], '同じ質問には1回だけ、セッションの send で送る');
+    const withRun = result.runs.find((r) => r.variant === 'with');
+    assert.equal(withRun.status, 'completed');
+    assert.equal(withRun.humanQuestions, 2);
+    assert.deepEqual(withRun.humanQuestionTexts, ['ビルドが失敗しました。どうしますか？', 'どちらの書式にしますか？']);
+    assert.equal(withRun.humanAnswerFailures, undefined);
+    assert.equal(withRun.questions, 0, 'ask_user の質問とは別に数える');
+    const logged = eventsOf(result, withRun).filter((e) => e.type === 'eval.human_answer');
+    assert.deepEqual(logged.map((e) => e.data.via), ['notified', 'notified']);
+    const withoutRun = result.runs.find((r) => r.variant === 'without');
+    assert.equal(withoutRun.humanQuestions, 0);
+    assert.deepEqual(withoutRun.humanQuestionTexts, []);
+  });
+
+  test('REQ-051 人の判断待ちに決まった返事を送れなかったときは、その質問と理由を残し、注意に出す', async () => {
+    const world = createWorld({
+      outputs: GOOD,
+      screen: {
+        operate: async ({ onSnapshot }) => {
+          const session = world.sdk.sessions.find((s) => s.variant === 'with');
+          session.send = async () => {
+            throw new Error('送れません');
+          };
+          onSnapshot({ t: 0, status: 'waiting_human', phase: null, iteration: 1, agents: [], waits: [], humanWait: { question: 'どうしますか？', askedAt: 1, waiting: true } });
+          session.emit('system.notification', { kind: { type: 'agent_idle', agentId: 'orch-1' } });
+          session.emit('session.idle', {});
+          await sleep(200);
+          writeWorkFile(world, 'out/週報.md', GOOD.with['out/週報.md']);
+          return finishedScreen();
+        },
+      },
+    });
+    const result = await run(world);
+    const withRun = result.runs.find((r) => r.variant === 'with');
+    assert.equal(withRun.humanQuestions, 0);
+    assert.deepEqual(withRun.humanAnswerFailures, [{ question: 'どうしますか？', error: '送れません' }]);
+    assert.ok(result.warnings.some((w) => /人の判断待ちに、決まった返事をチャットで送れなかった実行があります（T-01 あり 1）/.test(w)));
+  });
+
   test('REQ-041 管理設定で人の承認が要る求めが来たら、自動では許可せず、答えずに（no-result）、試験を止めて理由を示す', async () => {
     const answers = [];
     const world = createWorld({

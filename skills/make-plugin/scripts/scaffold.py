@@ -893,7 +893,10 @@ def fill_template(out: str, plugin_name: str, slots: Dict[str, str], values: Dic
             rel = posix_rel(path, out)
             try:
                 with open(path, "rb") as f:
-                    text = f.read().decode("utf-8")
+                    data = f.read()
+                if b"\0" in data:
+                    continue   # 文字のファイルではない（フォントや画像。中のバイトが、たまたま差し込み口に見えることがある）
+                text = data.decode("utf-8")
             except (OSError, UnicodeDecodeError):
                 continue   # 文字のファイルではない
             if "{{" not in text:

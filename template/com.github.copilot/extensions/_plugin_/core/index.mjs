@@ -23,6 +23,7 @@ import { startRun, stopRun } from './lifecycle.mjs';
 import { fileIssue, startCanFileCheck } from './filing.mjs';
 import { logEntry } from './log.mjs';
 import { recoverOnStartup, refreshPrevious, viewPrevious } from './recovery.mjs';
+import { answerHuman } from './human.mjs';
 
 // 生成プラグインの中心の処理（BLUEPRINT 3.3）。Copilot CLI に依らない。
 // つなぎ口とは、窓口 port（BLUEPRINT 3.2）と中立のイベント（3.1）だけでやり取りする。画面は startUi(core) で起こす。
@@ -230,6 +231,15 @@ export function createCore(options = {}) {
       if (early) throw new RecordRefusal(early);
       try {
         return await ctx.queue.enqueue(() => applyRecord(ctx, shortName, args, agentId));
+      } finally {
+        ctx.bump();
+      }
+    },
+
+    // <名前>_answer（メインのエージェントが呼ぶ。4.15）。人の判断待ちの答えを、待っている統括に送る。断るときと渡せなかったときは Error を投げる
+    async relayHumanAnswer(args, { agentId } = {}) {
+      try {
+        return await ctx.queue.enqueue(() => answerHuman(ctx, args, agentId));
       } finally {
         ctx.bump();
       }

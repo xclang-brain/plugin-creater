@@ -104,8 +104,17 @@ export const TOOL_DEFS = Object.freeze([
     caller: 'orchestrator',
     skipPermission: true,
     description:
-      '統括エージェントが、繰り返しを終えた後（すべての評価基準を満たしたか、上限の回数まで試行した後）に、まとめの最初に呼ぶ。記録から機械的に洗い出した課題と、試行ごとの合否の要点を返す。返った課題は、何もしなくても課題の一覧に入る。繰り返しの途中では断る。',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+      '統括エージェントが、繰り返しを終えた後（すべての評価基準を満たしたか、上限の回数まで試行した後）に、まとめの最初に呼ぶ。記録から機械的に洗い出した課題と、試行ごとの合否の要点を返す。返った課題は、何もしなくても課題の一覧に入る。繰り返しの途中では断る。ただし、人の判断待ちの答えが、ここで終えるよう言ったとき（例：「やめて」）は、endedByHuman を true にして呼ぶと、繰り返しの途中でもそこで繰り返しを終えて、まとめに進める。この印は、人の答えが届いた直後（答えの後に、計画などの記録をしたり、エージェントを呼んだりする前）だけ受け付け、それ以外と、答えを待っている質問があるときは断る。',
+    parameters: {
+      type: 'object',
+      properties: {
+        endedByHuman: {
+          type: 'boolean',
+          description: '人の判断待ちの答えが届いた直後に、その答えがいまここで終えるよう言っているときだけ true にする。それ以外は付けない。',
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: 'issue',
@@ -133,6 +142,40 @@ export const TOOL_DEFS = Object.freeze([
       type: 'object',
       properties: { summary: { type: 'string', minLength: 1, description: '実行全体のまとめ' } },
       required: ['summary'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'ask',
+    caller: 'orchestrator',
+    skipPermission: true,
+    description:
+      '統括エージェントが、作業ごとの指示が人に判断を求めている場面（例：ビルドが失敗したら、どうするかを人に聞く）でだけ呼ぶ。人への質問を記録し、画面に「人の判断待ち」として出す。呼んだら、ほかのツールを呼ばずに、返った文のとおりの形で返事を書いて手番を終える。手番を終えても、この実行は終わらない。ユーザーがチャットで答えると、答えがメッセージで届くので、それに沿って同じ試行の続きから進める。作業ごとの指示が人に判断を求めていないことは、このツールで聞かずに、作業ごとの指示と設定の値から判断して進める。繰り返しの途中（計画・実行・評価）でだけ使え、まとめの間と、答えを待っている質問があるときは断る。',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: {
+          type: 'string',
+          minLength: 1,
+          description: '人への質問。何が起きたか（例：試行 2 のビルドが失敗した）と、人に決めてほしいことを、平易な日本語で簡潔に書く。',
+        },
+      },
+      required: ['question'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'answer',
+    caller: 'main',
+    skipPermission: true,
+    description:
+      '名前の頭（`_answer` の前の部分）と同じ名前のプラグインの統括エージェントが、人の判断を待っているときに、メインのエージェントが呼ぶ。ユーザーがチャットで答えた文を、要約も言い換えも足しもせずに、ユーザーの言葉のまま渡す。答えは待っている統括エージェントに届き、同じ実行が続く。返った文を、ユーザーに伝える。判断を待っていないときは、答えを渡さずに、そのことを返す。',
+    parameters: {
+      type: 'object',
+      properties: {
+        answer: { type: 'string', minLength: 1, description: 'ユーザーがチャットで答えた文。ユーザーの言葉のまま渡す。' },
+      },
+      required: ['answer'],
       additionalProperties: false,
     },
   },

@@ -921,6 +921,15 @@ class Knowledge(Sandbox):
         self.write("tests/notes.txt", "K-03")
         self.assertFailsWith("knowledge", "K-03")
 
+    def test_REQ_039_number_inside_a_binary_file_does_not_count(self):
+        # フォントなどの中のバイトの並びが、たまたま番号に見えても数えない
+        self.edit_json(self.LIST, lambda d: d.append({"id": "K-03", "kind": "other", "item": "x", "text": "週報は金曜に出す"}))
+        target = self.path("%s/ui/static/fonts/x/X-Regular.woff2" % EXT)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(b"wOF2\x00\x01 K-03 \x00\xff")
+        self.assertFailsWith("knowledge", "K-03")
+
     def test_REQ_039_number_in_task_json_does_not_count_for_other_knowledge(self):
         self.edit_json(self.LIST, lambda d: d.append({"id": "K-03", "kind": "other", "item": "x", "text": "週報は金曜に出す"}))
         self.edit_json("%s/task.json" % EXT, lambda d: d.update({"name": "見本 K-03"}))

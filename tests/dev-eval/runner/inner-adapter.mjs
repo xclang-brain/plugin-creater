@@ -11,6 +11,10 @@
 //   統括の使えるツール … 生成プラグインの統括の定義には tools がない（Copilot CLI では、統括は全ツールを持ち、一覧にないツールを adapter.mjs の
 //                                   onPreToolUse が拒む）。このつなぎ口は、実行用のコピーの統括の定義に、同じ範囲の tools を書いて効かせる（下の orchestratorTools）。
 //   止める（port.cancelAgent）… 統括の query() だけを閉じる。メインの実行は中断しない（設計書 4.4 と同じ範囲）。
+//   待っている統括に送る（port.sendMessage。人の判断待ちの答え、設計書 4.15）… 手番を終えた統括の会話（session_id）を resume して、
+//                                   送る文を次のユーザーの文にした query() を、同じ統括の番号のまま始める。Copilot CLI と同じく、
+//                                   初めの手番の終わりは agent.completed、2回目からは agent.idle（最後の返事つき）を届ける（11章 #19）。
+//                                   統括が手番を終えるたびに onOrchestratorTurnEnd を呼ぶ（Copilot CLI がメインのエージェントに知らせる代わり）。
 //   状態 … Agent SDK のフック（SubagentStart・SubagentStop・PreToolUse・PostToolUse）と、メッセージ（assistant・result）から作る。
 //   記録のツールを呼んだエージェント … フック PreToolUse の tool_use_id と agent_id から知り、MCP の呼び出しの _meta の claudecode/toolUseId と結び付ける。
 //
@@ -44,6 +48,9 @@ const GH_STUB = '#!/bin/sh\necho "gh は開発の試験では使えません" >&
 // 同じ文かは inner-adapter.test.mjs が adapter.mjs の文字と突き合わせる。
 export const OPEN_FAILED = 'Web管理画面を開けませんでした。ユーザーに、開けなかったことを伝えてください。';
 export const RECORD_FAILED = '記録のツールの処理で、予期しない失敗が起きました。もう一度呼んでも同じなら、作業を終えてください。';
+export const ANSWER_FAILED = '答えを渡す処理で、予期しない失敗が起きました。ユーザーに、答えを渡せなかったことを伝えてください。';
+/** 送れないときの返り値（Copilot CLI 1.0.102・1.0.103 の tasks.sendMessage と同じ文。設計書 11章 #19） */
+const NOT_ACCEPTING = 'Agent not found or not accepting messages';
 /** ツールの失敗の結果（MCP の形：isError と content の文）。モデルは content の文をそのまま読む */
 export const failureResult = (text) => ({ content: [{ type: 'text', text }], isError: true });
 
@@ -122,11 +129,13 @@ export function summarizeMessage(message) {
  * @param {(entry: object) => void} [options.record] 記録（events.jsonl に書く 1 件）を受け取る
  * @param {Function} [options.startUi] (core) => Promise<{ url, close }>。省くと、生成プラグインの ui/app.mjs を使う
  * @param {Function} [options.importModule] モジュールの読み込み（試験用）
+ * @param {(turn: { id: string, name: string, lastText: string, turns: number }) => void} [options.onOrchestratorTurnEnd]
+ *   統括が手番を終え、中心の処理がそのイベントを処理し終えたときに呼ぶ（Copilot CLI がメインのエージェントに知らせる代わり。4.7、4.15）
  */
 export async function createInnerAdapter(options) {
   const {
     sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra = {}, mainModel = 'claude-sonnet-5-5', sandbox = false,
-    record = () => {}, importModule = (file) => import(pathToFileURL(file).href),
+    record = () => {}, importModule = (file) => import(pathToFileURL(file).href), onOrchestratorTurnEnd = null,
   } = options;
   for (const key of ['sdk', 'pluginRoot', 'convertedRoot', 'workDir', 'runDir']) {
     if (!options[key]) throw new Error(`createInnerAdapter には ${key} が要ります。`);
@@ -218,6 +227,8 @@ export async function createInnerAdapter(options) {
     try {
       if (shortName === 'open') return describeOpened(await core.open({ requestText: args?.requestText }));
       const agentId = toolOwner.get(ctx.toolUseId) ?? ctx.agentId ?? root?.id;
+      // 答えを渡すツールは、メインのエージェントが呼ぶ（4.15）。中心の処理の答えの窓口に渡す
+      if (shortName === 'answer') return await core.relayHumanAnswer({ answer: args?.answer }, { agentId });
       return await core.handleTool(shortName, args, { agentId });
     } catch (error) {
       if (error instanceof RecordRefusal) {
@@ -226,7 +237,7 @@ export async function createInnerAdapter(options) {
       }
       console.error(`[内側のつなぎ口] ツール「${shortName}」の処理で予期しない失敗が起きました：`, error);
       record({ t: 'tool_error', run: root?.id ?? 'main', tool: shortName, message: String(error?.message ?? error), stack: String(error?.stack ?? '') });
-      return failureResult(shortName === 'open' ? OPEN_FAILED : RECORD_FAILED);
+      return failureResult(shortName === 'open' ? OPEN_FAILED : shortName === 'answer' ? ANSWER_FAILED : RECORD_FAILED);
     }
   }
 
@@ -328,8 +339,27 @@ export async function createInnerAdapter(options) {
     emit({ agentId: root.id, ...event });
   }
 
+  // 統括の手番の終わり。初めの手番は agent.completed（finish）、2回目からは agent.idle を届ける（Copilot CLI と同じ。11章 #19）
+  function endTurn(root, event) {
+    root.turnEnded = true;
+    root.turns += 1;
+    if (root.turns === 1) finish(root, event.type === 'agent.failed' ? 'failed' : 'completed', event);
+    else {
+      const agent = agents.get(root.id);
+      agent.status = event.type === 'agent.failed' ? 'failed' : 'completed';
+      agent.endedAt = now();
+      emit({ agentId: root.id, ...(event.type === 'agent.failed' ? event : { type: 'agent.idle', response: event.response }) });
+    }
+    if (event.type !== 'agent.failed' && typeof onOrchestratorTurnEnd === 'function') {
+      const turn = { id: root.id, name: root.name, lastText: String(event.response ?? root.lastText ?? ''), turns: root.turns };
+      // 中心の処理がイベントを処理し終えてから知らせる（人の判断待ちになったかを、知らせを受けた側が状態で見分けられるように）
+      core.whenIdle().then(() => onOrchestratorTurnEnd(turn)).catch(() => {});
+    }
+  }
+
   function handleMessage(root, message) {
     if (message.type !== 'stream_event') record({ t: 'sdk', run: root.id, m: summarizeMessage(message) });
+    if (typeof message.session_id === 'string' && message.session_id !== '') root.sessionId = message.session_id;
     if (message.type === 'system' && message.subtype === 'init') {
       root.init = {
         model: message.model, agents: message.agents ?? [], plugins: (message.plugins ?? []).map((p) => p.name), pluginErrors: message.plugin_errors ?? [],
@@ -350,13 +380,14 @@ export async function createInnerAdapter(options) {
       root.costUsd = message.total_cost_usd ?? root.costUsd;
       root.numTurns = message.num_turns ?? root.numTurns;
       const failed = message.is_error === true || String(message.subtype).startsWith('error');
+      if (root.cancelled || root.turnEnded) return;
       if (!failed) {
-        finish(root, 'completed', { type: 'agent.completed', cancelled: false, response: message.result ?? root.lastText });
+        endTurn(root, { type: 'agent.completed', cancelled: false, response: message.result ?? root.lastText });
         return;
       }
       const reason = text(message.result) || (message.errors ?? []).join('、') || `エラーで終わりました（${message.subtype}）`;
       if (limitPrefixes.some((prefix) => reason.startsWith(prefix))) state.limitHit = { message: reason, runId: root.id };
-      finish(root, 'failed', { type: 'agent.failed', error: reason });
+      endTurn(root, { type: 'agent.failed', error: reason });
     }
   }
 
@@ -364,9 +395,9 @@ export async function createInnerAdapter(options) {
     try {
       for await (const message of query) handleMessage(root, message);
     } catch (error) {
-      if (!root.cancelled) finish(root, 'failed', { type: 'agent.failed', error: `統括の実行が失敗しました：${error?.message ?? error}` });
+      if (!root.cancelled && !root.turnEnded) endTurn(root, { type: 'agent.failed', error: `統括の実行が失敗しました：${error?.message ?? error}` });
     }
-    if (!root.finalized && !root.cancelled) finish(root, 'failed', { type: 'agent.failed', error: '統括の実行が、結果を返さずに終わりました。' });
+    if (!root.turnEnded && !root.cancelled) endTurn(root, { type: 'agent.failed', error: '統括の実行が、結果を返さずに終わりました。' });
     root.ended = true;
   }
 
@@ -451,7 +482,10 @@ export async function createInnerAdapter(options) {
       const copilotName = model ?? mainCopilotName;
       const claudeId = toClaudeModelId(modelMap, copilotName);
       const id = `orch-${++seq}`;
-      const root = { id, name, status: 'running', cancelled: false, finalized: false, ended: false, skillsUsed: [], lastText: '', costUsd: 0, numTurns: 0, init: null };
+      const root = {
+        id, name, status: 'running', cancelled: false, finalized: false, ended: false, skillsUsed: [], lastText: '', costUsd: 0, numTurns: 0, init: null,
+        sessionId: null, turns: 0, turnEnded: false,
+      };
       runs.set(id, root);
       agents.set(id, {
         agentId: id, parentAgentId: null, agentType, displayName: name ?? agentType, status: 'running', executionMode: 'background',
@@ -462,17 +496,17 @@ export async function createInnerAdapter(options) {
       root.abort = new AbortController();
       const home = path.join(runDir, `home-${id}`);
       fs.mkdirSync(home, { recursive: true });
-      root.query = sdk.query({
-        prompt,
-        options: makeQueryOptions({
-          cwd: workDir, home, model: claudeId, plugins: [copy.dest], mcpServers: { [serverName]: buildToolServer(root) }, mcpTools: mcpTools(),
-          hooks: makeHooks(root), agent: orchestratorType, sandbox, maxTurns: ORCHESTRATOR_MAX_TURNS, abortController: root.abort,
-          effort: copy.appliedEfforts[orchestratorType],
-          // Agent は既定で裏で動く。前面で動かして終わるのを待つかは、統括の指示（run_in_background: false）に従うかで決まる。
-          // 環境変数 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS で強制はしない（指示に従うかも試すため）
-          envExtra,
-        }),
+      // 同じ統括の続き（sendMessage）でも同じ設定で動かすので、組み立て方を残す
+      root.optionsFor = (resume) => makeQueryOptions({
+        cwd: workDir, home, model: claudeId, plugins: [copy.dest], mcpServers: { [serverName]: buildToolServer(root) }, mcpTools: mcpTools(),
+        hooks: makeHooks(root), agent: orchestratorType, sandbox, maxTurns: ORCHESTRATOR_MAX_TURNS, abortController: root.abort,
+        effort: copy.appliedEfforts[orchestratorType],
+        // Agent は既定で裏で動く。前面で動かして終わるのを待つかは、統括の指示（run_in_background: false）に従うかで決まる。
+        // 環境変数 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS で強制はしない（指示に従うかも試すため）
+        envExtra,
+        resume,
       });
+      root.query = sdk.query({ prompt, options: root.optionsFor(undefined) });
       emit({ type: 'agent.started', agentId: id, parentAgentId: undefined, agentType, model: copilotName, executionMode: 'background', description: undefined });
       root.done = consume(root, root.query);
       return { agentId: id };
@@ -481,6 +515,24 @@ export async function createInnerAdapter(options) {
     async cancelAgent(agentId) {
       const root = runs.get(agentId);
       if (root) cancelRoot(root);
+    },
+
+    // 手番を終えた統括に、続きの文を送る（4.15）。同じ会話（session_id）を resume した query() を、同じ番号のまま始める
+    async sendMessage(agentId, message) {
+      const root = runs.get(agentId);
+      if (!root || root.cancelled || !root.sessionId) return { sent: false, error: NOT_ACCEPTING };
+      await root.done; // 前の手番の query() が終わりきるのを待つ
+      if (root.cancelled) return { sent: false, error: NOT_ACCEPTING };
+      const agent = agents.get(root.id);
+      agent.status = 'running';
+      agent.endedAt = null;
+      root.ended = false;
+      root.turnEnded = false;
+      root.lastText = '';
+      root.query = sdk.query({ prompt: String(message), options: root.optionsFor(root.sessionId) });
+      record({ t: 'orchestrator_resumed', run: root.id, turn: root.turns + 1 });
+      root.done = consume(root, root.query);
+      return { sent: true };
     },
 
     async listTasks() {
@@ -541,7 +593,7 @@ export async function createInnerAdapter(options) {
     agents: () => [...agents.values()].map((a) => ({ ...a })),
     runs: () => [...runs.values()].map((r) => ({
       id: r.id, name: r.name, cancelled: r.cancelled, ended: r.ended, init: r.init, skillsUsed: [...r.skillsUsed], costUsd: r.costUsd,
-      numTurns: r.numTurns, lastText: r.lastText, appliedModels: r.plugin?.applied ?? {}, appliedEfforts: r.plugin?.appliedEfforts ?? {}, orchestratorTools: r.plugin?.tools ?? null,
+      numTurns: r.numTurns, turns: r.turns, lastText: r.lastText, appliedModels: r.plugin?.applied ?? {}, appliedEfforts: r.plugin?.appliedEfforts ?? {}, orchestratorTools: r.plugin?.tools ?? null,
     })),
     chatLog: () => [...chatLog],
     limitHit: () => state.limitHit,

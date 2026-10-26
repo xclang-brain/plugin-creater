@@ -209,6 +209,17 @@ export function richRunning() {
   return state;
 }
 
+/** 人の判断待ちの状態（統括が質問を記録して手番を終えた。4.15）。長い質問で、崩れと色を確かめる */
+export function richWaitingHuman() {
+  const state = richRunning();
+  state.run.status = 'waiting_human';
+  state.run.phase = null;
+  state.run.waits = [];
+  state.run.agents = state.run.agents.map((a) => (a.slot === 'orchestrator' ? { ...a, status: 'waiting_human' } : { ...a, status: a.status === 'standby' ? 'standby' : 'completed' }));
+  state.run.humanWait = { question: `試行 1 のビルドが失敗しました。ツールチェーンが見つかりません。どうしますか？ ${LONG}`, askedAt: Date.UTC(2026, 9, 22, 3, 10, 0), iteration: 1, waiting: true };
+  return state;
+}
+
 export function richFinished() {
   const state = richRunning();
   state.run.status = 'finished';

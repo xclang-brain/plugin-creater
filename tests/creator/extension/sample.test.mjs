@@ -201,7 +201,8 @@ describe('Web管理画面の見本', () => {
       const staticDir = path.join(TEMPLATE_EXTENSION_DIR, 'ui', 'static');
       for (const name of ['app.js', 'render.js', 'style.css']) {
         const served = await (await sampleApi(url, `/${name}`)).text();
-        assert.equal(served, fs.readFileSync(path.join(staticDir, name), 'utf8'), `${name} がひな形と違う`);
+        // 合言葉の差し込み口（style.css の中のフォントの URL）だけは、今の合言葉になる
+        assert.equal(served, fs.readFileSync(path.join(staticDir, name), 'utf8').replaceAll('%%K%%', u.searchParams.get('k')), `${name} がひな形と違う`);
       }
       assert.match(u.hostname, /^127\.0\.0\.1$/);
     });

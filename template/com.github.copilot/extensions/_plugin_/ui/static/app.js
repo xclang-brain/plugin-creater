@@ -8,9 +8,9 @@
 
   // ---- 日本語の表 ------------------------------------------------------------
 
-  const RUN_STATUS = { preparing: '準備中', starting: '開始中', running: '実行中', summarizing: 'まとめ中', stopping: '停止中', finished: '終了' };
-  const ACTIVE_STATUSES = ['starting', 'running', 'summarizing', 'stopping'];
-  const STOPPABLE_STATUSES = ['starting', 'running', 'summarizing'];
+  const RUN_STATUS = { preparing: '準備中', starting: '開始中', running: '実行中', waiting_human: '人の判断待ち', summarizing: 'まとめ中', stopping: '停止中', finished: '終了' };
+  const ACTIVE_STATUSES = ['starting', 'running', 'waiting_human', 'summarizing', 'stopping'];
+  const STOPPABLE_STATUSES = ['starting', 'running', 'waiting_human', 'summarizing'];
   const PHASES = [
     { id: 'plan', label: '計画' },
     { id: 'do', label: '実行' },
@@ -23,6 +23,7 @@
     standby: ['待機', 'standby'],
     running: ['実行中', 'running'],
     waiting: ['待ち（チャットで確認を待っています）', 'waiting'],
+    waiting_human: ['人の判断待ち（チャットで答えてください）', 'waiting'],
     completed: ['完了', 'completed'],
     failed: ['失敗', 'failed'],
     stopped: ['停止', 'stopped'],
@@ -31,6 +32,7 @@
   const END_KINDS = {
     all_passed: ['評価基準をすべて満たした', 'completed'],
     max_iterations: ['上限の回数に達した', 'waiting'],
+    human_ended: ['人の指示で終えた', 'stopped'], // 人の判断待ちの答えで終えた（4.15）。人が決めた終わりで、失敗ではない
     user_stopped: ['ユーザーが止めた', 'stopped'],
     aborted: ['途中で終わった', 'failed'],
   };
@@ -43,6 +45,7 @@
     orchestrator_ended: '繰り返しを終えないまま統括エージェントが終わった',
     retry_limit: '記録のやり直しが上限を超えた',
     extension_restarted: 'エクステンションが再起動した',
+    answer_not_delivered: '人の答えを統括エージェントに渡せなかった',
   };
   const WAIT_KINDS = { permission: '許可', question: '質問', limit: 'AI クレジットの上限' };
   const PERMISSION_KINDS = {
@@ -143,7 +146,7 @@
       const [label, tone] = END_KINDS[run.endReason?.kind] ?? ['', 'neutral'];
       return badge(label ? `終了（${label}）` : '終了', tone);
     }
-    const tone = { preparing: 'neutral', starting: 'running', running: 'running', summarizing: 'running', stopping: 'waiting' }[status] ?? 'neutral';
+    const tone = { preparing: 'neutral', starting: 'running', running: 'running', waiting_human: 'waiting', summarizing: 'running', stopping: 'waiting' }[status] ?? 'neutral';
     return badge(RUN_STATUS[status] ?? status, tone);
   }
 
@@ -164,7 +167,7 @@
   function buildHead(state) {
     const run = state.run;
     const status = run?.status ?? 'preparing';
-    if (status !== 'starting' && status !== 'running' && status !== 'summarizing') ui.stopPending = false;
+    if (!STOPPABLE_STATUSES.includes(status)) ui.stopPending = false;
     const title = state.plugin?.title || '作業の画面';
     document.title = `${title} - Web管理画面`;
     const unstoppable = Boolean(run?.endReason?.unstoppable);
@@ -315,7 +318,7 @@
     );
   }
 
-  const PHASE_NOTES = { starting: '開始しています', summarizing: 'まとめています', stopping: '止めています', finished: '終了しました' };
+  const PHASE_NOTES = { starting: '開始しています', waiting_human: '人の判断を待っています', summarizing: 'まとめています', stopping: '止めています', finished: '終了しました' };
 
   function buildMonitor(state) {
     const run = state.run;
@@ -392,6 +395,38 @@
         h('h2', null, 'チャットで確認を待っています'),
         h('p', { class: 'help' }, '確認への答えは、Copilot CLI のチャットで行ってください。この画面には、答えるボタンはありません。'),
         waits.map((wait) => waitItem(wait, run.agents ?? [])),
+      ];
+    });
+  }
+
+  // ---- 部分：人の判断待ち（統括エージェントの質問） ---------------------------------------------
+
+  function buildHuman(state) {
+    const run = state.run;
+    // 統括が手番を終えて待ちに入ってから出す。質問を記録してから手番を終えるまでのあいだは、答えを渡せないため。
+    // 止めている間と終わった後も出さない（答えても、もう続かないため）
+    const wait = run && run.status === 'waiting_human' ? run.humanWait : null;
+    update('human', wait ? [wait.question, wait.iteration, wait.waiting, wait.askedAt] : null, () => {
+      if (!wait) return null;
+      return [
+        h('h2', null, '人の判断待ち'),
+        h(
+          'p',
+          { class: 'note note-warn', id: 'human-answer-in-chat' },
+          '統括エージェントが、あなたの判断を待っています。Copilot CLI のチャットで答えてください。答えると、同じ実行が続きます。この画面には、答える欄はありません。',
+        ),
+        h(
+          'article',
+          { class: 'wait', dataset: { kind: 'human' } },
+          h('h3', null, '統括エージェントからの質問'),
+          h(
+            'dl',
+            { class: 'facts wide' },
+            fact('質問', h('span', { class: 'text-block', id: 'human-question' }, text(wait.question))),
+            wait.iteration ? fact('試行', `${wait.iteration} 回目`) : null,
+            wait.askedAt ? fact('聞いた時刻', formatTime(wait.askedAt)) : null,
+          ),
+        ),
       ];
     });
   }
@@ -781,6 +816,7 @@
     buildConnection();
     buildClearNotice(state);
     buildMonitor(state);
+    buildHuman(state);
     buildWaits(state);
     buildUnstopped(state);
     buildEnd(state);
@@ -820,7 +856,7 @@
       ['clear', 'div', {}],
     ];
     const main = h('main', { class: 'main' });
-    const mainIds = ['monitor', 'waits', 'unstopped', 'end', 'notices', 'setup', 'previous', 'displays', 'iterations', 'issues'];
+    const mainIds = ['monitor', 'human', 'waits', 'unstopped', 'end', 'notices', 'setup', 'previous', 'displays', 'iterations', 'issues'];
     for (const [id, tag, props] of layout) {
       sections[id] = h(tag, { ...props, id: `s-${id}`, hidden: true });
       root.appendChild(sections[id]);

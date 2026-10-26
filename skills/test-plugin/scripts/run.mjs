@@ -8,6 +8,7 @@
 //   3. セッションを作る。ありのときは requestExtensions: true。読み込まれたプラグインとエクステンションを確かめ、記録する
 //   4. 課題の頼むときの言葉を送る
 //   5. ありのとき：チャットに出た URL を画面で開き、設定を入れて開始し、終わった理由が出たら結果を読む。なしのとき：手番が終わる（session.idle）まで待つ
+//      ありで、実行が人の判断待ちになり、メインのエージェントの手番が終わったら、決まった返事をチャットに送る（human-wait.mjs）
 //   6. 落ち着くまで待ち（最後の費用のイベントを取りこぼさないため）、セッションとクライアントを閉じる
 //   7. ありのとき、この実行でできた生成プラグインの実行の記録だけを消す（plugin-records.mjs。ふだんの作業の記録と同じ場所に入るため。ユーザーの答え27）
 //   8. 作業フォルダの成果物を、基準で採点する（生成プラグインの検証エージェントの合否は使わない）
@@ -20,6 +21,7 @@ import path from 'node:path';
 import { clipText, createEventLog, createTracker, waitUntil } from './events.mjs';
 import { createExtensionLaunchProvider } from './extension-launch.mjs';
 import { gradeRun } from './grade.mjs';
+import { createHumanWaitAnswerer } from './human-wait.mjs';
 import { createPermissionHandler, createUserInputHandler } from './permissions.mjs';
 import { removeEvalRecords, watchPluginRecords } from './plugin-records.mjs';
 import { RESULT_FILE, createResultsDir, summarizeRuns, writeJsonAtomic } from './results.mjs';
@@ -39,6 +41,8 @@ export const DEFAULTS = Object.freeze({
   idleGraceMs: 120_000,
   /** 画面の状態を見る間隔 */
   screenPollMs: 2000,
+  /** 人の判断待ちで、手番の終わりの知らせか session.idle が届かないとき、セッションが何ミリ秒静かなら、決まった返事を送るか */
+  humanQuietMs: 60_000,
   /** 閉じるのを待つ上限 */
   closeMs: 15_000,
 });
@@ -261,6 +265,8 @@ function warningsOf(runs, summary) {
   }
   const skippedRecords = runs.find((r) => r.pluginRecords?.skipped);
   if (skippedRecords) out.push(`試験でできた生成プラグインの実行の記録は、消していません（${skippedRecords.pluginRecords.skipped}）。`);
+  const humanFailed = runs.filter((r) => r.humanAnswerFailures?.length);
+  if (humanFailed.length > 0) out.push(`人の判断待ちに、決まった返事をチャットで送れなかった実行があります（${humanFailed.map(where).join('、')}）。`);
   const rejected = runs.reduce((total, r) => total + (r.permissions?.rejected ?? 0), 0);
   if (rejected > 0) out.push(`作業フォルダの外への書き込みなど、${rejected} 件の許可の求めを拒みました。`);
   return out;
@@ -304,6 +310,19 @@ async function runOne(ctx, task, variant, n, where) {
       }
     },
   });
+
+  // 人の判断待ちに、決まった返事をチャットで送る（ありのときだけ。session は後で作る）
+  const human =
+    variant === 'with'
+      ? createHumanWaitAnswerer({
+          tracker,
+          send: (prompt) => session.send({ prompt }),
+          now: nowMs,
+          settleMs: timing.settleMs,
+          quietMs: timing.humanQuietMs,
+          log: (entry) => eventLog.write(entry),
+        })
+      : null;
 
   try {
     ({ workDir, inputs } = prepareWorkDir({ task, dir: path.join(workRoot, `${task.id}-${variant}-${n}`) }));
@@ -352,7 +371,7 @@ async function runOne(ctx, task, variant, n, where) {
     } else {
       tracker.markSent();
       await session.send({ prompt: task.json.prompt });
-      if (variant === 'with') await driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, eventLog });
+      if (variant === 'with') await driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, eventLog, human });
       else await driveWithoutPlugin({ ctx, tracker, record, remaining });
       // 最後の費用のイベントまで取りこぼさないよう、落ち着くまで待つ
       await waitUntil(() => tracker.settled(timing.settleMs), { timeoutMs: Math.min(timing.idleGraceMs, Math.max(remaining(), timing.settleMs * 2)), signal, pollMs: Math.min(25, timing.settleMs) });
@@ -372,7 +391,7 @@ async function runOne(ctx, task, variant, n, where) {
     record.status = 'stopped';
     record.error = state.stopped.message;
   }
-  fillFromTracker({ record, tracker, permission, userInput });
+  fillFromTracker({ record, tracker, permission, userInput, human });
   if (launchProviderOf) record.extensionLaunch = { launched: launchProviderOf.launched, refused: launchProviderOf.skipped };
   if ((record.status === 'completed' || record.status === 'incomplete') && workDir) {
     try {
@@ -455,7 +474,7 @@ async function recordExtensions({ session, tracker, record, plugin }) {
   record.refusedExtensions = [...refused];
 }
 
-async function driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, eventLog }) {
+async function driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, eventLog, human }) {
   const { screen, signal, timing } = ctx;
   const done = () => tracker.state.url || tracker.state.errors.length > 0 || (tracker.state.idleCount > 0 && !tracker.state.busy);
   const waited = await waitUntil(done, { timeoutMs: remaining(), signal });
@@ -472,6 +491,10 @@ async function driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, 
   }
   const screenFile = path.join(runDir, 'screen.json');
   let result;
+  // 人の判断待ちを見張る。画面の状態は onSnapshot で受け、メインのエージェントの手番の終わりは、決まった間隔で確かめる
+  const humanTimer = setInterval(() => {
+    if (!signal.aborted) human.tick().catch(() => {});
+  }, Math.min(250, timing.screenPollMs));
   try {
     result = await screen.operate({
       url: tracker.state.url,
@@ -480,7 +503,10 @@ async function driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, 
       pollMs: timing.screenPollMs,
       screenshotPath: path.join(runDir, 'screen.png'),
       signal,
-      onSnapshot: (snap) => eventLog.write({ type: 'screen.snapshot', data: snap }),
+      onSnapshot: (snap) => {
+        eventLog.write({ type: 'screen.snapshot', data: snap });
+        human.observe(snap);
+      },
     });
   } catch (error) {
     if (!(error instanceof ScreenError)) throw error;
@@ -489,6 +515,9 @@ async function driveWithPlugin({ ctx, task, tracker, record, runDir, remaining, 
     writeScreenRecord(screenFile, { url: tracker.state.url, error: error.message, snapshots: error.snapshots ?? [] });
     record.screen = path.relative(ctx.resultsDir, screenFile).split(path.sep).join('/');
     return;
+  } finally {
+    clearInterval(humanTimer);
+    human.close();
   }
   writeScreenRecord(screenFile, { url: tracker.state.url, ...result });
   record.screen = path.relative(ctx.resultsDir, screenFile).split(path.sep).join('/');
@@ -526,7 +555,7 @@ async function driveWithoutPlugin({ ctx, tracker, record, remaining }) {
   }
 }
 
-function fillFromTracker({ record, tracker, permission, userInput }) {
+function fillFromTracker({ record, tracker, permission, userInput, human }) {
   const c = tracker.credits();
   record.credits = c.credits;
   record.creditsStatus = c.status;
@@ -540,6 +569,10 @@ function fillFromTracker({ record, tracker, permission, userInput }) {
     : null;
   record.questions = userInput.stats.count;
   record.questionTexts = userInput.stats.questions;
+  // 人の判断待ちに送った決まった返事の数と、その質問の文（ありのときだけ起きる）
+  record.humanQuestions = human ? human.stats.count : 0;
+  record.humanQuestionTexts = human ? human.stats.questions : [];
+  if (human?.stats.failures.length) record.humanAnswerFailures = human.stats.failures;
 }
 
 /** セッションとクライアントを閉じる。閉じるのに時間がかかるときは、強制的に止める */

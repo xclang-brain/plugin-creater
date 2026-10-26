@@ -20,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 
 import { contrastProblems, layoutProblems } from './page-checks.mjs';
-import { ALL_DISPLAYS_TASK, LONG, LONG_COMMAND, MODELS, SAMPLE_TASK, createFakeCore, finishedState, locateUi, prepState, richFinished, richPrep, richRunning, runState } from './fake-core.mjs';
+import { ALL_DISPLAYS_TASK, LONG, LONG_COMMAND, MODELS, SAMPLE_TASK, createFakeCore, finishedState, locateUi, prepState, richFinished, richPrep, richRunning, richWaitingHuman, runState } from './fake-core.mjs';
 
 // ---- Playwright を見つける（見つからなければ、直し方を示して止まる） -------------------------------
 
@@ -388,6 +388,72 @@ describe('実行中の表示（REQ-005、REQ-008）', () => {
 
 // ---- 確認の待ち ---------------------------------------------------------------------------------------
 
+describe('人の判断待ち（REQ-051）', () => {
+  const waitingState = () => {
+    const state = runState('plan');
+    state.run.status = 'waiting_human';
+    state.run.phase = null;
+    state.run.agents[0].status = 'waiting_human';
+    state.run.agents[1].status = 'completed';
+    state.run.humanWait = { question: 'ビルドが失敗しました。<b>どうしますか</b>？', askedAt: Date.UTC(2026, 9, 22, 3, 10, 0), iteration: 1, waiting: true };
+    return state;
+  };
+
+  test('REQ-051 人の判断待ちになると、「人の判断待ち」と、質問の文と、チャットで答えてほしいことが出る。答える欄はなく、止めるボタンは押せる', async () => {
+    await withScreen({ state: waitingState() }, async ({ page, core }) => {
+      assert.equal((await textOf(page, '#run-status')).trim(), '人の判断待ち');
+      const panel = await page.locator('#s-human').innerText();
+      assert.match(panel, /人の判断待ち/);
+      assert.match(panel, /チャットで答えてください/);
+      assert.equal((await textOf(page, '#human-question')).trim(), 'ビルドが失敗しました。<b>どうしますか</b>？', '質問は文字のまま出る');
+      assert.equal(await page.locator('#s-human b').count(), 0, '質問の文を HTML として扱わない');
+      assert.match(panel, /1 回目/);
+      assert.match(await textOf(page, '.agent[data-slot="orchestrator"] .agent-status'), /人の判断待ち（チャットで答えてください）/);
+      assert.match(await textOf(page, '#s-monitor'), /人の判断を待っています/);
+      assert.equal(await page.locator('#phases [data-active="true"]').count(), 0, 'フェーズは示さない');
+      assert.equal(await page.locator('#s-human button, #s-human input, #s-human textarea, #s-human select, #s-human a').count(), 0, '答える欄がない');
+      assert.equal(await page.locator('#stop').isDisabled(), false, '待っているあいだも止められる');
+      // 答えが届いて実行中に戻ると、消える
+      core.set((s) => {
+        s.run.status = 'running';
+        s.run.phase = 'plan';
+        s.run.humanWait = null;
+        s.run.agents[0].status = 'running';
+        return s;
+      });
+      await until(page, () => document.getElementById('s-human').hidden);
+      assert.equal((await textOf(page, '#run-status')).trim(), '実行中');
+    });
+  });
+
+  test('REQ-051 統括が質問を記録してから手番を終えるまでは、人の判断待ちの欄を出さない（答えを渡せないため）', async () => {
+    const state = waitingState();
+    state.run.status = 'running';
+    state.run.phase = 'plan';
+    state.run.agents[0].status = 'running';
+    state.run.humanWait = { ...state.run.humanWait, waiting: false };
+    await withScreen({ state }, async ({ page }) => {
+      assert.equal((await textOf(page, '#run-status')).trim(), '実行中');
+      assert.equal(await page.locator('#s-human').isHidden(), true);
+    });
+  });
+
+  test('REQ-051 人の判断待ちのあいだに止めるを押すと、止める窓口が呼ばれる', async () => {
+    await withScreen({ state: waitingState() }, async ({ page, core }) => {
+      await page.click('#stop');
+      await until(page, () => document.querySelector('#stop')?.disabled === true);
+      assert.ok(core.calls.some((c) => c.name === 'stop'), JSON.stringify(core.calls));
+    });
+  });
+
+  test('REQ-051 途中で終わった理由「人の答えを統括エージェントに渡せなかった」が文字で出る', async () => {
+    await withScreen({ state: finishedState({ kind: 'aborted', detail: 'answer_not_delivered', unstoppable: false }) }, async ({ page }) => {
+      assert.match(await textOf(page, '#end-reason'), /途中で終わった（人の答えを統括エージェントに渡せなかった）/);
+      assert.equal(await page.locator('#s-human').isHidden(), true);
+    });
+  });
+});
+
 describe('確認の待ち（REQ-005）', () => {
   const permissionWait = (detail = {}) => ({
     requestId: 'r1',
@@ -587,6 +653,7 @@ describe('結果の確認（REQ-011、REQ-012、REQ-013）', () => {
     const cases = [
       [{ kind: 'all_passed' }, '評価基準をすべて満たした', '終了（評価基準をすべて満たした）'],
       [{ kind: 'max_iterations' }, '上限の回数に達した', '終了（上限の回数に達した）'],
+      [{ kind: 'human_ended' }, '人の指示で終えた', '終了（人の指示で終えた）'],
       [{ kind: 'user_stopped' }, 'ユーザーが止めた', '終了（ユーザーが止めた）'],
       [{ kind: 'aborted', detail: 'cut_off' }, '途中で終わった（途中で切れた）', '終了（途中で終わった）'],
       [{ kind: 'aborted', detail: 'credit_limit' }, '途中で終わった（AI クレジットの上限）', '終了（途中で終わった）'],
@@ -607,6 +674,16 @@ describe('結果の確認（REQ-011、REQ-012、REQ-013）', () => {
         assert.equal(await textOf(page, '#run-status'), pill);
         assert.equal(await page.locator('#s-unstopped').isHidden(), true);
       }
+    });
+  });
+
+  test('REQ-051 人の指示で終えた実行は「終了（人の指示で終えた）」になり、札の色は「ユーザーが止めた」と同じ種類で、まとめが出る', async () => {
+    const state = finishedState({ kind: 'human_ended', detail: null, unstoppable: false }, { summary: '人の指示で、試行 1 の途中で終えました。' });
+    await withScreen({ state }, async ({ page }) => {
+      assert.equal(await textOf(page, '#run-status'), '終了（人の指示で終えた）');
+      assert.match(await textOf(page, '#end-reason'), /終わった理由：\s*人の指示で終えた/);
+      assert.equal(await page.locator('#run-status .badge').getAttribute('class'), 'badge badge-stopped');
+      assert.match(await textOf(page, '#s-end'), /まとめ[\s\S]*人の指示で、試行 1 の途中で終えました。/);
     });
   });
 
@@ -1403,9 +1480,39 @@ describe('見た目（REQ-030）', () => {
     }
   });
 
+  test('REQ-030 文字は、同梱の書体（IBM Plex Sans JP の標準と太字）で描かれる。日本語も英数字も、ほかの書体に代わらない', async () => {
+    await withScreen({ state: runState('do') }, async ({ page, context, requests }) => {
+      const faces = await page.evaluate(async () => {
+        await document.fonts.ready;
+        return [...document.fonts].map((f) => `${f.family.replace(/["']/g, '')}|${f.weight}|${f.status}`).sort();
+      });
+      assert.deepEqual(faces, ['IBM Plex Sans JP|400|loaded', 'IBM Plex Sans JP|700|loaded']);
+      assert.ok(requests.some((url) => url.includes('/fonts/ibm-plex-sans-jp/IBMPlexSansJP-Regular.woff2?k=')), '標準のフォントを読み込んでいない');
+      assert.ok(requests.every((url) => url.startsWith(new URL(page.url()).origin)), '自分のサーバーの外を読み込んでいる');
+      // ブラウザーが実際に使った書体（Chromium の開発者向けの窓口で調べる）
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('DOM.enable');
+      await cdp.send('CSS.enable');
+      const { root } = await cdp.send('DOM.getDocument', { depth: -1 });
+      for (const [selector, what] of [
+        ['h1', '見出し（日本語・太字）'],
+        ['.trial-help', '説明（日本語・標準）'],
+        ['.actual-model', 'モデルの名前（英数字）'],
+        ['.agent-status .badge', '状態の札（日本語・太字）'],
+      ]) {
+        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector });
+        assert.ok(nodeId, `${selector} がない`);
+        const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+        assert.ok(fonts.length > 0, `${what}：書体が分からない`);
+        assert.deepEqual(fonts.filter((f) => f.familyName !== 'IBM Plex Sans JP' || !f.isCustomFont).map((f) => f.familyName), [], `${what}が、ほかの書体で描かれている`);
+      }
+    });
+  });
+
   const WIDTHS = [320, 375, 480, 768, 1024, 1280, 1600, 1920];
   const SCREENS = [
     ['実行中', () => richRunning(), ALL_DISPLAYS_TASK],
+    ['人の判断待ち', () => richWaitingHuman(), ALL_DISPLAYS_TASK],
     ['終了後', () => richFinished(), ALL_DISPLAYS_TASK],
     ['準備中', () => richPrep(), SAMPLE_TASK],
   ];
@@ -1463,9 +1570,68 @@ describe('見た目（REQ-030）', () => {
     });
   }
 
+  test('REQ-030 設計図風の決まり：飾りの矢印の文字（「→」など）を使わず、等幅の書体はコマンドの全文だけに使う', async () => {
+    for (const [name, makeState, task] of SCREENS) {
+      await withScreen({ state: makeState(), task, allowErrors: [HTTP_404] }, async ({ page }) => {
+        await openAllFolds(page);
+        const problems = await page.evaluate(() => {
+          const found = [];
+          const ARROW = /[←→↑↓⇒⇐›»➔➜➝➞]/;
+          const where = (el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}${el.className && typeof el.className === 'string' ? `.${el.className.trim().split(/\s+/).join('.')}` : ''}`;
+          for (const el of document.querySelectorAll('body *')) {
+            // 矢印は、文字ではなく線と三角で描く（::before・::after に文字を入れない）
+            for (const pseudo of ['::before', '::after']) {
+              const content = getComputedStyle(el, pseudo).content;
+              if (content && content !== 'none' && content !== 'normal' && ARROW.test(content)) found.push(`${where(el)}${pseudo} に矢印の文字：${content}`);
+            }
+            // リンク・ボタン・畳みの見出し・札・図の箱の文字の前後に、矢印の文字を付けない
+            if (el.matches('a, button, summary, .badge, .phase, .flow-node, .flow-link')) {
+              const label = el.textContent.trim();
+              if (ARROW.test(label.at(0) ?? '') || ARROW.test(label.at(-1) ?? '')) found.push(`${where(el)} の文字に矢印：${label}`);
+            }
+            // 等幅の書体は、コマンドの全文（.command）だけ
+            const hasText = [...el.childNodes].some((n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim()) || el.matches('input:not([type=checkbox]):not([type=radio]), select, textarea, button');
+            if (!hasText || el.closest('.command') || el.getClientRects().length === 0) continue;
+            const first = getComputedStyle(el).fontFamily.split(',')[0].trim().replace(/["']/g, '');
+            if (first !== 'IBM Plex Sans JP') found.push(`${where(el)} の書体が ${first}`);
+          }
+          return found;
+        });
+        assert.deepEqual(problems, [], `${name}の画面`);
+        assert.ok((await page.locator('.phase, .flow-node').count()) > 0 || name === '準備中', '図の箱も調べた');
+        if (name === '実行中') {
+          // コマンドの全文は、等幅の書体になる（試験が空振りでない）
+          const command = await page.locator('.command').first().evaluate((el) => getComputedStyle(el).fontFamily);
+          assert.match(command, /monospace/);
+        }
+      });
+    }
+  });
+
+  test('REQ-030 設計図風の決まり：確認の待ちと人の判断待ちの1件ずつは、方眼の上の白い四角（角は 3px）で示す', async () => {
+    // 両方の区画が出ている画面で、同じ箱になっていることを確かめる
+    const state = richRunning();
+    state.run.status = 'waiting_human';
+    state.run.humanWait = richWaitingHuman().run.humanWait;
+    await withScreen({ state, task: ALL_DISPLAYS_TASK, allowErrors: [HTTP_404] }, async ({ page }) => {
+      await until(page, () => !document.getElementById('s-waits').hidden && !document.getElementById('s-human').hidden);
+      const boxes = await page.evaluate(() =>
+        [...document.querySelectorAll('#s-waits .wait, #s-human .wait')].map((el) => {
+          const s = getComputedStyle(el);
+          return { section: el.closest('section').id, background: s.backgroundColor, border: ['Top', 'Right', 'Bottom', 'Left'].map((side) => `${s[`border${side}Width`]} ${s[`border${side}Style`]}`), radius: s.borderTopLeftRadius };
+        }),
+      );
+      assert.equal(boxes.filter((b) => b.section === 's-waits').length, 3, '確認の待ちを3件とも調べた');
+      assert.equal(boxes.filter((b) => b.section === 's-human').length, 1, '人の判断待ちも調べた');
+      for (const box of boxes) {
+        assert.deepEqual({ background: box.background, border: box.border, radius: box.radius }, { background: 'rgb(255, 255, 255)', border: Array(4).fill('1px solid'), radius: '3px' }, `${box.section} の箱`);
+      }
+    });
+  });
+
   test('REQ-030 状態の札（色の違う全種類）と、押せないボタンも、色の差が 4.5:1 以上', async () => {
     const state = richFinished();
-    state.run.agents = ['standby', 'running', 'waiting', 'completed', 'failed', 'stopped', 'unstopped'].map((status, i) => ({ ...state.run.agents[0], slot: `s${i}`, role: 'worker', label: `枠${i}`, status, agentId: null }));
+    state.run.agents = ['standby', 'running', 'waiting', 'waiting_human', 'completed', 'failed', 'stopped', 'unstopped'].map((status, i) => ({ ...state.run.agents[0], slot: `s${i}`, role: 'worker', label: `枠${i}`, status, agentId: null }));
     await withScreen({ state, task: ALL_DISPLAYS_TASK }, async ({ page }) => {
       const { problems } = await page.evaluate(contrastProblems, 4.5);
       assert.deepEqual(problems, []);
@@ -1526,12 +1692,14 @@ describe('分かりやすい表示（REQ-025）', () => {
     'preparing', 'starting', 'running', 'summarizing', 'stopping', 'finished', 'standby', 'waiting', 'completed', 'failed', 'stopped', 'unstopped',
     'all_passed', 'max_iterations', 'user_stopped', 'aborted', 'mechanical', 'orchestrator', 'verifier', 'worker', 'permission', 'question', 'limit',
     'cut_off', 'credit_limit', 'chat_interrupted', 'orchestrator_failed', 'orchestrator_ended', 'retry_limit', 'extension_restarted', 'filing', 'filed', 'unknown', 'none',
+    'waiting_human', 'answer_not_delivered', 'human',
     'undefined', 'null', 'NaN', '\\[object',
   ];
 
   for (const [name, makeState, task] of [
     ['準備中', () => richPrep(), SAMPLE_TASK],
     ['実行中', () => richRunning(), ALL_DISPLAYS_TASK],
+    ['人の判断待ち', () => richWaitingHuman(), ALL_DISPLAYS_TASK],
     ['終了後', () => richFinished(), ALL_DISPLAYS_TASK],
   ]) {
     test(`REQ-025 ${name}の画面に、状態の記号（英語）や undefined・null が出ない`, async () => {

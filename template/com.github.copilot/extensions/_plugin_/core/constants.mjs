@@ -29,7 +29,10 @@ export const LIMITS = Object.freeze({
 });
 
 // 実行の状態（6.1）
-export const ACTIVE_STATUSES = Object.freeze(['starting', 'running', 'summarizing', 'stopping']);
+export const ACTIVE_STATUSES = Object.freeze(['starting', 'running', 'waiting_human', 'summarizing', 'stopping']);
+
+// まとめ中に入って終わる、終わった理由（4.8、4.15）。統括がまとめと Issue の案を作る
+export const SUMMARY_END_KINDS = Object.freeze(['all_passed', 'max_iterations', 'human_ended']);
 
 // 思考の深さの選択肢（4.6）。公式のコマンドリファレンスの --effort の値。選ばない（''）ときは上書きしない
 export const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -52,6 +55,24 @@ export const UNSTOPPED_HOW_TO =
 export const DISCONNECTED_MESSAGE = '画面とのつながりが切れたので、作業を終えてください。';
 export const STOPPED_MESSAGE = 'この実行は止められました。ツールは使えません。作業を終えてください。';
 
+// 人の判断待ち（4.15）の決まった文
+// 統括が質問を記録したときに返す文。決まった形の返事を書いて手番を終えさせる（入口のスキルが、この形で質問を見つける）
+export const ASK_RECORDED_MESSAGE =
+  '質問を記録しました。画面に「人の判断待ち」として出ています。ほかのツールを呼ばずに、返事の1行目に「人の判断待ち」と書き、2行目から同じ質問を書いて、手番を終えてください。この実行は終わりません。ユーザーがチャットで答えると、答えがメッセージで届くので、それに沿って続けてください。';
+// 統括に送る文の始め。この後に、質問と答えを付ける
+export const ANSWER_HEAD =
+  '人の判断の答えが届きました。答えに沿って、この実行の手順を続けてください。試行の番号と記録は、待つ前の続きです。答えが、いまここで終えるよう言っているときは、あなたの定義の「人の判断を求めるとき」のとおりに、ほかの記録やエージェントの呼び出しより先に、endedByHuman を true にして、まとめに進んでください。後で終えるよう言っているときは、いまは続けて、その時が来たら、終えるかをもう一度聞いてください。';
+export const ANSWER_DELIVERED_MESSAGE =
+  '答えを統括エージェントに渡しました。統括エージェントが、同じ実行で、答えに沿って進めます。いまここで終えるよう答えたときは、まとめと Issue の案を作ってから終えます。後で終えるよう答えたとき（例：「あと1回だけ試して、だめなら終えて」）は、その時が来たら、終えるかをもう一度聞きます。ユーザーにそう伝えて、手番を終えてください。';
+export const ANSWER_NOT_DELIVERED_MESSAGE =
+  '答えを統括エージェントに渡せませんでした。この実行は「途中で終わった」で終わります。結果は画面で見られます。ユーザーにそう伝えて、手番を終えてください。作業を自分で続けないでください。';
+export const ANSWER_UNKNOWN_MESSAGE =
+  '答えを統括エージェントに渡せたか、分かりませんでした（時間切れ）。ユーザーに、画面の実行の状態がまだ「人の判断待ち」のままなら、もう一度チャットで答えるか、画面で止めるよう伝えてください。';
+export const ANSWER_ALREADY_DELIVERED_MESSAGE =
+  '前に渡した答えが、統括エージェントに届いていました。統括エージェントは続きを始めていて、同じ実行が続きます。今回の答えは渡していません。ユーザーにそう伝えて、手番を終えてください。'
+export const NOT_WAITING_MESSAGE =
+  'いまは、統括エージェントは人の判断を待っていません。答えは渡していません。実行が終わっていれば、結果は画面で見られます。ユーザーにそう伝えてください。';
+
 export const ROLE_LABELS = Object.freeze({
   orchestrator: '統括エージェント',
   worker: '作業エージェント',
@@ -69,4 +90,5 @@ export const ABORT_REASON_TEXT = Object.freeze({
   retry_limit: '記録のやり直しが上限を超えた',
   cut_off: '途中で切れた',
   extension_restarted: 'エクステンションが再起動した',
+  answer_not_delivered: '人の答えを統括エージェントに渡せなかった',
 });

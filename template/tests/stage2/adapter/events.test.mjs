@@ -161,6 +161,22 @@ describe('エージェントのイベント（REQ-008）', () => {
     ]);
   });
 
+  test('REQ-051 2回目からの手番の終わり（agent_idle だけが出る）にも、フックで届いた最後の返事がつく。返事は 1 回だけ使う', async () => {
+    const { p, seen } = await spy();
+    // 初めの手番：返事は completed につき、続く idle にはつかない
+    await p.fake.callHook('onSubagentStop', { agentId: 'ag-root', stopReason: 'end_turn', response: '人の判断待ち\n質問です' });
+    p.fake.emit(sdkEvent.subagentCompleted('ag-root'));
+    p.fake.emit(sdkEvent.agentIdle('ag-root'));
+    // 2回目からの手番：subagent.completed は出ず、idle だけが出る（Copilot CLI 1.0.102・1.0.103。設計書 11章 #19）
+    await p.fake.callHook('onSubagentStop', { agentId: 'ag-root', stopReason: 'end_turn', response: '続けて終わりました' });
+    p.fake.emit(sdkEvent.agentIdle('ag-root'));
+    assert.deepEqual(withoutTime(seen), [
+      { type: 'agent.completed', agentId: 'ag-root', cancelled: false, response: '人の判断待ち\n質問です' },
+      { type: 'agent.idle', agentId: 'ag-root' },
+      { type: 'agent.idle', agentId: 'ag-root', response: '続けて終わりました' },
+    ]);
+  });
+
   test('REQ-008 子のエージェントの終わりのフック（onSubagentStop）は何も返さない（返すと子の動きを変えてしまう）', async () => {
     const p = await startPlugin();
     for (const input of [

@@ -146,7 +146,8 @@ fetch('/api/items?k=' + encodeURIComponent(key)).then((r) => r.json()).then((dat
       assert.ok(text.includes(EVIL.img) && text.includes(EVIL.script), 'HTML は文字として出る');
       assert.equal(await page.evaluate(() => window.__pwned), undefined);
       assert.equal(await page.locator('input, select, textarea, button').count(), 0, '入力の欄もボタンもない');
-      assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('h1')).fontFamily.length > 0 && getComputedStyle(document.body).backgroundColor), 'rgb(244, 246, 248)', '生成プラグインと同じ見た目（style.css）');
+      assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('h1')).fontFamily.length > 0 && getComputedStyle(document.body).backgroundColor), 'rgb(233, 237, 241)', '生成プラグインと同じ見た目（style.css）');
+      assert.equal(await page.evaluate(() => document.fonts.ready.then(() => [...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family.replace(/["']/g, ''))[0])), 'IBM Plex Sans JP', '生成プラグインと同じ書体（ひな形の同梱のフォント）');
       assert.deepEqual(errors, []);
       assert.deepEqual(await page.evaluate(layoutProblems), []);
       const { problems } = await page.evaluate(contrastProblems, 4.5);

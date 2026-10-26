@@ -63,7 +63,7 @@ export function compactEvent(event) {
     case 'assistant.usage':
       return { ...base, data: { model: d.model, inputTokens: d.inputTokens, outputTokens: d.outputTokens, nanoAiu: d.copilotUsage?.totalNanoAiu, aiCreditsStatus: d.aiCreditsStatus, initiator: d.initiator } };
     case 'system.notification':
-      return { ...base, data: { kind: d.kind?.type } };
+      return { ...base, data: { kind: d.kind?.type, agentId: d.kind?.agentId } };
     case 'session.idle':
       return { ...base, data: {} };
     case 'session.error':
@@ -120,6 +120,10 @@ export function createTracker({ log, now = Date.now, onLimit } = {}) {
     idleCount: 0,
     lastEventAt: now(),
     lastIdleAt: null,
+    // イベントの通し番号と、最後の session.idle・最後の裏のエージェントの知らせの番号（人の判断待ちの答え方で、順番を比べる。human-wait.mjs）
+    seq: 0,
+    lastIdleSeq: 0,
+    lastNoticeSeq: 0,
     sent: false,
     errors: [],
     limit: null,
@@ -137,6 +141,7 @@ export function createTracker({ log, now = Date.now, onLimit } = {}) {
   const onEvent = (event) => {
     try {
       state.lastEventAt = now();
+      state.seq += 1;
       const record = compactEvent(event);
       if (record) log?.write(record);
       const d = event?.data ?? {};
@@ -146,6 +151,7 @@ export function createTracker({ log, now = Date.now, onLimit } = {}) {
           state.busy = false;
           state.idleCount += 1;
           state.lastIdleAt = now();
+          state.lastIdleSeq = state.seq;
           break;
         case 'session.start':
           state.copilotVersion ??= d.copilotVersion ?? null;
@@ -208,6 +214,10 @@ export function createTracker({ log, now = Date.now, onLimit } = {}) {
           break;
         case 'user_input.requested':
           state.userInputRequests += 1;
+          break;
+        case 'system.notification':
+          // 裏のエージェント（統括など）が手番を終えた知らせ。メインのエージェントに届くもの（agentId のないもの）だけを数える
+          if (!event.agentId && (d.kind?.type === 'agent_idle' || d.kind?.type === 'agent_completed')) state.lastNoticeSeq = state.seq;
           break;
         case 'session_limits_exhausted.requested':
           state.limit = { requestId: d.requestId, maxAiCredits: d.maxAiCredits, usedAiCredits: d.usedAiCredits };

@@ -1232,7 +1232,8 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__"}
 
 
 def knowledge_tokens_outside_tests(ctx: Context) -> Set[str]:
-    """作業の定義とテストのフォルダを除くファイルに書かれたナレッジの番号。"""
+    """作業の定義とテストのフォルダを除く、文字のファイルに書かれたナレッジの番号。
+    0 のバイトがあるファイル（フォントや画像など）は文字のファイルでないので見ない。中のバイトの並びが、たまたま K-数字 に見えることがあるため。"""
     found: Set[str] = set()
     for directory, dirs, files in os.walk(ctx.root):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not (directory == ctx.root and d == "tests")]
@@ -1242,10 +1243,12 @@ def knowledge_tokens_outside_tests(ctx: Context) -> Set[str]:
                 continue
             try:
                 with open(path, "rb") as f:
-                    text = f.read(5 * 1024 * 1024).decode("utf-8", errors="ignore")
+                    data = f.read(5 * 1024 * 1024)
             except OSError:
                 continue
-            found.update(KNOWLEDGE_TOKEN.findall(text))
+            if b"\0" in data:
+                continue
+            found.update(KNOWLEDGE_TOKEN.findall(data.decode("utf-8", errors="ignore")))
     return found
 
 
@@ -1332,7 +1335,7 @@ def check_agent_tools(ctx: Context, c: Check) -> None:
                         c.error("%s tools にコマンドのツール %s がある（検証エージェントはコマンドを動かせない）" % (where, tool))
 
 
-RECORD_SUFFIXES = "open|plan|verdict|show|review|issue|finish"
+RECORD_SUFFIXES = "open|plan|verdict|show|review|issue|finish|ask|answer"
 RECORD_TOOL = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*?)_(%s)$" % RECORD_SUFFIXES)
 BACKTICKED = re.compile(r"`([^`\s]+)`")
 

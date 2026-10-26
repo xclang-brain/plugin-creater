@@ -192,7 +192,7 @@ describe('許可の求めの受け口（onPermissionRequest。REQ-005）', () =>
 
 const ORCHESTRATOR = `${PLUGIN}:orchestrator`;
 const LISTED_BUILTIN = ['view', 'grep', 'glob', 'rg', 'task', 'read_agent', 'list_agents', 'write_agent'];
-const LISTED_RECORD = ['plan', 'review', 'issue', 'finish', 'show'].map((name) => `${PLUGIN}_${name}`);
+const LISTED_RECORD = ['plan', 'review', 'issue', 'finish', 'show', 'ask'].map((name) => `${PLUGIN}_${name}`);
 // 実機（Copilot CLI 1.0.102）で、tools を書かない統括が受け取ったツール（V1 の生データ）のうち、一覧にないもの
 const UNLISTED_OBSERVED = [
   'bash', 'read_bash', 'stop_bash', 'list_bash', 'create', 'edit', 'fetch_copilot_cli_documentation', 'skill', 'list_canvas_capabilities',
@@ -226,7 +226,7 @@ describe('統括エージェントが使ってよいツール（フック onPreT
     assert.deepEqual(
       TOOLS.TOOL_DEFS.filter((def) => callers(def).includes('orchestrator')).map((def) => `${PLUGIN}_${def.name}`).sort(),
       [...LISTED_RECORD].sort(),
-      '統括が呼ぶ記録のツールは plan・review・issue・finish・show',
+      '統括が呼ぶ記録のツールは plan・review・issue・finish・show・ask',
     );
   });
 

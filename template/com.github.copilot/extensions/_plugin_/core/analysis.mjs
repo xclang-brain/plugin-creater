@@ -1,4 +1,4 @@
-import { ABORT_REASON_TEXT, LIMITS, PHASE_LABELS, ROLE_LABELS } from './constants.mjs';
+import { ABORT_REASON_TEXT, LIMITS, PHASE_LABELS, ROLE_LABELS, SUMMARY_END_KINDS } from './constants.mjs';
 import { RECORD_TOOL_NAMES } from './tools.mjs';
 import { stableStringify, summarizeText } from './util.mjs';
 
@@ -145,6 +145,14 @@ export function analyzeEntries(entries, opts) {
     for (const x of chain(id)) if (agents.get(x).role) return agents.get(x).role;
     return null;
   };
+  // 人の判断待ち（4.15）の時間は、イベントがない時間に数えない。待ちが終わったとき、それまでの最後の時刻を待ちの長さだけ後ろにずらす
+  let humanSince = null;
+  const endHumanWait = (at) => {
+    if (humanSince === null || !Number.isFinite(at)) return;
+    const gap = Math.max(0, at - humanSince);
+    for (const [id, prev] of last) last.set(id, prev <= humanSince ? prev + gap : at);
+    humanSince = null;
+  };
   const touch = (id, at) => {
     for (const x of chain(id)) {
       const prev = last.get(x);
@@ -157,6 +165,10 @@ export function analyzeEntries(entries, opts) {
 
   for (const entry of entries) {
     if (entry.t === 'note' && entry.kind === 'retry_limit') retryLimit = true;
+    if (entry.t === 'status' && Number.isFinite(entry.at)) {
+      if (entry.status === 'waiting_human') humanSince ??= entry.at;
+      else endHumanWait(entry.at);
+    }
     if (entry.t === 'record') {
       if (entry.tool === 'finish') finishRecorded = true;
       if (entry.tool === 'plan') {
@@ -265,6 +277,7 @@ export function analyzeEntries(entries, opts) {
   // 終わった時点で、まだ終わっていないエージェントの沈黙
   const unstoppedIds = new Set(unstopped.map((u) => u.agentId));
   if (Number.isFinite(endAt)) {
+    endHumanWait(endAt);
     for (const a of agents.values()) {
       if (a.ended || unstoppedIds.has(a.id) || stalled.has(a.id) || waiting.get(a.id) > 0) continue;
       const l = last.get(a.id);
@@ -328,7 +341,8 @@ export function analyzeEntries(entries, opts) {
   const lastIndex = iterations.length - 1;
   iterations.forEach((it, i) => {
     const endedNormally = endReason?.kind === 'all_passed' || endReason?.kind === 'max_iterations';
-    if (i === lastIndex && !endedNormally) return; // 途中で止まった最後の試行は、終わった理由の課題で足りる
+    // 途中で止まった最後の試行は、終わった理由の課題で足りる。人の指示で終えたときは、人がそこで終えると決めたので課題にしない（4.15）
+    if (i === lastIndex && !endedNormally) return;
     const missing = [];
     if (it.workers.length === 0) missing.push('作業の開始');
     if (it.verifiers.length === 0) missing.push('検証の開始');
@@ -340,7 +354,7 @@ export function analyzeEntries(entries, opts) {
       ]);
     }
   });
-  const normalEnd = endReason?.kind === 'all_passed' || endReason?.kind === 'max_iterations';
+  const normalEnd = SUMMARY_END_KINDS.includes(endReason?.kind); // まとめ中に入って終わった（人の指示で終えたときを含む）
   if (normalEnd && cause?.creditLimit) {
     add('まとめ中に AI クレジットの上限に達しました', [
       '繰り返しが終わった後のまとめの途中で、AI クレジットの上限に達し、統括エージェントが終わりました。',

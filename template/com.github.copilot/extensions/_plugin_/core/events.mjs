@@ -1,6 +1,17 @@
 import { LIMITS } from './constants.mjs';
 import { callWithTimeout, clone } from './util.mjs';
-import { isActiveAgent, slotByName, slotNameForType, slotNameOf, syncSlot, currentIteration, roleForType } from './run.mjs';
+import {
+  closeHumanEnd,
+  currentIteration,
+  enterHumanWait,
+  isActiveAgent,
+  resumeFromHumanWait,
+  roleForType,
+  slotByName,
+  slotNameForType,
+  slotNameOf,
+  syncSlot,
+} from './run.mjs';
 import { roleOfAgentType } from './analysis.mjs';
 import { logEntry } from './log.mjs';
 import { requestClose } from './lifecycle.mjs';
@@ -47,6 +58,7 @@ function addToTree(ctx, run, e, at) {
     reply: null,
   };
   run.tree.set(e.agentId, rec);
+  if (e.parentAgentId === run.rootId) closeHumanEnd(run); // 統括が作業か検証を始めた。人の指示で終える印を閉じる（4.15）
   if (slotName) {
     const slot = slotByName(run, slotName);
     slot.agentId = e.agentId;
@@ -111,6 +123,24 @@ function onAgentEnded(ctx, e, at, kind) {
   if (!rec) return;
   logEvent(ctx, run, e, at);
   rec.lastEventAt = at;
+  // 統括が手番を終えた（取り消し・失敗ではない）とき、人の判断を求める質問があれば、実行を終えずに待つ（4.15）。
+  // 初めの手番の終わりには、終わりのイベントが 2 つ（completed と idle）届くので、待ちに入った後の終わりは見送る。
+  // ただし、答えの送りが時間切れだった後の手番の終わりは、答えが届いて動いた統括の手番の終わりとみる（2 つ目のイベントは、答えより前に届くため）。
+  const turnEnded = kind === 'idle' || (kind === 'completed' && !e.cancelled);
+  const hw = run.humanWait;
+  if (e.agentId === run.rootId && turnEnded && hw) {
+    if (run.status === 'running' && !hw.turnEnded) {
+      if (e.response != null) rec.reply = String(e.response);
+      enterHumanWait(ctx, run, at);
+      return;
+    }
+    if (run.status === 'waiting_human' && !hw.answerUnknown) {
+      if (e.response != null) rec.reply = String(e.response);
+      syncSlot(run, rec);
+      return;
+    }
+    if (run.status === 'waiting_human') resumeFromHumanWait(ctx, run, at, 'activity');
+  }
   const stopping = run.status === 'stopping';
   if (kind === 'completed') {
     if (e.response != null) rec.reply = String(e.response);
@@ -118,8 +148,10 @@ function onAgentEnded(ctx, e, at, kind) {
   } else if (kind === 'failed') {
     rec.error = e.error ?? '';
     rec.status = stopping ? 'stopped' : 'failed';
-  } else if (isActiveAgent(rec)) {
-    rec.status = 'completed'; // 手番を終えて待ちに入った
+  } else {
+    // 手番を終えて待ちに入った。2回目からの手番の終わりは、これだけが届き、最後の返事もここに付く（11章 #19）
+    if (e.response != null) rec.reply = String(e.response);
+    if (isActiveAgent(rec)) rec.status = 'completed';
   }
   dropWaitsOf(run, e.agentId);
   syncSlot(run, rec);
@@ -151,6 +183,8 @@ function onToolEvent(ctx, e, at) {
   const run = activeRun(ctx);
   const rec = run?.tree.get(e.agentId);
   if (!rec) return;
+  // 人の判断待ちのあいだに統括がツールを使った。答えが届いて動き出したとみる（答えの送りが時間切れだったとき。4.15）
+  if (run.status === 'waiting_human' && e.agentId === run.rootId) resumeFromHumanWait(ctx, run, at, 'activity');
   rec.lastEventAt = at;
   syncSlot(run, rec);
   logEvent(ctx, run, e, at);

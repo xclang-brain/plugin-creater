@@ -170,7 +170,7 @@ describe('記録のツールの呼び出し（REQ-005、REQ-010）', () => {
       seen.push([shortName, args, context.agentId]);
       return `記録：${shortName}`;
     };
-    const recording = SHORT_NAMES.filter((name) => name !== 'open');
+    const recording = SHORT_NAMES.filter((name) => name !== 'open' && name !== 'answer');
     for (const name of recording) {
       const result = await p.fake.callTool(`${PLUGIN}_${name}`, { k: name }, { agentId: `ag-${name}` });
       assert.deepEqual(result, { ok: true, text: `記録：${name}` });
@@ -181,6 +181,34 @@ describe('記録のツールの呼び出し（REQ-005、REQ-010）', () => {
     );
     await p.fake.callTool(`${PLUGIN}_review`, {});
     assert.equal(seen.at(-1)[2], undefined, 'メインのエージェントからの呼び出しには、番号がない');
+  });
+
+  test('REQ-051 答えを渡すツール（_answer）は、答えと、呼んだエージェントの番号をつけて、中心の処理の答えの窓口に渡す。断りと予期しない失敗は失敗の結果になる', async () => {
+    const p = await startPlugin();
+    const seen = [];
+    const real = p.core.relayHumanAnswer;
+    p.core.handleTool = async () => {
+      throw new Error('記録のツールの窓口には渡さない');
+    };
+    p.core.relayHumanAnswer = async (args, context) => {
+      seen.push([args, context.agentId]);
+      return '答えを渡しました';
+    };
+    assert.deepEqual(await p.fake.callTool(`${PLUGIN}_answer`, { answer: '続けて', extra: 1 }), { ok: true, text: '答えを渡しました' });
+    assert.deepEqual(seen, [[{ answer: '続けて' }, undefined]], 'メインのエージェントからの呼び出しには、番号がない');
+    // 本物の中心の処理は、実行がないので断る
+    p.core.relayHumanAnswer = real;
+    const refused = await p.fake.callTool(`${PLUGIN}_answer`, { answer: 'x' });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.resultType, 'failure');
+    assert.match(refused.text, /人の判断を待っていません/);
+    p.core.relayHumanAnswer = async () => {
+      throw new Error('内部の失敗 at core.mjs');
+    };
+    const failed = await p.fake.callTool(`${PLUGIN}_answer`, { answer: 'x' });
+    assert.equal(failed.ok, false);
+    assert.match(failed.text, /答えを渡せなかった/);
+    assert.doesNotMatch(failed.text, /内部の失敗|\.mjs/);
   });
 
   test('REQ-005 中心の処理が断った呼び出しは、例外を投げず、理由の文（平易な日本語）を入れた失敗の結果（resultType が failure）で返す', async () => {
