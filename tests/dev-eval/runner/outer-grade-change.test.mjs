@@ -1,7 +1,8 @@
 // 改善の模擬ユーザーの外側の EVAL の採点（outer-grade-change.mjs。BLUEPRINT 7.3）。観点ごとに、合格する作り例と、落ちる作り例で確かめる。
-// 純粋な関数なので、ファイルも git もモデルも使わない。
+// 純粋な関数なので、ファイルも git もモデルも使わない（本物の模擬ユーザーの expect.explained だけは、persona.json から読む）。
 
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { gradeChange, questionUnits, SCREEN_ITEMS } from './outer-grade-change.mjs';
@@ -217,6 +218,21 @@ test('REQ-057 version-approved：直した版が確認の版と違う・元の�
   expectOnlyFails((a) => { a.state.confirmation.version = '0.1.0'; a.repo.versionAfter = '0.1.0'; for (const i of a.items) if (i.text) i.text = i.text.replaceAll('0.2.0', '0.1.0'); }, ['version-approved']);
 });
 
+test('REQ-057 version-approved：記録に確認の版がないと落ちる。confirm-contents と explained は、そのときだけ版の形の数で見る', () => {
+  const g = expectOnlyFails((a) => { delete a.state.confirmation.version; }, ['version-approved']);
+  assert.match(g['version-approved'].detail, /確認の版 なし/);
+  assert.match(g['confirm-contents'].detail, /新しい版/);
+});
+
+test('REQ-057 confirm-contents：新しい版は、記録の確認の版の文字そのもので見る（ほかの版や、その版を一部に含む数では数えない）', () => {
+  for (const shown of ['0.3.0', '10.2.0', '0.2.0.1', '0.2.01']) {
+    const g = expectOnlyFails((a) => {
+      for (const i of a.items) if (i.seq > 10 && i.seq < 19 && i.text) i.text = i.text.replaceAll('0.2.0', shown);
+    }, ['confirm-contents']);
+    assert.match(g['confirm-contents'].detail, /新しい版（0\.2\.0）/, shown);
+  }
+});
+
 test('REQ-054 rules-list-once：元の決まりの番号が、確認より前の1つの問い（問いとその前の文）にそろって出ないと落ちる', () => {
   expectOnlyFails((a) => { a.items.find((i) => i.seq === 2).text = '今の決まりの一覧です。\n- K-01 手順どおりに進める。'; }, ['rules-list-once']);
   // 問いの欄に番号があっても同じ（前の文と問いを合わせて見る）
@@ -318,6 +334,31 @@ test('REQ-055 embedded・not-embedded：足した行で見る。決まりの一�
   expectOnlyFails((a) => { a.repo.added[0].text = '- arm-gcc でビルドする（K-05）'; }, ['embedded:k15-now']);
 });
 
+test('REQ-054 REQ-055 embedded・not-embedded：直した後のファイルで見るのは role が repo のファイルの決まりだけ（personas/FORMAT.md 2.5 の例外）', () => {
+  // repo のファイルの決まりを、そのまま残せば合格（足した行には出ない）
+  const kept = goodCase();
+  assert.equal(kept.repo.added.some((f) => f.rel !== 'tests/knowledge.json' && /DBG_LOG/.test(f.text)), false);
+  assert.equal(gradesOf(kept)['embedded:log-dbg'].ok, true);
+  assert.match(gradesOf(kept)['embedded:log-dbg'].detail, /直した後のファイル/);
+  // 直した後のファイルでも、決まりの一覧にだけ残ったものは数えない
+  expectOnlyFails((a) => {
+    a.repo.targetFiles[0].text = '- printf で出す';
+    a.repo.targetFiles.push({ rel: 'tests/knowledge.json', sha256: 'h-k', text: '"text": "KX では DBG_LOG で出す。"' });
+  }, ['embedded:log-dbg']);
+  // ほかの決まりは、直した後のファイルに元からあっても、足した行になければ落ちる（例外は repo のファイルの決まりだけ）
+  const g = expectOnlyFails((a) => {
+    a.repo.added[0].text = '- 失敗したら1回 reboot してやり直す（K-04）';
+    a.repo.targetFiles.push({ rel: 'skills/old/SKILL.md', sha256: 'h-old', text: '- arm-gcc でビルドする' });
+  }, ['embedded:cc-gcc']);
+  assert.match(g['embedded:cc-gcc'].detail, /足した行/);
+  // repo のファイルの「違う」決まりは、足した行になくても、直した後のファイルに残れば落ちる
+  const wrong = goodCase();
+  wrong.persona.knowledge.push({ id: 'log-old', fact: 'printf で出すのは古い', volunteer: false, from: 'file', file: { path: 'market/plugins/demo/skills/rules/SKILL.md', evidence: 'printf', kind: 'wrong', answer: '違う' }, markers: { asked: 'printf', answered: '違う', excluded: ['printf で出す'] } });
+  assert.equal(gradesOf(wrong)['not-embedded:log-old'].ok, true);
+  wrong.repo.targetFiles[0].text += '\n- ログは printf で出す';
+  assert.equal(gradesOf(wrong)['not-embedded:log-old'].ok, false);
+});
+
 test('REQ-055 skill-names-differ・user-skills-unchanged・assets-reused', () => {
   expectOnlyFails((a) => { a.repo.targetSkillNames.push({ dir: 'build', name: 'build' }); }, ['skill-names-differ']);
   expectOnlyFails((a) => { a.repo.userSkillFilesAfter = { ...a.repo.userSkillFilesAfter, 'tools/skills/build/SKILL.md': 'h-changed' }; a.repo.outsideFilesAfter['tools/skills/build/SKILL.md'] = 'h-changed'; }, ['user-skills-unchanged', 'nothing-outside']);
@@ -408,6 +449,50 @@ test('REQ-060 explained：コミットの後の文に、決めた言葉がすべ
   const plain = goodCase();
   plain.items.find((i) => i.seq === 23).input.command = 'cd market && git -C plugins/demo commit -q -m "直した"';
   assert.equal(gradesOf(plain).explained.ok, true);
+});
+
+test('REQ-060 explained：版を見る正規表現は、記録の確認の版の文字そのもので見る（元の版・IP アドレス・その版を一部に含む数では当たらない）', () => {
+  const after = '戻すときは git revert です。Copilot CLI を起動し直してください。';
+  for (const said of ['0.1.0 から直しました。ボードは 192.168.7.2 のままです。', '10.2.0 にしました。', '0.2.0.1 にしました。', '0.3.0 にしました。']) {
+    const g = expectOnlyFails((a) => { a.items.find((i) => i.seq === 24).text = said + after; }, ['explained']);
+    assert.match(g.explained.detail, /確認の版 0\.2\.0/, said);
+  }
+  // 版の文字の前後に、ほかの文字（v、括弧、句点）があってもよい
+  for (const said of ['v0.2.0 にしました。', '版を（0.1.0 → 0.2.0）にしました。', '直した版は 0.2.0。']) {
+    const ok = goodCase();
+    ok.items.find((i) => i.seq === 24).text = said + after;
+    assert.equal(gradesOf(ok).explained.ok, true, said);
+  }
+  // 版を見る正規表現がない模擬ユーザーでは、版を求めない
+  const noVersion = goodCase();
+  noVersion.persona.expect.explained = ['revert', '起動し直'];
+  noVersion.items.find((i) => i.seq === 24).text = after;
+  assert.equal(gradesOf(noVersion).explained.ok, true);
+  // 記録に確認の版がないときは、模擬ユーザーの正規表現のまま見る（version-approved が落ちる）
+  const none = goodCase();
+  delete none.state.confirmation.version;
+  none.items.find((i) => i.seq === 24).text = `0.1.0 から直しました。${after}`;
+  assert.equal(gradesOf(none).explained.ok, true);
+});
+
+const REAL_PERSONA = new URL('../personas/edl-change/persona.json', import.meta.url);
+test('REQ-060 explained：本物の模擬ユーザー（edl-change）の版の正規表現も、確認の版の文字そのものに置き換えて見る', { skip: !existsSync(REAL_PERSONA) && 'edl-change がない' }, () => {
+  const explained = JSON.parse(readFileSync(REAL_PERSONA, 'utf8')).expect.explained;
+  const real = (a) => {
+    a.persona.expect.explained = explained;
+    a.items.find((i) => i.seq === 24).text = '直して 0.2.0 にしました。戻すときは git revert です。Copilot CLI を起動し直してください。マーケットプレイスの一覧（marketplace.json）の版は手で直してください。';
+  };
+  const ok = goodCase();
+  real(ok);
+  assert.equal(gradesOf(ok).explained.ok, true, gradesOf(ok).explained.detail);
+  // 元の版と IP アドレスだけでは当たらない（模擬ユーザーの版の形の正規表現は、元の版 0.1.0 には当たる）
+  const g = expectOnlyFails((a) => {
+    real(a);
+    const i = a.items.find((x) => x.seq === 24);
+    i.text = i.text.replace('直して 0.2.0 にしました。', '0.1.0 から直しました。ボードは 192.168.7.2 です。');
+  }, ['explained']);
+  assert.match(g.explained.detail, /確認の版 0\.2\.0/);
+  assert.doesNotMatch(g.explained.detail, /revert|起動し直|marketplace/);
 });
 
 test('REQ-060 explained：.git の場所や文字の中の commit は、コミットとして数えない（説明の始まりがずれない）', () => {

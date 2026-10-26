@@ -1113,6 +1113,10 @@ class Standalone(Sandbox):
             self.write_skill(extra)
             self.assertFailsWith("standalone", "skills/build-rules/SKILL.md: ", snippet)
 
+    def test_REQ_062_a_glob_like_path_is_not_a_missing_file(self):
+        self.write_skill("できたファイルは `scripts/build-*.sh` の形の名前になる\n")
+        self.assertTrue(self.report().ok, [c.errors for c in self.report().checks if c.errors])
+
     def test_REQ_062_a_script_kept_at_the_plugin_root_fails(self):
         self.remove("skills/build-rules/scripts")
         self.write("scripts/build.py", "print('root')\n")

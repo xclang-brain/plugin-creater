@@ -143,7 +143,7 @@ VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 CRITERION_ID = re.compile(r"^C-[0-9]{2,}$")
 SLOT_LINE = re.compile(r"^\s*\{\{slot:([A-Za-z][A-Za-z0-9_.-]*)\}\}\s*$")
 TRACE_ROW = re.compile(r"^\|\s*REQ-([0-9]+)\s*\|")
-TASK_REQ_START = 101                            # 作業ごとの要件の番号の始まり（ひな形の仕様書 7章）
+TASK_REQ_START = 101                            # 作業ごとの要件の番号の始まり（ひな形の仕様書 8章）
 LIST_LIMIT = 10                                 # 断る文に並べるファイルの数の上限
 # 試験の土台（BLUEPRINT D20）。違う・ないだけを見る
 TESTS_BASE_FILES = ("tests/run.py",)

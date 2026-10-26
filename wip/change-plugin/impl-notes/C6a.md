@@ -101,3 +101,44 @@ BLUEPRINT 5章の C6a・C6b・C6c と、FORMAT.md・validate.mjs・validate.test
 - `make_golden.mjs` で見本を作り直すと、`.device/` は置いてあるものと同じ、`logs/device.log` も同じ。
 - validate.mjs・kxdevice.mjs・edl-change を使う runner の試験（12 ファイル）：165 件すべて合格。
 - `python3 tests/creator/check_creator.py --json`：ok。
+
+## 統合の直し
+
+統括の指示 3 件（FORMAT.md の例外、k15-now、機器の手順と目印の markers）を、`tests/dev-eval/personas/` の中だけで直した。
+
+| # | 指示 | 結果 | 直したこと・理由 |
+| --- | --- | --- | --- |
+| 1 | FORMAT.md 2.5 に、直すプラグインに元からある決まりは直した後のファイルで見る、という例外を書く | 直した | 「外側の EVAL は…足した行で見る」の後に、`role` が `repo` のファイルから読み取るナレッジは直した後のファイルで見る（足した行だけだと、そのまま残したときに落ちる）と書いた。`outer-grade-change.mjs` の `finalScope`（`inRepoFile`）と同じ。このナレッジの `markers` は `repo` のファイルの文字に当たってよく、`validate.mjs` は題材の tar.gz と比べるので `repo` のファイルで足した文字とは比べない、とも書いた |
+| 2 | k15-now の fact の足し（ビルドの失敗は今までどおり人に伝える、実機が応答しないときも1回 reboot してやり直す） | そのまま残した | 統括が承認した。persona.json は変えていない |
+| 3 | `dp-steps`・`dp-marker` の `embedded` が日本語の文の形にしか当たらない | 直した | 下に書く |
+
+### 3. 機器の手順と目印の markers
+
+`embedded` の並びはすべてに当たることを求める（`matchesAll`）ので、項目を分けず、1 つの正規表現に選択肢（`|`）を足した。前からの文の形の選択肢は、そのまま残した。
+
+- 行の頭（コマンドの位置）：改行の後の、字下げ・`>`・`|`、箇条書きの印か番号（その後に 20 文字までの前置きとバッククォート）、または 20 文字までの見出しとコロン（`：`・`:`）か表の区切り（`|`）、`$ `、`-c "`、バッククォート。プロンプト（`kx200# `）、文字列や配列の中（`run('reboot')`、`'-c', 'reboot'`）、JSON の値は、行の頭にならない。
+- `dp-steps`：(a) 行の頭の `kxinstall <場所>` → 8 行まで → 行の頭の `reboot` → 8 行まで → 行の頭の `kxapp run`（箇条書き・コードブロック・表・見出しつき・`-c` を行を続けて書いたもの）、(b) 行の頭の `kxtool … -c "kxinstall …" … -c reboot … -c "kxapp run`（ユーザーのスキルのコードブロックの 1 行）。順の決まり（reboot が kxinstall と kxapp run の間）が、この決まりの中身なので、順を見る。
+- `dp-marker`：行の頭の `kxapp run`（`kxtool … -c "kxapp run` を含む）→ 8 行まで → 行の頭の `[kxapp] <名前> exited (status=`。
+- 当たらないもの：題材の文字（kxinstall・kxapp・[kxapp] がない。「再起動して、有効になる」は Copilot CLI の話なので、日本語の「再起動」は前と同じく入れていない）、資産（kx-build.sh・mkkximg.py）、ほかのナレッジの fact と detail（`validate.mjs` で確かめた。dp-steps の fact は 1 行の文、dp-image の fact に reboot がなく、dp-marker・k15-now の fact に kxinstall がない）、たまたまと違う決まりだけの並び（git pull、uname -a、192.168.7.20 への send）、reboot のない並び、reboot が後・先の並び、離れすぎた並び、機器の記録とログ（`golden/.device/history.jsonl`・`console.log`・`logs/device.log`）、試験のコード。
+
+前の点検の直し（#3）の試験で「コマンドだけの行」として当たらないことにしていた、行の頭の `kxtool -d … console -c "kxinstall …" -c reboot -c "kxapp run …"` の 1 行は、当たる側に移した。ユーザーのスキルのコードブロックにある書き方そのもので、生成プラグインのルールのスキルがこの 1 行だけを写すことがあるため。試験のコードに出る形（文字列・配列・テンプレートリテラルの中）は、前と同じく当たらない。
+
+退けたこと：
+
+- 行の頭でない、文の中のコマンド（「ボードを `reboot` する」のような前置きが 20 文字を超えるもの、プロンプトの後のもの）までは広げなかった。機器のログ（`kx200# reboot`）や試験のコードと見分けられなくなるため。
+- 文字列や配列の中のコマンドの並び（例：`run('kxinstall …')` が 3 行続くもの）は、試験のコードの形なので当てない。逆に、行の頭にコマンドを並べたスクリプト（`.sh` など）を `tests/eval/<課題>/inputs/` の外に足したときは当たる。手順をその順で動かすスクリプトは、手順を組み込んだものとみなした。
+
+### 変えたファイル（統合の直し）
+
+- `tests/dev-eval/personas/FORMAT.md`（2.5 の 2 か所：repo のファイルの例外と、手順の決まりのコマンドの並びの形）
+- `tests/dev-eval/personas/edl-change/persona.json`（`dp-steps`・`dp-marker` の `markers.embedded` だけ）
+- `tests/dev-eval/personas/validate.test.mjs`（「コマンドだけの行には当たらない」の 1 件を、「文の形とコマンドの並びの形に当たる」「試験のコード・記録とログ・たまたまと違う決まりの並び・順の違う並びに当たらない」の 2 件にした）
+- `validate.mjs` は変えていない
+
+### 試験の結果（統合の直しの後）
+
+- `node --test tests/dev-eval/personas/validate.test.mjs`：62 件すべて合格（飛ばしなし。ARM の見本の試験も動いた）。
+- 新しい当たる側の試験は、前の markers（HEAD の persona.json）では落ちる（番号つきの箇条書きとコンソールの 1 行で、dp-steps・dp-marker とも当たらない）ことを確かめた。
+- `node tests/dev-eval/personas/validate.mjs` を edl-change・weekly-report・meeting-minutes・training-survey に：すべて合格。weekly-report・meeting-minutes は `--all-styles` でも合格。
+- `python3 tests/dev-eval/personas/test_dummy_skills.py`：16 件すべて合格。
+- runner の試験は動かしていない（担当の外。`outer-grade-change.test.mjs`・`outer-change.test.mjs` は dp-steps・dp-marker を使っていないことを grep で確かめた）。

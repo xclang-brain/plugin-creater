@@ -521,19 +521,81 @@ test('REQ-060 expect.explained の版の正規表現は、版に当たり、機�
   for (const s of ['機器のアドレスは 192.168.7.2 です。', '前のアドレスは 192.168.7.20 でした。']) assert.doesNotMatch(s, version);
 });
 
-test('REQ-055 機器の手順と目印の embedded は決まりの形で、コマンドだけの行（作業エージェントの試験など）には当たらない', () => {
+const DEVICE_RULES = ['dp-steps', 'dp-marker'];
+const embeddedOf = (p, id) => knowledgeOf(p, id).markers.embedded.map((e) => new RegExp(e));
+
+test('REQ-055 機器の手順と目印の embedded は、文の形にも、コマンドの並びの形（箇条書き・コードブロック・表）にも当たる', () => {
   const p = readPersona(EDL);
-  const all = (id) => knowledgeOf(p, id).markers.embedded.map((e) => new RegExp(e));
-  const commands = [
-    'kxtool -d 192.168.7.2 console -c "kxinstall /tmp/sensor.kximg" -c reboot -c "kxapp run sensor"',
-    "const r = kxtool(['console', '-c', 'kxinstall /tmp/a.kximg', '-c', 'reboot', '-c', 'kxapp run a']);",
-    "assert.match(out, /\\[kxapp\\] sensor exited \\(status=0\\)/);",
-    "print(f'[kxapp] {name} exited (status=0)')",
-  ].join('\n');
-  for (const id of ['dp-steps', 'dp-marker']) for (const re of all(id)) assert.doesNotMatch(commands, re, id);
-  // ユーザーのスキルの書き方（決まりの形）には当たる
-  const skill = fs.readFileSync(path.join(dirOf(EDL), 'files', 'kx200-firmware', '.github', 'skills', 'deploy', 'SKILL.md'), 'utf8');
-  for (const id of ['dp-steps', 'dp-marker']) for (const re of all(id)) assert.match(skill, re, id);
+  const matchesAllRules = (text, label) => {
+    for (const id of DEVICE_RULES) for (const re of embeddedOf(p, id)) assert.match(text, re, `${label}：${id}`);
+  };
+  // 文の形：ユーザーのスキルの書き方と、その言い換え
+  matchesAllRules(fs.readFileSync(path.join(dirOf(EDL), 'files', 'kx200-firmware', '.github', 'skills', 'deploy', 'SKILL.md'), 'utf8'), 'ユーザーのスキル');
+  matchesAllRules('- `kxinstall` しただけでは有効にならない。`reboot` してから `kxapp run` で動かす。\n- `[kxapp] <アプリの名前> exited (status=N)` が出るまでログを取る。', '文の言い換え');
+  // コマンドの並びの形（文の言葉なし）
+  const lists = {
+    番号つきの箇条書き: [
+      '1. `kxtool -d <IP> send <出力のフォルダ>/sensor.kximg`',
+      '2. `kxinstall /tmp/sensor.kximg`',
+      '3. `reboot`',
+      '4. `kxapp run sensor`',
+      '5. `[kxapp] sensor exited (status=N)`',
+    ].join('\n'),
+    コードブロック: [
+      '```bash',
+      'kxtool -d <IP> send /tmp/x.kximg',
+      'kxinstall /tmp/x.kximg',
+      'reboot',
+      'kxapp run sensor',
+      '```',
+      '',
+      '```text',
+      '[kxapp] sensor exited (status=N)',
+      '```',
+    ].join('\n'),
+    見出しつきの箇条書き: [
+      '- 送る：`kxtool -d <IP> send build/sensor.kximg`',
+      '- 入れる：`kxinstall /tmp/sensor.kximg`',
+      '- 有効にする：`reboot`',
+      '- 動かす：`kxapp run sensor`',
+      '- 終わりの行：`[kxapp] sensor exited (status=N)`',
+    ].join('\n'),
+    表: '| 順 | コマンド |\n| --- | --- |\n| 1 | `kxinstall /tmp/x.kximg` |\n| 2 | `reboot` |\n| 3 | `kxapp run x` |\n| 4 | `[kxapp] x exited (status=N)` |',
+    コンソールの1行: '   kxtool -d <アドレス> console -c "kxinstall /tmp/<アプリの名前>.kximg" -c reboot -c "kxapp run <アプリの名前>"\n   [kxapp] <アプリの名前> exited (status=N)',
+    行を続けたコンソール: 'kxtool -d 192.168.7.2 console \\\n  -c "kxinstall /tmp/sensor.kximg" \\\n  -c reboot \\\n  -c "kxapp run sensor"\n[kxapp] sensor exited (status=0)',
+  };
+  for (const [label, text] of Object.entries(lists)) matchesAllRules(text, label);
+});
+
+test('REQ-055 機器の手順と目印の embedded は、試験のコード・機器の記録とログ・たまたまと違う決まりだけの並び・順の違う並びには当たらない', () => {
+  const p = readPersona(EDL);
+  const golden = (rel) => fs.readFileSync(path.join(dirOf(EDL), 'inner', 'golden', ...rel.split('/')), 'utf8');
+  const texts = {
+    試験のコード: [
+      "const r = kxtool(['console', '-c', 'kxinstall /tmp/a.kximg', '-c', 'reboot', '-c', 'kxapp run a']);",
+      "assert.match(out, /\\[kxapp\\] sensor exited \\(status=0\\)/);",
+      "print(f'[kxapp] {name} exited (status=0)')",
+      "    run('kxinstall /tmp/a.kximg')\n    run('reboot')\n    run('kxapp run a')",
+      'await sh(`kxtool -d ${ip} console -c "kxinstall /tmp/a.kximg" -c reboot -c "kxapp run a"`);',
+    ].join('\n'),
+    機器の記録: golden('.device/history.jsonl'),
+    機器のコンソール: golden('.device/console.log'),
+    保存したログ: golden('logs/device.log'),
+    たまたまと違う決まりだけの並び: [
+      '1. `git pull`',
+      '2. `kxtool -d 192.168.7.20 console -c "uname -a"`',
+      '3. `python3 <このフォルダ>/scripts/mkkximg.py build/sensor.elf sensor build/sensor.kximg`',
+      '4. `kxtool -d 192.168.7.20 send build/sensor.kximg`',
+    ].join('\n'),
+    rebootのない並び: '1. `kxinstall /tmp/sensor.kximg`\n2. `kxapp run sensor`\n3. `[kxapp] sensor exited`',
+    rebootが後の並び: '1. `kxinstall /tmp/sensor.kximg`\n2. `kxapp run sensor`\n3. `reboot`',
+    rebootが先の並び: '1. `reboot`\n2. `kxinstall /tmp/sensor.kximg`\n3. `kxapp run sensor`',
+    rebootのないコンソールの1行: 'kxtool -d <IP> console -c "kxinstall /tmp/x.kximg" -c "kxapp run x"',
+    離れすぎた並び: `1. \`kxinstall /tmp/x.kximg\`\n${'説明\n'.repeat(12)}2. \`reboot\`\n3. \`kxapp run x\``,
+  };
+  for (const [label, text] of Object.entries(texts)) {
+    for (const id of DEVICE_RULES) for (const re of embeddedOf(p, id)) assert.doesNotMatch(text, re, `${label}：${id}`);
+  }
 });
 
 test('REQ-055 「違う」アドレスの excluded は、既定として使う書き方に当たり、古いと書いた行に当たらない', () => {

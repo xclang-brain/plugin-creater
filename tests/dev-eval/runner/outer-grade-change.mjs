@@ -8,8 +8,9 @@
 //                              承認の抜き書きが、直前の質問のツールへの答えにある（REQ-057）
 //   confirm-contents           確認が受け付けられてから承認の問いまでの問いと前の文に、新しい版・土台・擬似の機器・課題の言葉。確認の rebuild の
 //                              keep と change が空でない（REQ-057・061）。確認は、受け付けられた後に、いくつかに分けて、そのたびに問いと一緒に
-//                              示すので（make-plugin の confirm.md の3、change-confirm.md の3）、承認の問いの前の文だけでなく、その間をすべて見る
-//   version-approved           直した plugin.json の version ＝ 確認の version ＞ 元の版（REQ-057）
+//                              示すので（make-plugin の confirm.md の3、change-confirm.md の3）、承認の問いの前の文だけでなく、その間をすべて見る。
+//                              新しい版は、記録の confirmation.version の文字そのもの（なければ版の形の数）
+//   version-approved           直した plugin.json の version ＝ 記録の confirmation.version ＞ 元の版（REQ-057）
 //   rules-list-once            確認より前の1つの問い（問いと、その前の文）に、元の決まりの番号がすべて出る（REQ-054）。確認の1つ目（決まりの一覧）
 //                              は数えない
 //   rule-replaced              expect.replaced の番号が knowledge-removed.json のほかのどのファイルにもなく、その replacedBy が knowledge.json にあり、
@@ -35,7 +36,9 @@
 //                              直すフォルダの status が空、印のタグが HEAD（REQ-059）
 //   nothing-outside            直すフォルダの外のファイルが同じ（.claude/.cc-writes/ を除く）。作業用の一時フォルダが残っていない（REQ-059・021）
 //   not-pushed                 origin の refs が同じ。git push を呼んでいない（REQ-059。コマンドの中の git の呼び出しだけを見る。文字や heredoc の中は見ない）
-//   explained                  コミットの後の文に expect.explained がすべて当たる（REQ-060。コミットは scaffold.py commit か git commit の呼び出し）
+//   explained                  コミットの後の文に expect.explained がすべて当たる（REQ-060。コミットは scaffold.py commit か git commit の呼び出し）。
+//                              expect.explained のうち版を見る正規表現（確認の版の文字にまるごと当たるもの）は、確認の版の文字そのもので見る
+//                              （版の形の数は、元の版や IP アドレスの一部にも当たるため）。記録に確認の版がなければ、正規表現のまま見る
 //   main-model / worker-model  作る流れと同じ（outer-grade.mjs の gradeModels。REQ-045・046）
 //   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ）
 
@@ -56,6 +59,17 @@ const WORK_DIR = '.plugin-creator-work/';
 const TAG_BASE = 'plugin-creator-generated';
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** 版の形の数（IP アドレスの一部には当たらない。FORMAT.md 2.5 の expect.explained と同じ形）。確認の版が記録にないときだけ使う */
+const VERSION_SHAPE = /(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)/;
+/** その版の文字に当たる正規表現（0.2.0 が 10.2.0・0.2.01・0.2.0.1・192.168.0.2.0 の一部に当たらない） */
+const versionPattern = (version) => new RegExp(`(?<![\\d.])${escapeRegex(version)}(?!\\.?\\d)`);
+/** 記録の確認の版（state.json の confirmation.version）。なければ null */
+const approvedVersion = (state) => {
+  const v = state?.confirmation?.version;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+};
+/** 版を見る正規表現か（確認の版の文字に、まるごと当たる） */
+const isVersionCheck = (pattern, version) => new RegExp(`^(?:${pattern})$`).test(version);
 /** 決まりの番号に当たる正規表現（K-1 が K-15 に、K-15 が K-150 に当たらない） */
 const idPattern = (id) => new RegExp(`(?<![A-Za-z0-9-])${escapeRegex(id)}(?!\\d)`);
 const idNumber = (id) => Number(/^K-(\d+)$/.exec(String(id ?? ''))?.[1] ?? NaN);
@@ -184,9 +198,9 @@ function gradeConfirmContents({ units, items, approval, confirm, state }) {
   // 確認から承認の問いまでの、問いと前の文のすべてを見る（確認の直前に書いた文は、最初の問いの前の文に入る）
   const shown = units.filter((u) => u.seq > confirm.call.seq && u.seq <= unit.seq);
   const text = shown.map(unitText).join('\n');
-  const version = state?.confirmation?.version;
+  const version = approvedVersion(state);
   const needs = [
-    ['新しい版', version ? new RegExp(escapeRegex(version)) : /\d+\.\d+\.\d+/],
+    [version ? `新しい版（${version}）` : '新しい版（記録に確認の版がないので、版の形の数）', version ? versionPattern(version) : VERSION_SHAPE],
     ['土台', /土台/],
     ['擬似の機器', /擬似|エミュレー/],
     ['課題', /課題/],
@@ -202,7 +216,7 @@ function gradeConfirmContents({ units, items, approval, confirm, state }) {
 }
 
 function gradeVersionApproved({ state, repo }) {
-  const approved = state?.confirmation?.version ?? null;
+  const approved = approvedVersion(state);
   const before = repo.baseline.versionBefore;
   const after = repo.versionAfter;
   const ok = typeof approved === 'string' && after === approved && (before === null || (compareVersions(approved, before) ?? 0) > 0);
@@ -340,8 +354,12 @@ function gradeTestsAdded({ persona, repo }) {
   };
 }
 
-function gradeExplained({ persona, items }) {
-  const patterns = persona.expect?.explained ?? [];
+function gradeExplained({ persona, items, state }) {
+  const version = approvedVersion(state);
+  // 版を見る正規表現は、確認の版の文字そのものに置き換える（版の形の数のままだと、元の版だけを書いた説明や IP アドレスにも当たる）
+  const patterns = (persona.expect?.explained ?? []).map((p) => (version && isVersionCheck(p, version)
+    ? { label: `確認の版 ${version}`, re: versionPattern(version) }
+    : { label: p, re: new RegExp(p) }));
   const isCommit = (i) => {
     const command = bashCommand(i);
     return command !== null && (SCAFFOLD_COMMIT.test(command) || GIT_COMMIT.test(command));
@@ -352,7 +370,7 @@ function gradeExplained({ persona, items }) {
     .filter((i) => i.seq > commit.seq && ['creator.text', 'creator.question', 'creator.question-text'].includes(i.kind))
     .map((i) => (i.kind === 'creator.question' ? questionText({ header: i.header ?? '', question: i.question, options: i.options }) : i.text))
     .join('\n');
-  const missing = patterns.filter((p) => !new RegExp(p).test(text));
+  const missing = patterns.filter((p) => !p.re.test(text)).map((p) => p.label);
   return { ok: missing.length === 0, detail: missing.length ? `コミットの後の文に当たらない：${missing.join('、')}` : `コミットの後の文に ${patterns.length} 件すべてが出た` };
 }
 
@@ -480,7 +498,7 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
   const pushed = gradeNotPushed({ items, repo });
   add('not-pushed', pushed.ok, pushed.detail, 'REQ-059');
   if (expect.explained?.length) {
-    const explained = gradeExplained({ persona, items });
+    const explained = gradeExplained({ persona, items, state });
     add('explained', explained.ok, explained.detail, 'REQ-060');
   }
   if (inner) add('inner-deliverable', (inner.withScore ?? 0) >= INNER_PASS_SCORE, `プラグインありのスコア ${inner.withScore}`, 'REQ-041');

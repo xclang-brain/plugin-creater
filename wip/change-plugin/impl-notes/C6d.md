@@ -105,3 +105,37 @@
 - `node --test tests/dev-eval/runner/*.test.mjs tests/dev-eval/personas/*.test.mjs`（`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`）：379件すべて合格（前は 360件）。
 - `tests/dev-eval/trigger/*.test.mjs`、`tests/creator/extension/quote.test.mjs`、`tests/dev-eval/device/*.test.mjs`：44件すべて合格。
 - 全体の `python3 tests/creator/run.py` は、ほかの組が並べて変えているので動かしていない。
+
+## 7. 統合の直し
+
+統括から頼まれた2件を、`tests/dev-eval/runner/` の中だけで直した・確かめた。
+
+| # | 結果 | したこと・理由 |
+| --- | --- | --- |
+| 1 版を記録の確認の版で見る | 直した | `outer-grade-change.mjs`：`approvedVersion(state)`（記録の `confirmation.version`）、`versionPattern(版)`（その版の文字。前に数字と `.`、後に数字と `.数字` が続かない形。`0.2.0` は `10.2.0`・`0.2.0.1`・`0.2.01`・IP アドレスの一部に当たらない）、`VERSION_SHAPE`（記録に版がないときだけ使う版の形の数。IP アドレスに当たらない形）を足した。**`explained`**：`expect.explained` のうち、確認の版の文字にまるごと当たる正規表現（`^(?:…)$` で確かめる。edl-change の `(?<![\d.])\d+\.\d+\.\d+(?!\.?\d)` も、設計図の `\d+\.\d+\.\d+` も当たる）を、確認の版の文字そのものに置き換えて見る。版の形の数のままだと、元の版（`0.1.0`）だけを書いた説明や IP アドレスでも合格するため。記録に版がなければ、模擬ユーザーの正規表現のまま見る（`version-approved` が落ちる）。版を見る正規表現がない模擬ユーザーでは版を求めない（模擬ユーザーが決める）。落ちたときの理由は「確認の版 0.2.0」と出す。**`confirm-contents`**：版の文字に前後の境を付けた（前は `0.2.0` が `10.2.0` の一部にも当たった）。記録に版がないときの代わりを `\d+\.\d+\.\d+` から `VERSION_SHAPE` にした（IP アドレスで合格しないように）。理由の名前を「新しい版（0.2.0）」にした。**`version-approved`**：もとから記録の `confirmation.version` と直した後の `plugin.json` の version を文字で比べており、決まった形は使っていない。版の読み方だけ `approvedVersion` にそろえた（振る舞いは同じ） |
+| 2 `embedded:*` と FORMAT.md 2.5 の例外 | 合っている（コードは変えていない） | FORMAT.md 2.5（作業ツリーで例外が足された版）と testing.md 6.8 の `embedded:*` の行を読み、`gradeChange` と比べた。直した後のファイルで見るのは「`from` が `file` で、`file.path` が role が repo のファイルの `place`」のナレッジだけで、`embedded` と `excluded` の両方を直した後のファイル（`repo.targetFiles`）で見る。決まりの一覧（`tests/knowledge.json`・`knowledge-removed.json`）・課題の入力の写し・そのまま写した資産は、足した行と同じく証拠にしない。ほかのナレッジは足した行で見る。edl-change の `log-dbg` の `embedded`（``DBG_LOG`?\s*(?:で|…)``）は、repo のファイルの「`DBG_LOG` でログを出し」に当たり、そのまま残せば合格する（FORMAT.md の「当たってよい」と同じ）。例外の範囲を試験で固めた（下） |
+
+### 7.1 試験に足したこと（`outer-grade-change.test.mjs`）
+
+- 記録に確認の版がないと `version-approved` だけが落ちる（`confirm-contents` と `explained` は版の形の数で見る）。
+- `confirm-contents`：確認から承認の問いまでに出る版が `0.3.0`・`10.2.0`・`0.2.0.1`・`0.2.01` なら落ちる。
+- `explained`：コミットの後の文の版が、元の版と IP アドレスだけ（`0.1.0`、`192.168.7.2`）、`10.2.0`、`0.2.0.1`、`0.3.0` なら落ちる。`v0.2.0`、括弧の中、句点の前なら合格する。版を見る正規表現がない模擬ユーザーでは版を求めない。記録に版がなければ、模擬ユーザーの正規表現のまま見る。
+- 本物の模擬ユーザー（`personas/edl-change/persona.json` の `expect.explained` を読む。ないときは飛ばす）：確認の版を書けば合格し、元の版と IP アドレスだけでは「確認の版 0.2.0」で落ちる（ほかの3つは当たったまま）。
+- FORMAT.md 2.5 の例外の範囲：repo のファイルの決まりはそのまま残せば合格し、詳しさに「直した後のファイル」と出る。直した後のファイルでも、決まりの一覧にだけ残ったものは数えない。ほかの決まりは、直した後のファイルに元からあっても、足した行になければ落ちる。repo のファイルの「違う」決まりは、足した行になくても、直した後のファイルに残れば `not-embedded` が落ちる。
+
+### 7.2 しなかったこと（理由）
+
+- `version-approved` の比べ方は変えていない：もとから記録の版の文字で比べており、決まった形の正規表現を使っていないため。
+- 版を見る正規表現を、模擬ユーザーにないときにも足すことはしていない：REQ-060 は版の説明を項目に挙げておらず（「マーケットプレイスの一覧の版」は一覧を直す必要のこと）、何を説明に求めるかは模擬ユーザーの `expect.explained` で決めているため。
+- 版を見る正規表現の見分けを「版の文字にまるごと当たる」にした：`revert`・`起動し直`・`marketplace\.json|一覧` は当たらず、`.` のような何にでも一部が当たる正規表現を版の確かめと取り違えないため。前後に言葉を付けた版の正規表現（例：`版[^\n]{0,10}\d+\.\d+\.\d+`）は見分けず、そのまま見る。
+- `outer-grade-change.mjs` の `embedded:*` は変えていない（2）。
+
+### 7.3 統括に頼むこと（ほかの組）
+
+- C5（`docs/design/testing.md` 6.8）：`explained` の行の「版の形の数（IP アドレスには当たらない形）」を、「確認の版（記録の `confirmation.version` の文字。模擬ユーザーの版の形の正規表現は、その文字に置き換える。記録に版がなければ版の形の数）」に。`confirm-contents` の行の「確認の版（記録の `confirmation.version` の文字。なければ版の形の数）」は、そのままで合う（版の形の数は IP アドレスに当たらない形）。C5 のメモ（158行目）の「`explained` の版を `confirmation.version` で見る、とは書かなかった」は、この直しで変わる。
+- C6c（`tests/dev-eval/personas/FORMAT.md` 2.5 の `expect.explained`）：「版を見る正規表現は、外側の EVAL では、記録の確認の版の文字そのものに置き換えて見る（版の文字にまるごと当たる正規表現のとき）」を足すとよい。今の persona.json の値は、そのままでよい。
+
+### 7.4 試験の結果
+
+- `node --test tests/dev-eval/runner/outer-grade-change.test.mjs tests/dev-eval/runner/outer-change.test.mjs tests/dev-eval/runner/outer-grade.test.mjs`：71件すべて合格（`outer-grade-change.test.mjs` は 23件から 28件に）。
+- `node --test tests/dev-eval/runner/*.test.mjs`（`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`）：323件すべて合格。

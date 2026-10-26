@@ -1531,6 +1531,9 @@ def link_problems(ctx: Context, skill_dir: str, path: str, prose: str, code: str
         # スキルのフォルダからの相対パスか、<このスキルのフォルダ>/ のように書いたものだけを見る。
         # ほかのフォルダの下のもの（例：<ソースのフォルダ>/scripts/、src/assets/、URL の中）は、スキルのファイルを指していない
         base = path_base(code, m.start())
+        # 「scripts/build-*.sh」のような、いくつものファイルを表す書き方は、1つのファイルを指していない
+        if code[m.end():m.end() + 1] in ("*", "?"):
+            continue
         if base == "" or (base is not None and SKILL_WORD.search(base)):
             targets.add(m.group(1).rstrip(".:"))
     for target in sorted(targets):

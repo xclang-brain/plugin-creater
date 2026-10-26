@@ -268,6 +268,15 @@ class Base(unittest.TestCase):
         change(data)
         dump(path, data)
 
+    def rename_entry_skill(self, new_name):
+        """作業エージェントの代わり：parts/manifest.json の入口のスキルの名前を変える。"""
+        self.extract()
+        manifest = load(self.part("manifest.json"))
+        self.assertEqual(manifest["entry_skill"]["name"], "weekly-report")
+        manifest["entry_skill"]["name"] = new_name
+        dump(self.part("manifest.json"), manifest)
+        self.save(self.make_state())
+
     def full_change(self):
         """K-07 を足し、K-03 を K-08 に直し（中身を直した決まりは新しい番号）、課題を1つ足す。"""
         rows = [r for r in self.carried_rows() if r["id"] != "K-03"]
@@ -1052,6 +1061,25 @@ class Change(Base):
         self.assertEqual(self.snapshot(), before)
         self.assertFalse(os.path.exists(os.path.join(self.work, "changed.json")))
 
+    def test_REQ_057_renaming_the_entry_skill_moves_it_and_leaves_no_old_folder(self):
+        old_files = sorted(r for r in git(self.plugin, "ls-files").split() if r.startswith("skills/weekly-report/"))
+        self.assertEqual(old_files, ["skills/weekly-report/SKILL.md", "skills/weekly-report/references/note.md"])
+        self.rename_entry_skill("make-weekly")
+        result = self.change()
+        self.assertEqual(result["removed"], old_files)
+        self.assertEqual(result["added"], ["skills/make-weekly/SKILL.md", "skills/make-weekly/references/note.md"])
+        self.assertFalse(os.path.exists(self.at("skills/weekly-report")), "元の入口のスキルのフォルダが残っている")
+        skill = read(self.at("skills/make-weekly/SKILL.md"))
+        self.assertIn('name: "make-weekly"', skill)
+        self.assertIn("`weekly-report_open` を呼ぶ。", skill)
+        self.assertEqual(os.listdir(self.at("skills")), ["make-weekly"])
+        self.assertTrue(scaffold.check_base(self.plugin, template=self.template)["ok"])
+        self.assertIn("skills/weekly-report/SKILL.md", load(os.path.join(self.work, "changed.json"))["files"])
+        # 直した後にもう一度取り出すと、新しい名前の入口のスキルを見つける
+        scaffold.commit_change(self.plugin, "入口のスキルの名前を変えた", work=self.work)
+        self.extract()
+        self.assertEqual(load(self.part("manifest.json"))["entry_skill"]["name"], "make-weekly")
+
     def test_REQ_059_the_plugin_name_cannot_be_changed(self):
         self.extract()
         manifest = load(self.part("manifest.json"))
@@ -1520,6 +1548,17 @@ class RealTemplate(Base):
     def test_REQ_058_a_changed_plugin_passes_stage_one(self):
         self.full_change()
         self.change()
+        self.assertEqual(self.run_checks(), [])
+        self.assertTrue(scaffold.check_base(self.plugin, template=self.template)["ok"])
+
+    @unittest.skipUnless(have_checks(), "PyYAML と jsonschema がない")
+    def test_REQ_059_a_plugin_whose_entry_skill_was_renamed_passes_stage_one(self):
+        self.rename_entry_skill("make-weekly")
+        result = self.change()
+        self.assertIn("skills/weekly-report/SKILL.md", result["removed"])
+        self.assertIn("skills/make-weekly/SKILL.md", result["added"])
+        self.assertFalse(os.path.exists(self.at("skills/weekly-report")), "元の入口のスキルのフォルダが残っている")
+        self.assertTrue(os.path.isfile(self.at("skills/make-weekly/SKILL.md")))
         self.assertEqual(self.run_checks(), [])
         self.assertTrue(scaffold.check_base(self.plugin, template=self.template)["ok"])
 
