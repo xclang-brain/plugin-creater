@@ -695,31 +695,46 @@ def check_confirmed_evals(confirmation: Dict[str, Any], evals: Dict[str, Dict[st
     tasks = confirmed_eval_tasks(confirmation, problems)
     if not tasks:
         return
-    places = {os.path.normpath(i["from"]): i["to"] for i in eval_inputs}   # 実物のファイル -> 生成プラグインの中の場所
-    expected: Set[str] = set()
+    # 実物のファイル -> 生成プラグインの中の場所。同じ実物を2つ以上の課題で使うときは、課題ごとに1つずつ場所がある
+    places: Dict[str, List[str]] = {}
+    for i in eval_inputs:
+        places.setdefault(os.path.normpath(i["from"]), []).append(i["to"])
     for task in tasks:
-        task["places"] = []
+        for item in task["inputs"]:
+            if not item["provisional"] and os.path.normpath(item["path"]) not in places:
+                problems.append("確かめた課題「%s」の入力の実物 %s が、parts/manifest.json の eval_inputs の from にありません。"
+                                "実物のファイルは eval_inputs で指定してください。" % (clip(task["prompt"]), item["path"]))
+
+    def places_of(task: Dict[str, Any], folder: Optional[str]) -> List[str]:
+        """課題の入力の、生成プラグインの中の場所。実物は、eval_inputs の to のうち、課題のフォルダ folder の中のものにする。"""
+        out: List[str] = []
         for item in task["inputs"]:
             if item["provisional"]:   # 仮のファイルの path は、生成プラグインの中の場所
-                place = posixpath.normpath(item["path"].replace("\\", "/"))
-            else:                       # 実物のファイルの path は、ユーザーの手元の絶対パス。eval_inputs で写す
-                place = places.get(os.path.normpath(item["path"]))
-                if place is None:
-                    problems.append("確かめた課題「%s」の入力の実物 %s が、parts/manifest.json の eval_inputs の from にありません。"
-                                    "実物のファイルは eval_inputs で指定してください。" % (clip(task["prompt"]), item["path"]))
-                    continue
-            task["places"].append(place)
-        expected.update(task["places"])
+                out.append(posixpath.normpath(item["path"].replace("\\", "/")))
+                continue
+            targets = places.get(os.path.normpath(item["path"]))   # 実物のファイルの path は、ユーザーの手元の絶対パス。eval_inputs で写す
+            if targets:
+                inside = [t for t in targets if folder is not None and t.startswith(folder + "/")]
+                out.append(inside[0] if inside else targets[0])
+        return out
 
+    def differences(task: Dict[str, Any], rel: str) -> List[str]:
+        task["places"] = places_of(task, rel.rsplit("/", 1)[0])
+        return eval_differences(task, unused[rel], rel)
+
+    expected: Set[str] = set()
     unused = dict(evals)
     for task in tasks:
         candidates = [rel for rel, info in unused.items() if info["prompt"] == task["prompt"]]
         if not candidates:
             problems.append("確かめた課題「%s」（頼むときの言葉）に当たる EVAL の課題が、parts/files/tests/eval/<課題>/eval.json にありません。"
                             "頼むときの言葉（prompt）は、確かめた課題と同じにしてください。" % clip(task["prompt"]))
+            expected.update(places_of(task, None))
             continue
-        chosen = next((rel for rel in candidates if not eval_differences(task, unused[rel], rel)), candidates[0])
-        problems.extend(eval_differences(task, unused.pop(chosen), chosen))
+        chosen = next((rel for rel in candidates if not differences(task, rel)), candidates[0])
+        problems.extend(differences(task, chosen))
+        expected.update(task["places"])
+        unused.pop(chosen)
     for rel, info in sorted(unused.items()):
         problems.append("parts/files/%s の課題（頼むときの言葉「%s」）は、ユーザーが生成前の確認で確かめた課題にありません。"
                         "確かめていない課題は入れられません。" % (rel, clip(info["prompt"] or "")))
