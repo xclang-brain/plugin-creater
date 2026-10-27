@@ -4,7 +4,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +18,7 @@ import {
   estimateUsd,
   evaluateControl,
   loadPersonas,
+  main,
   parseArgs,
   planRuns,
   runPlan,
@@ -27,11 +27,12 @@ import {
 } from './outer.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { USER_ROLE_FAILED } from './outer-run.mjs';
+import { diskOk, tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
 const REPO = path.resolve(here, '..', '..', '..');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `outer-cli-${prefix}-`));
+const tmp = (prefix) => tempDir(`outer-cli-${prefix}`);
 const weekly = await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true });
 const training = await loadPersona(path.join(PERSONAS, 'training-survey'));
 
@@ -197,7 +198,7 @@ test('REQ-015 計画どおりに動かし、実行が終わるたびに結果の
   const sdk = createFakeSdk({ userRole: () => '特に決まっていません', agent: async () => '終わり' });
   const seen = [];
   const report = await runPlan({
-    plan, personaById, outDir, creatorRoot: REPO, controlRoot: '/dummy-control', convertedCreator: converted, convertedControl: converted,
+    plan, personaById, outDir, creatorRoot: REPO, controlRoot: '/dummy-control', convertedCreator: converted, convertedControl: converted, diskCheck: diskOk,
     common: { query: sdk.query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) },
     onProgress: (p) => seen.push(p.phase),
   });
@@ -230,7 +231,7 @@ test('REQ-015 利用枠の上限で止まったら、残りは飛ばして statu
       return '終わり';
     },
   });
-  const report = await runPlan({ plan, personaById, outDir, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, common: { query: sdk.query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) } });
+  const report = await runPlan({ plan, personaById, outDir, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, diskCheck: diskOk, common: { query: sdk.query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) } });
   assert.equal(report.status, 'stopped');
   assert.equal(report.stopped.reason, 'usage_limit');
   assert.equal(calls, 1, '止まった後は、次の実行を始めない');
@@ -239,13 +240,71 @@ test('REQ-015 利用枠の上限で止まったら、残りは飛ばして statu
   // 見ない模擬ユーザーの記録は、records-heldout/ に分ける
   const outDir2 = tmp('heldout-out');
   const plan2 = planRuns({ personas: [personas[1]], arms: ['with'], models: ['claude-opus-5-5'], runs: 1 });
-  const report2 = await runPlan({ plan: plan2, personaById, outDir: outDir2, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, common: { query: createFakeSdk({ userRole: () => 'x', agent: async () => '終わり' }).query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) } });
+  const report2 = await runPlan({ plan: plan2, personaById, outDir: outDir2, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, diskCheck: diskOk, common: { query: createFakeSdk({ userRole: () => 'x', agent: async () => '終わり' }).query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) } });
   assert.equal(report2.heldoutRecordsDir, path.join(outDir2, 'records-heldout'));
   assert.ok(fs.existsSync(path.join(outDir2, 'records-heldout')));
   assert.ok(!fs.existsSync(path.join(outDir2, 'records')));
   assert.ok(!JSON.stringify(report2.summaries).includes('training-survey'));
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.rmSync(outDir2, { recursive: true, force: true });
+});
+
+test('testing.md 5章 ディスクの空き：1 回ごとに始める前に確かめ、足りなければ残りを飛ばして status を stopped（disk_low）にする', async () => {
+  const outDir = tmp('disk');
+  const personas = [{ loaded: weekly, heldout: false }];
+  const plan = planRuns({ personas, arms: ['with', 'without'], models: ['claude-opus-5-5'], runs: 1 });
+  const personaById = new Map(personas.map((p) => [p.loaded.persona.id, p]));
+  const converted = fakeConvert('/x/creator', path.join(outDir, 'converted', 'c')).root;
+  let checks = 0;
+  const diskCheck = () => (++checks === 1 ? { ok: true, low: [], message: '' } : { ok: false, low: [{ path: '/', freeBytes: 1 }], message: 'ディスクの空きが足りないので始めません（/ の空き 0.0 GB）' });
+  let runs = 0;
+  const sdk = createFakeSdk({ userRole: () => 'x', agent: async () => { runs += 1; return '終わり'; } });
+  const report = await runPlan({ plan, personaById, outDir, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, diskCheck, common: { query: sdk.query, sandbox: false, convert: fakeConvert, maxExchanges: 1, runStages: async () => ({ skipped: true, reason: 'x' }) } });
+  assert.equal(runs, 1, '空きが足りなくなった後は、次の実行を始めない');
+  assert.equal(report.status, 'stopped');
+  assert.equal(report.stopped.reason, 'disk_low');
+  assert.match(report.stopped.message, /ディスクの空きが足りない/);
+  assert.equal(report.stopped.at, 'weekly-report/without/claude-opus-5-5/1');
+  assert.deepEqual(report.summaries.map((x) => x.stopped), ['max_exchanges', 'skipped']);
+  // 1 回ごとの確かめも、結果のフォルダ（実行のフォルダとクリエイターのホームが入る）を見る
+  const seen = [];
+  await runPlan({ plan: plan.slice(0, 1), personaById, outDir, creatorRoot: REPO, controlRoot: '/y', convertedCreator: converted, diskCheck: (o) => { seen.push(o); return { ok: false, low: [], message: 'x' }; }, common: { query: sdk.query, sandbox: false } });
+  assert.deepEqual(seen, [{ dirs: [outDir] }]);
+});
+
+test('testing.md 5章 ディスクの空き：始める前に足りなければ、結果のフォルダも置き換えも実行もせずに断る（終了コード 2、disk_low）。結果のフォルダの空きも見る', async () => {
+  const outDir = path.join(tmp('disk-main'), 'out');
+  const printed = [];
+  const original = console.log;
+  console.log = (text) => printed.push(text);
+  let code;
+  const seen = [];
+  try {
+    code = await main(['--persona', path.join(PERSONAS, 'weekly-report'), '--no-sandbox', '--out', outDir], {
+      diskCheck: (o) => { seen.push(o); return { ok: false, low: [], message: 'ディスクの空きが足りないので始めません（/tmp の空き 0.1 GB。2.0 GB 以上が要ります）。' }; },
+      query: () => { throw new Error('呼ばない'); },
+    });
+  } finally {
+    console.log = original;
+  }
+  assert.equal(code, 2);
+  const out = JSON.parse(printed.at(-1));
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'disk_low');
+  assert.match(out.message, /\/tmp の空き 0\.1 GB/);
+  assert.deepEqual(seen, [{ dirs: [outDir] }], '結果のフォルダ（--out）も見る');
+  assert.equal(fs.existsSync(outDir), false, '結果のフォルダを作る前に断る');
+});
+
+test('testing.md 6.5 要約：環境で止まって採点しなかった観点（2段目がディスクの誤りだけで落ちた）を、notGraded と environmentStopped に出す', async () => {
+  const record = await makeRecord({ loaded: weekly });
+  record.grading.notGraded = [{ id: 'stage2', reason: '環境で止まった（ディスクがいっぱい）', environment: true, req: 'REQ-039' }];
+  const s = summarizeRecord(record);
+  assert.deepEqual(s.notGraded, ['stage2']);
+  assert.deepEqual(s.environmentStopped, ['stage2']);
+  // 続きから始めた実行の採点しなかった観点は、環境ではない
+  record.grading.notGraded = [{ id: 'all-items-heard', reason: '読み直せなかった' }];
+  assert.equal(summarizeRecord(record).environmentStopped, undefined);
 });
 
 test('REQ-015 記録する数は、各回の要約と全体の要約に出る。見ない模擬ユーザーでは、断りの理由の文を伏せる', async () => {
@@ -295,14 +354,34 @@ test('REQ-015 ユーザー役が答えられずに止まった回（user_role_fa
     run('with', 0.5, false, USER_ROLE_FAILED, 3),
     run('without', 0.25, false, 'max_exchanges', 1),
   ]);
-  assert.deepEqual(all.scores['with:claude-opus-5-5'], { runs: 1, score: 1, verdictOk: 1, userRoleFailed: 1 });
-  assert.deepEqual(all.scores['without:claude-opus-5-5'], { runs: 1, score: 0.25, verdictOk: 0, userRoleFailed: 0 });
+  assert.deepEqual(all.scores['with:claude-opus-5-5'], { runs: 1, score: 1, verdictOk: 1, userRoleFailed: 1, environmentAffected: 0 });
+  assert.deepEqual(all.scores['without:claude-opus-5-5'], { runs: 1, score: 0.25, verdictOk: 0, userRoleFailed: 0, environmentAffected: 0 });
   assert.equal(all.counts['with:claude-opus-5-5'].runs, 1);
   assert.equal(all.counts['with:claude-opus-5-5'].questions.total, 10);
   assert.equal(all.delta, 0.75);
   assert.equal(all.costUsd, 3, '費用は、止まった回の分も数える');
   // その腕・モデルの回が、すべてユーザー役の失敗で止まったとき
   const only = summarizeAll([], [run('with', 0.5, false, USER_ROLE_FAILED, 3), run('without', 0.25, false, 'max_exchanges', 1)]);
-  assert.deepEqual(only.scores['with:claude-opus-5-5'], { runs: 0, score: null, verdictOk: 0, userRoleFailed: 1 });
+  assert.deepEqual(only.scores['with:claude-opus-5-5'], { runs: 0, score: null, verdictOk: 0, userRoleFailed: 1, environmentAffected: 0 });
   assert.equal(only.delta, null);
+});
+
+test('testing.md 6.5 環境（ディスクがいっぱい）の影響を受けた回は、平均点・合格の数・記録する数・あり・なしの差に入れず、腕・モデルごとに別に数える', async () => {
+  const counts = (total) => ({ questions: { total, askTool: total, text: 0 }, askToolCalls: { calls: total, maxQuestionsPerCall: 1, callsWithMultiple: 0 }, pending: { count: 0 }, aiDecisions: { count: 0 }, recordRefusals: { total: 0, fixed: 0, unfixed: 0 }, nonJapaneseTexts: { count: 0 } });
+  const run = (arm, score, verdictOk, n, extra = {}) => ({ arm, model: 'claude-opus-5-5', stopped: 'changed', score, verdictOk, costUsd: 1, counts: counts(n), ...extra });
+  const all = summarizeAll([], [
+    run('with', 0.9, false, 10),
+    run('with', 0.971, true, 4, { environmentAffected: true, notGraded: ['stage2'], environmentStopped: ['stage2'] }),
+    run('with', 0.5, false, 2, { stopped: USER_ROLE_FAILED, environmentAffected: true }),
+    run('without', 0.4, false, 1),
+  ]);
+  assert.deepEqual(all.scores['with:claude-opus-5-5'], { runs: 1, score: 0.9, verdictOk: 0, userRoleFailed: 1, environmentAffected: 1 }, 'ユーザー役の失敗で止まった回は、そちらだけに数える');
+  assert.equal(all.counts['with:claude-opus-5-5'].questions.total, 10);
+  assert.ok(Math.abs(all.delta - 0.5) < 1e-9);
+  assert.equal(all.costUsd, 4);
+  // 1 回の要約：記録の grading.environment から environmentAffected を出す
+  const record = await makeRecord({ loaded: weekly });
+  assert.equal(summarizeRecord(record).environmentAffected, undefined);
+  record.grading.environment = { notGraded: [], toolResults: [539] };
+  assert.equal(summarizeRecord(record).environmentAffected, true);
 });

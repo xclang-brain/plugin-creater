@@ -388,7 +388,9 @@ export function createCreator({
       } catch (error) {
         warn(`画面の URL を記録できませんでした：${errorMessage(error)}`);
       }
-      return `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${url}`;
+      // 2行目はモデルに向けた文にする。ユーザーに向けた文（「開いてください」）だけだと、もう示したと取り違え、URL をチャットに書かなかった（外側の EVAL〔改善〕の3回目）。
+      // 返り値は画面に1行で出る（hearing.md 2.5）ので、1行目は、チャットに写す URL の行にする。2行目は、写すのが1行目だけと分かるように「上の1行」と書く
+      return `plugin-creator の画面：${url}\n上の1行（plugin-creator の画面：…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。`;
     },
 
     async state(args) {

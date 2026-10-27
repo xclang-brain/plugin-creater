@@ -217,7 +217,8 @@ describe('状態取得ツール（plugin-creator_state）', () => {
     await withRun(async (run) => {
       const a = await run.call('open');
       const b = await run.call('open');
-      assert.match(a, /^plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：http:\/\/127\.0\.0\.1:\d+\/\?k=/);
+      // 返り値は画面に1行で出るだけなので、モデルに、ほかのツールの前に URL の1行（上の行だけ）をチャットに書くよう促す（外側の EVAL〔改善〕の3回目）
+      assert.match(a, /^plugin-creator の画面：http:\/\/127\.0\.0\.1:\d+\/\?k=[\w-]+\n上の1行（plugin-creator の画面：…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。$/);
       assert.equal(a, b);
     });
   });

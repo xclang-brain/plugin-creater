@@ -15,7 +15,7 @@ import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator
 import { gradeProgram, listFiles } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
 import { knowledgeTrace } from '../runner/outer-grade.mjs';
-import { CONFIRM_ANSWERS, CONFIRM_CHOICES, FIXTURES_DIR, KIND_ANSWER, STYLE_KEYS, loadPersona, readTarGz, validatePersona } from './validate.mjs';
+import { CONFIRM_ANSWERS, CONFIRM_CHOICES, FIXTURES_DIR, KIND_ANSWER, STYLE_KEYS, fileAnswerTexts, loadPersona, readTarGz, validatePersona } from './validate.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = ['weekly-report', 'meeting-minutes', 'training-survey', 'edl-change'];
@@ -503,6 +503,19 @@ const RUN2_ANSWERS = {
   185: '順に書く\n\n最近の1回の流れは次のとおりです。\n1. センサーの平均値がおかしかったので、ソースにログを足した。\n2. kx-build.sh でビルドした。\n3. ボードに送るものを .kximg のイメージにして、ボードに入れた。\n4. ボードで動かして、ログを取って保存した。\n5. 途中で1回ログが取れなかったので、ボードを reboot してやり直したら取れた。\n6. ログを見て、ソースを直した。',
   194: '書く\n\n間違えやすいところは次の3つです。\n1. 開発機の gcc でビルドしてしまう。KX-200 は arm-linux-gnueabihf-gcc でビルドしないと動きません。\n2. 動的リンクのままにしてしまう。-static を付けないと、ボードで not found と出て動きません。\n3. ELF のまま kxinstall してしまう。mkkximg.py で .kximg にしないと、bad magic で断られます。\n\nまた、ボードに入れたあと reboot するまでは有効にならないので、reboot を忘れると古いまま動いてしまいます。',
 };
+// 外側の EVAL（改善）3回目の問いと答え（会話の記録の seq。答えは問いの seq で引く）。見出しと問いと答えは記録のとおり
+const RUN3 = {
+  44: { header: 'ファイル', question: 'クロスコンパイルとデプロイのスキル（kx200-firmware/.github/skills の cross-compile と deploy）は受け取りました。ほかにも実際のファイルがあると、AI が KX-200 での書き方や決まりを取り違えにくくなり、直した後のプラグインを試しに動かすときの入力にも使えます。最近 KX-200 のボードでデバッグをしたときに受け取ったファイルと作ったファイル（ログ、ビルドの出力など）、いつも使っているファイル（手順書、設定ファイル、スクリプトなど）は、どこにありますか？ファイルの場所（パス）か @ で書いてください。2つのスキルのほかにない場合は「ない」と書いてください。' },
+  182: { header: '前回の1回', question: 'AI は、あなたが KX-200 でふだん当たり前にしている手順を知りません。最近 KX-200 のボードで、ソースを直してクロスコンパイルし、ボードに入れて動かし、ログを取った1回を思い出して、ビルドを始めるところからログを見終えるところまでを、したことを順に書いてください。' },
+  218: { header: 'つまずき', question: '初めての人がつまずくところは、AI もつまずきやすいところです。KX-200 のボードでビルドして入れて動かし、ログを取るとき、初めての人がやると、どこで間違えそうですか？' },
+};
+const RUN3_ANSWERS = {
+  // ファイルの問いに、スクリプトの名前を挙げただけの答え（送る形の決まりは言っていない）
+  44: 'ない。2つのスキルのほかに渡せるファイルはありません。ビルドとイメージ作成のスクリプト（kx-build.sh と mkkximg.py）は、それぞれのスキルの scripts フォルダの中にあります。',
+  // 最近の1回の答え。reveal で言わないとした、ログの出し方（DBG_LOG）と目印（exited の行）を言った（3回目の診断 5章）
+  182: '書く\n\n最近の1回は、センサーの平均値がおかしかった件です。順にこうしました。\n\n1. 原因を探すため、ソースにログを足した（DBG_LOG で出力）。\n2. kx-build.sh でクロスコンパイルした。\n3. mkkximg.py で ELF を .kximg のイメージにした。\n4. kxtool -d 192.168.7.2 send でボードに送り、kxinstall /tmp/<イメージ> で入れた。\n5. ボードを reboot した。\n6. kxapp run <アプリの名前> で動かし、出力を終わりの目印（exited の行）まで取って、ログとして保存した。\n7. 途中で1回ログが取れなかったので、ボードを reboot してやり直したら取れた。\n8. ログを見て原因を突き止め、ソースを直した。',
+  218: '書く\n\nつまずきやすいところは次の4つです。\n\n1. ビルドは arm-linux-gnueabihf-gcc で行います。開発機の gcc でビルドすると x86 の実行ファイルになり、KX-200 では動きません。\n2. 必ず静的リンク（-static）にします。KX-200 には共有ライブラリのローダーがないので、動的リンクだと not found と出て動きません。\n3. ボードに送るものは、必ず mkkximg.py で .kximg のイメージにします。ELF のまま送って kxinstall すると bad magic で断られます。\n4. kxtool -d <アドレス> send で送り、kxinstall /tmp/<イメージ> で入れた後、reboot するまでは入れたものが有効になりません。reboot してから kxapp run <アプリの名前> で動かします。',
+};
 /** 外側の EVAL が asked を当てる文（outer-grade.mjs の questionTextOf と同じ、見出しと問い） */
 const askedText = (e) => `${e.header} ${e.question}`;
 
@@ -954,6 +967,91 @@ test('REQ-015 compound の forbid は、knowledge の id で、聞かれない�
   assert.ok(hasError(r2, 'の質問が、forbid のナレッジ「dp-marker」の markers.asked に当たる'), r2.errors.join('\n'));
 });
 
+test('REQ-056 ファイルを聞かれて、示したスクリプトの名前を挙げた答えは、外側の EVAL の判定で、送る形（dp-image）を話したことにならない（3回目の [45]）', async () => {
+  const p = readPersona(EDL);
+  // ユーザー役は、ファイルを聞かれたら、示すファイルの置き場所や名前を答えてよい（files[].reveal）
+  for (const answer of [RUN3_ANSWERS[44], 'ない。2つのスキルのほかにはありません。スキルの scripts にあるのは kx-build.sh と mkkximg.py です。']) {
+    const got = judgeExchange(p, RUN3[44], answer);
+    assert.deepEqual(got.leaked, [], answer);
+    assert.ok(!got.answered.includes('dp-image'), answer);
+  }
+  // ファイルを答える文（置き場所・名前・紹介と、「<名前> です。」などの文）は、聞かれないと話さないナレッジの answered に当たらない
+  const said = fileAnswerTexts(p.files);
+  for (const text of ['mkkximg.py', 'mkkximg.py です。', 'kx200-firmware/.github/skills/deploy/scripts/mkkximg.py でした。', 'mkkximg.py で、デプロイのスキルが使う、ELF をボードに入れられるイメージにするスクリプトです。']) {
+    assert.ok(said.includes(text), text);
+  }
+  assert.ok(!said.some((text) => text.includes('log-insertion-rules')), 'role が repo のファイルは、ユーザー役に示さない');
+  for (const k of p.knowledge.filter((x) => !x.volunteer)) {
+    for (const text of said) assert.doesNotMatch(text, new RegExp(k.markers.answered), `${k.id}：${text}`);
+  }
+  // validate.mjs が確かめる：名前で当たる answered（直す前の dp-image）、「<名前> です。」の「で」で当たる answered、紹介で当たる
+  // answered は不合格。話の中で出るナレッジ（答え方の立場を含む）も見る。自分から話すナレッジは、聞かれずに話したかを見ないので見ない
+  const r = await mutate(EDL, (q) => {
+    knowledgeOf(q, 'dp-image').markers.answered = 'mkkximg|\\.kximg';
+    knowledgeOf(q, 'dp-steps').markers.answered += '|mkkximg\\.py`?\\s*で';
+    knowledgeOf(q, 'dp-marker').markers.answered = 'exited|目印|ログを取る';
+    knowledgeOf(q, 'script-usage').markers.answered += '|mkkximg';
+    knowledgeOf(q, 'dp-ip').markers.answered += '|deploy';
+  });
+  const fileNameError = (id) => r.errors.find((e) => e.startsWith(`knowledge「${id}」.markers.answered が、示すファイルの置き場所か紹介`));
+  assert.match(fileNameError('dp-image') ?? '', /「kx200-firmware\/\.github\/skills\/deploy\/scripts\/mkkximg\.py」/, r.errors.join('\n'));
+  assert.match(fileNameError('dp-steps') ?? '', /「kx200-firmware\/\.github\/skills\/deploy\/scripts\/mkkximg\.py です。」/, r.errors.join('\n'));
+  assert.match(fileNameError('dp-marker') ?? '', /「チームで使っている KX-200 のデプロイ（ボードに入れて動かし、ログを取る）のスキルの本文」/, r.errors.join('\n'));
+  assert.match(fileNameError('script-usage') ?? '', /「kx200-firmware\/\.github\/skills\/deploy\/scripts\/mkkximg\.py」/, r.errors.join('\n'));
+  assert.equal(fileNameError('dp-ip'), undefined);
+});
+
+test('REQ-056 最近の1回の問いには、送る形・手順・いつもと違うときのやり直しを話し、細かすぎる6つ（コンパイラ・リンク・最適化・打ち方・目印・ログの出し方）は言わない（3回目の [183]）', () => {
+  const p = readPersona(EDL);
+  const lastTime = new RegExp(p.expect.lastTimeAsked);
+  const EXPECT = ['dp-image', 'dp-steps', 'k15-now'];
+  // 言わない側は、模擬ユーザーから導く（reveal に「最近の1回を順に話すときは、〜は言わない」があるもの）
+  const notOnLastTime = p.knowledge.filter((k) => /最近の1回を順に話すときは、[^。]+は言わない/.test(k.reveal)).map((k) => k.id);
+  assert.deepEqual(notOnLastTime, ['cc-toolchain', 'cc-static', 'cc-debug', 'dp-console', 'dp-marker', 'log-dbg']);
+  // 話す側は、reveal に最近の1回を書いてある
+  for (const id of ['dp-image', 'dp-steps']) assert.match(knowledgeOf(p, id).reveal, /最近の1回の流れを順に聞かれたとき/, id);
+  assert.match(knowledgeOf(p, 'k15-now').reveal, /最近実際にやった1回を聞かれたとき/);
+  // ユーザー役の試験：3回目と2回目の最近の1回の問い（クリエイターの言い回しが違う2つ）を compound に入れる
+  for (const e of [RUN3[182], RUN2[185]]) {
+    assert.match(askedText(e), lastTime);
+    const c = p.userRoleTests.compound.find((x) => x.question === e.question);
+    assert.ok(c, `userRoleTests.compound に、最近の1回の問いがない：${e.question.slice(0, 40)}`);
+    assert.deepEqual(c.expect, EXPECT);
+    assert.deepEqual(c.forbid, notOnLastTime);
+  }
+  const answeredRe = (id) => new RegExp(knowledgeOf(p, id).markers.answered);
+  // ユーザー役の試験が forbid を見る言葉（leak、なければ answered）
+  const forbidRe = (id) => new RegExp(knowledgeOf(p, id).markers.leak ?? knowledgeOf(p, id).markers.answered);
+  // 話の出どころ（k15-now）の、最近の1回を話す細かさの見本は、最近の1回を順に聞かれたときだけ使い、話す側の3つに当たり、言わない側の6つに当たらない
+  const reveal = knowledgeOf(p, 'k15-now').reveal;
+  const sample = /最近実際にやった1回を順に話すよう聞かれたときだけ、この細かさで話す：([^。]+)。[^。]*は足さない/.exec(reveal)?.[1];
+  assert.ok(sample, 'k15-now の reveal に、最近の1回を順に聞かれたときだけの、話す細かさの見本がない');
+  for (const id of EXPECT) assert.match(sample, answeredRe(id), id);
+  for (const id of notOnLastTime) assert.doesNotMatch(sample, forbidRe(id), id);
+  // k15-now の answered（reboot）は手順の reboot にも当たるので、いつもと違うときのやり直しは、言葉で見る
+  const redo = /reboot[^。\n]{0,40}やり直/;
+  for (const text of [sample, RUN3_ANSWERS[182], RUN2_ANSWERS[185]]) assert.match(text, redo, text.slice(0, 30));
+  // k15-now は自分から話すので、答える条件は大まかな質問や、最近の1回に触れるほかの質問でも使われる。答える条件の文（見本と、足さないことの
+  // 並びを含む）は、聞かれないと話さないナレッジのうち、最近の1回の問いで「聞いた」になるもの（asked に expect.lastTimeAsked を含むもの）の
+  // 言葉にだけ当たってよい。ほかの質問で最近の1回に触れるときは、それらの中身も言わない
+  const onLastTime = p.knowledge.filter((k) => !k.volunteer && k.markers.asked.includes(p.expect.lastTimeAsked)).map((k) => k.id);
+  assert.deepEqual(onLastTime, ['dp-image', 'dp-steps']);
+  for (const k of p.knowledge.filter((x) => !x.volunteer && !onLastTime.includes(x.id))) {
+    for (const key of ['answered', 'leak']) if (k.markers[key]) assert.doesNotMatch(reveal, new RegExp(k.markers[key]), `${k.id}.${key}`);
+  }
+  assert.match(reveal, /ほかの質問で最近の1回に触れるときは、[^。]*イメージの作り方とボードに入れる手順は言わない/);
+  // 見本のとおりの答えは、外側の EVAL の判定でも、3つを答えたことになり、聞かれずに話したことにならない
+  const got = judgeExchange(p, RUN3[182], sample);
+  assert.deepEqual(got.leaked, []);
+  for (const id of EXPECT) assert.ok(got.answered.includes(id), id);
+  // 3回目の答え [183] は、ログの出し方と目印を言ったので、ユーザー役の試験でも外側の EVAL の判定でも見つかる
+  assert.deepEqual(notOnLastTime.filter((id) => forbidRe(id).test(RUN3_ANSWERS[182])), ['dp-marker', 'log-dbg']);
+  assert.deepEqual(judgeExchange(p, RUN3[182], RUN3_ANSWERS[182]).leaked, ['dp-marker', 'log-dbg']);
+  // 2回目の答え [186] は、言わない側を言っていない。送った後の手順（kxinstall・reboot・kxapp run）を言っていないので、手順が足りない
+  assert.deepEqual(notOnLastTime.filter((id) => forbidRe(id).test(RUN2_ANSWERS[185])), []);
+  assert.deepEqual(EXPECT.filter((id) => !answeredRe(id).test(RUN2_ANSWERS[185])), ['dp-steps']);
+});
+
 test('REQ-055 示したスキルのほかの文（環境の条件、status の意味）への立場があり、確かめられたら「このとおり」と答える', async () => {
   const p = readPersona(EDL);
   const k = knowledgeOf(p, 'skill-rest');
@@ -1008,6 +1106,29 @@ test('REQ-055 答える試験（recall・compound）が見る answered は、箇
         'reboot するまでは、入れたものが有効になりません。',
       ],
       no: ['ボードを1回 reboot してやり直し、それでもだめなら人に伝えて判断してもらいます。'],
+    },
+    // 送る形：ドットのない言い換えと「mkkximg.py で〜にする」も、送る形を話したことになる。スクリプトの名前を挙げただけでは当たらない
+    'dp-image': {
+      yes: [
+        'mkkximg.py でイメージにします。',
+        'mkkximg を使ってイメージにしてから送ります。',
+        'kximg 形式にして送ります。',
+        'ELF のまま送ると bad magic で断られます。',
+        RUN2_ANSWERS[185],
+        RUN2_ANSWERS[194],
+        RUN3_ANSWERS[182],
+        RUN3_ANSWERS[218],
+      ],
+      // 「で」が「です」「でした」「で、」の、名前を言っただけの文も当たらない
+      no: [
+        RUN3_ANSWERS[44],
+        'mkkximg.py は、deploy のスキルの scripts フォルダにあります。',
+        'スクリプトは kx-build.sh と mkkximg.py の2つです。',
+        'スクリプトは kx-build.sh と mkkximg.py です。',
+        'kx200-firmware/.github/skills/deploy/scripts/mkkximg.py です。',
+        'イメージを作るスクリプトは mkkximg.py でした。',
+        'スクリプトは mkkximg.py で、deploy のスキルの scripts フォルダにあります。',
+      ],
     },
     'script-usage': {
       yes: ['スキルに書いてあるとおりに使っています。自分で決めた決まりではありませんが、変えるつもりもありません。', '細かいことは --help で出ます。'],

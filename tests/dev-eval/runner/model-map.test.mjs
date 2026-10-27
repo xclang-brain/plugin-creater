@@ -1,11 +1,11 @@
 // モデルの名前の対応（testing.md 4章）。表は変換スクリプトのものを、変換レポートから読む。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { copilotModelList, modelMapOf, readConversionReport, toClaudeModelId, toCopilotName } from './model-map.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const MAP = {
   'claude-haiku-5.5': 'claude-haiku-5-5',
@@ -16,7 +16,7 @@ const MAP = {
 };
 
 function makeConverted(report) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'model-map-test-'));
+  const dir = tempDir('model-map-test');
   if (report) {
     fs.mkdirSync(path.join(dir, '.eval'));
     fs.writeFileSync(path.join(dir, '.eval', 'conversion-report.json'), JSON.stringify(report));

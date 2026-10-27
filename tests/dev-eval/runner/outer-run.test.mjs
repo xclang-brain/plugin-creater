@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,15 +12,16 @@ import { fileURLToPath } from 'node:url';
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
+import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runGeneratedStages, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
 import { CALL_RETRIES, MARKUP_RETRIES } from './user-role.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
 const PERSONAS = path.join(here, '..', 'personas');
 const SAMPLE_PARTS = path.join(REPO, 'tests', 'creator', 'scaffold', 'sample', 'parts');
 const SCAFFOLD = path.join(REPO, 'skills', 'make-plugin', 'scripts', 'scaffold.py');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `outer-run-${prefix}-`));
+const tmp = (prefix) => tempDir(`outer-run-${prefix}`);
 const SETTABLE = ITEMS.filter((i) => !i.computed && !i.rebuildOnly).map((i) => i.name);
 const T = (name) => `mcp__plugin-creator__${name}`;
 
@@ -292,6 +292,93 @@ test('REQ-015 流れ：利用枠の上限のエラーで止まったら、理由
   const r2 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: failing.query });
   assert.equal(r2.stopped.reason, 'error_during_execution');
   fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
+test('testing.md 5章 実行の後に、クリエイターのホームの .cache（Playwright の Chromium など）を消す。keepHomes なら残す。開発者が答えるときも残す', async () => {
+  const runRoot = tmp('cache');
+  const homes = [];
+  const sdk = createFakeSdk({
+    userRole: () => 'x',
+    agent: async (ctx) => {
+      const home = ctx.options.env.HOME;
+      homes.push(home);
+      fs.mkdirSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200', 'chrome'), 'x');
+      return '終わりました。';
+    },
+  });
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1 });
+  assert.ok(homes[0].includes('agent-home'));
+  assert.equal(fs.existsSync(path.join(homes[0], '.cache')), false);
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1, keepHomes: true });
+  assert.equal(fs.existsSync(path.join(homes[1], '.cache', 'ms-playwright')), true);
+  // 開発者が答えるときは、セッションの記録（.claude）と同じく残す（続きから始めたときに、クリエイターが入れたブラウザーがなくならないように）
+  const developer = () => ({ answers: [], signals: [], cost: 0, answer: async () => ({ index: 0, answer: 'x', rawAnswer: 'x', signal: false, choices: [] }) });
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1, answerer: 'human', createAnswerer: developer });
+  assert.equal(fs.existsSync(path.join(homes[2], '.cache', 'ms-playwright')), true);
+});
+
+test('REQ-039 1・2段目：2段目の不合格がすべてディスクの誤り（ENOSPC・EIO）なら、記録の stage2 に diskErrorsOnly を付ける。全件で見る（記録の failures は 10 件まで）', async () => {
+  const plugin = tmp('stages');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  const runWith = async (reasons) => {
+    const report = { ok: false, resultsFile: 'tests/results/latest.json', stages: [{ id: 'stage1', status: 'passed', failures: [] }, { id: 'stage2', status: 'failed', counts: { failed: reasons.length }, failures: reasons.map((reason, i) => ({ test: `t${i}`, reason })) }] };
+    fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), `import sys\nsys.stdout.write(${JSON.stringify(JSON.stringify(report))})\nsys.exit(1)\n`);
+    return runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none') });
+  };
+  const enospc = Array.from({ length: 12 }, (_, i) => `ENOSPC: no space left on device, mkdtemp '/tmp/adapter-plugin-${i}'`);
+  const disk = await runWith(enospc);
+  assert.equal(disk.stage1.ok, true);
+  assert.equal(disk.stage2.ok, false);
+  assert.equal(disk.stage2.diskErrorsOnly, true);
+  assert.equal(disk.stage2.failures.length, 10);
+  assert.equal(disk.stage1.diskErrorsOnly, undefined);
+  // 11 件目にほかの理由があれば、付けない
+  const mixed = await runWith([...enospc.slice(0, 10), 'AssertionError: 期待と違う']);
+  assert.equal(mixed.stage2.diskErrorsOnly, undefined);
+});
+
+test('testing.md 6.5 1・2段目：1段目の不合格がすべてディスクの誤りなら stage1 に、run.py がディスクの誤りで結果を出せずに落ちたら diskError を付ける', async () => {
+  const plugin = tmp('stages-disk');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  const runPy = (body) => {
+    fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), body);
+    return runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none') });
+  };
+  const report = { ok: false, stages: [{ id: 'stage1', status: 'failed', failures: [{ test: '構造の検査', reason: '結果を読めなかった: OSError: [Errno 28] No space left on device' }] }, { id: 'stage2', status: 'passed', failures: [] }] };
+  const stage1 = await runPy(`import sys\nsys.stdout.write(${JSON.stringify(JSON.stringify(report))})\nsys.exit(1)\n`);
+  assert.equal(stage1.stage1.diskErrorsOnly, true);
+  assert.equal(stage1.stage2.diskErrorsOnly, undefined);
+  // 結果のファイルを書けずに落ちた（Python の例外の文が標準エラー出力の最後に出る）
+  const crashed = await runPy("import sys\nsys.stderr.write('Traceback (most recent call last):\\nOSError: [Errno 28] No space left on device\\n')\nsys.exit(1)\n");
+  assert.equal(crashed.skipped, true);
+  assert.equal(crashed.diskError, true);
+  assert.match(crashed.reason, /結果を読めない/);
+  // ほかの理由で落ちたときは付けない
+  const other = await runPy("import sys\nsys.stderr.write('SyntaxError: invalid syntax\\n')\nsys.exit(1)\n");
+  assert.equal(other.skipped, true);
+  assert.equal(other.diskError, undefined);
+});
+
+test('testing.md 5章 1・2段目：run.py には1回ごとの一時フォルダを TMPDIR で渡し、終わったら消す（生成プラグインの試験の残りを OS の一時フォルダにためない）', async () => {
+  const plugin = tmp('stages-tmpdir');
+  const tmpRoot = tmp('stages-tmproot');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  // 試験が残すもの（Playwright の playwright-artifacts-* など）を TMPDIR に作り、その場所を結果に書く
+  fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), [
+    'import json, os, sys',
+    "t = os.environ['TMPDIR']",
+    "os.makedirs(os.path.join(t, 'playwright-artifacts-abc'))",
+    "open(os.path.join(t, 'playwright-artifacts-abc', 'x'), 'w').write('x')",
+    "sys.stdout.write(json.dumps({'ok': True, 'resultsFile': t, 'stages': [{'id': 'stage1', 'status': 'passed'}, {'id': 'stage2', 'status': 'passed'}]}))",
+    '',
+  ].join('\n'));
+  const r = await runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none'), tmpRoot });
+  assert.equal(r.ok, true);
+  assert.equal(path.dirname(r.resultsFile), tmpRoot);
+  assert.match(path.basename(r.resultsFile), /^dev-eval-stages-/);
+  assert.equal(fs.existsSync(r.resultsFile), false, '終わったら消す');
+  assert.deepEqual(fs.readdirSync(tmpRoot), []);
 });
 
 test('REQ-015 ユーザー役の答えが道具の呼び出しの形のまま直らなければ、クリエイターに渡さず、試験の仕組みの失敗（user_role_failed）で会話を止める', async () => {

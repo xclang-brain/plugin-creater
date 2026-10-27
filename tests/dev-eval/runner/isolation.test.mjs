@@ -1,13 +1,13 @@
 // Agent SDK の隔離（testing.md 5章）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { agentEnv, allowedToolsFor, ENV_ALLOW, isInsideDir, makeCanUseTool, makeQueryOptions, makeSandboxOptions, SANDBOX_NETWORK_TOOL, sandboxStatus } from './isolation.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
-const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'isolation-test-')));
+const tmp = () => fs.realpathSync(tempDir('isolation-test'));
 
 test('testing.md 5章 環境変数は許可の一覧のものだけを渡し、一時的なホームを使う', () => {
   const base = { PATH: '/bin', LANG: 'ja_JP.UTF-8', GITHUB_TOKEN: 'secret', AWS_SECRET_ACCESS_KEY: 'secret', CLAUDE_EFFORT: 'high', CLAUDE_AUTO_BACKGROUND_TASKS: 'true', HOME: '/home/real', ANTHROPIC_BASE_URL: 'https://api.example' };

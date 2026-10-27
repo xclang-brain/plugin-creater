@@ -3,7 +3,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,9 +12,10 @@ import { loadPersona } from '../personas/validate.mjs';
 import { CREATOR_SERVER_NAME, createCreatorToolkit, createFakeGh, toMcpResult } from './creator-tools.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { placePersonaFiles } from './outer-run.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `creator-tools-${prefix}-`));
+const tmp = (prefix) => tempDir(`creator-tools-${prefix}`);
 const SETTABLE = ITEMS.filter((i) => !i.computed && !i.rebuildOnly).map((i) => i.name);
 
 async function withToolkit(fn) {

@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +17,7 @@ import { REPO_ROOT } from './creator-tools.mjs';
 import { sandboxStatus } from './isolation.mjs';
 import { convertPlugin, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
 import { MARKUP_RETRIES } from './user-role.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
@@ -79,7 +79,7 @@ test('REQ-015 本物の SDK で通す：質問のツールにユーザー役が�
   const log = [];
   const api = await startFakeAnthropic(script(log));
   t.after(() => api.close());
-  const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-'));
+  const runRoot = tempDir('outer-e2e');
   t.after(() => removeTemp(runRoot));
   // 本物の置き換え（クリエイター全体を Claude Code の形にして、claude plugin validate に通す）
   const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
@@ -147,7 +147,7 @@ test('REQ-015 本物の SDK でも、ユーザー役の答えが道具の呼び�
   const markup = `${'<'}invoke name="Read">\n${'<'}parameter name="file_path">資料/先週の週報.docx${'<'}/parameter>\n${'<'}/invoke>`;
   const api = await startFakeAnthropic((req) => (req.system.includes('あなたは営業チームのリーダー') ? (base(req), { blocks: [{ type: 'text', text: markup }] }) : base(req)));
   t.after(() => api.close());
-  const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-markup-'));
+  const runRoot = tempDir('outer-e2e-markup');
   t.after(() => removeTemp(runRoot));
   const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
   const guarded = guardSdk(sdk, api);
@@ -182,7 +182,7 @@ test('REQ-039 サンドボックスの中のコマンドは、cd の後でも、
     return step ? { blocks: [{ type: 'tool_use', name: 'Bash', input: { command: step, description: '確かめる' } }] } : { blocks: [{ type: 'text', text: '確かめました。' }] };
   });
   t.after(() => api.close());
-  const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-cwd-'));
+  const runRoot = tempDir('outer-e2e-cwd');
   t.after(() => removeTemp(runRoot));
   const guarded = guardSdk(sdk, api);
   const record = await runOuterOnce({

@@ -180,6 +180,22 @@ function validateFiles(persona, dir, errors, context) {
   }
 }
 
+/**
+ * ユーザー役が、ファイルを聞かれて示すファイル（role が repo のものを除く）を答える文：置き場所、名前、紹介と、
+ * 置き場所か名前に「です」「でした」を続けた文、紹介を続けた文（「<名前> で、<紹介>です。」）
+ */
+export function fileAnswerTexts(files) {
+  return (files ?? []).filter((f) => isObject(f) && f.role !== 'repo').flatMap((f) => {
+    const describe = isText(f.describe) ? f.describe : '';
+    const names = isText(f.place) ? [...new Set([f.place, path.posix.basename(normalizeRelPath(f.place))])] : [];
+    return [
+      ...names,
+      ...(describe ? [describe] : []),
+      ...names.flatMap((n) => [`${n} です。`, `${n} でした。`, ...(describe ? [`${n} で、${describe}です。`] : [])]),
+    ];
+  });
+}
+
 function validateKnowledge(persona, errors, warnings, context) {
   const list = persona.knowledge;
   if (!Array.isArray(list) || list.length === 0) {
@@ -247,6 +263,13 @@ function validateKnowledge(persona, errors, warnings, context) {
     checkRegex(m.asked, `${name}.markers.asked`, errors);
     const answered = checkRegex(m.answered, `${name}.markers.answered`, errors);
     if (answered && !answered.test(own)) errors.push(`${name}.markers.answered が、fact（と file.detail）の中の言葉に当たらない（答えが当たるか見られない）`);
+    // 聞かれないと話さないナレッジの answered は、示すファイルを答える文（置き場所、名前、紹介と、それに「です」などを続けた文）に当たらない
+    // 言葉にする。ユーザー役は、ファイルを聞かれたら置き場所や名前を答えてよい（files[].reveal）ので、当たると、ファイルの名前を言っただけで
+    // 聞かれずに話したことになる
+    if (answered && k.volunteer === false && Array.isArray(persona.files)) {
+      const hit = fileAnswerTexts(persona.files).find((text) => answered.test(text));
+      if (hit) errors.push(`${name}.markers.answered が、示すファイルの置き場所か紹介「${hit}」に当たる（ファイルの名前を言っただけで、決まりを話したことになる）`);
+    }
     if (k.volunteer === false) {
       const leak = checkRegex(m.leak, `${name}.markers.leak`, errors);
       if (leak && !leak.test(own)) errors.push(`${name}.markers.leak が、fact（と file.detail）の中の言葉に当たらない（漏れを見られない）`);

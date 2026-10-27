@@ -26,6 +26,7 @@ import path from 'node:path';
 import { gradeRun } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { findScreenUrl } from '../../../skills/test-plugin/scripts/screen.mjs';
 import { prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
+import { removeAgentCache } from './disk.mjs';
 import { createInnerAdapter, summarizeMessage } from './inner-adapter.mjs';
 import { decideSettings, notesField, previewInputs } from './inner-settings.mjs';
 import { makeQueryOptions, SANDBOX_NETWORK_TOOL, usageLimitPrefixes } from './isolation.mjs';
@@ -49,6 +50,8 @@ export const DEVICE_UNFENCED_WARNING = '擬似の機器の通信と中身の制�
 
 /** 画面の欄の id の規則（ui/static/render.js の fieldId）。モデルの選択は model-<役割> の欄である */
 const MODEL_ROLES = ['orchestrator', 'worker', 'verifier'];
+/** 試すメインのエージェントのホーム（実行のフォルダの中） */
+const MAIN_HOME = 'home-main';
 
 const REQUEST_ENDINGS =
   /(教えてください|お知らせください|知らせてください|お聞かせください|聞かせてください|ご指定ください|指定してください|選んでください|答えてください|入力してください|ご連絡ください|お願いします|お願いいたします|いかがでしょうか|でしょうか)[。.！!]*\s*$/;
@@ -188,6 +191,11 @@ export async function runInnerArm(o) {
     return await runArm(o, holder);
   } finally {
     await holder.device?.stop();
+    // 試すエージェントと、統括・作業・検証のエージェント（inner-adapter.mjs の home-<id>）が入れたもの（.cache/ms-playwright の
+    // Chromium など）は、実行ごとにたまるので残さない（testing.md 5章）
+    if (o.runDir && fs.existsSync(o.runDir)) {
+      for (const name of fs.readdirSync(o.runDir)) if (name.startsWith('home-')) removeAgentCache(path.join(o.runDir, name));
+    }
   }
 }
 
@@ -204,7 +212,7 @@ async function runArm(o, holder) {
   const startedAt = Date.now();
   // 作業フォルダ（試されるエージェントの cwd）は、記録の置き場所と分ける。採点のときに、記録が成果物に混ざらないようにするため
   const { workDir, inputs } = prepareWorkDir({ task, dir: path.join(runDir, 'work') });
-  const homeDir = ensureDir(path.join(runDir, 'home-main'));
+  const homeDir = ensureDir(path.join(runDir, MAIN_HOME));
 
   const result = {
     arm, task: task.id, status: 'completed', reason: null, runDir, workDir, url: null, replies: 0, history: [], skillsUsed: [], mainTools: [], mainAgents: [],

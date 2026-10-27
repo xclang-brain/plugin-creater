@@ -410,6 +410,35 @@ describe('決まったこと（plugin-creator_record）', () => {
       assert.equal(text, '記録しました（仕事のやり方や決まり K-01、K-02 を追加）。確かめたいこと：1件');
     });
   });
+
+  test('REQ-017 例外のある決まりを、種類か例外を渡して「合否の決め方」にすると、文に例外のときの合格を書くよう返り値で促す（合格の条件には文だけが渡るため）', async () => {
+    await withRun(async (run) => {
+      const nudge = (ids) => `${ids} は、例外のある合否の決め方です。合格の条件には文だけが渡るので、文に、例外のときに何なら合格かが書かれていなければ、文を直して記録し直してください。`;
+      // 決まりの確かめで例外を書いた「それ以外」の決まりには促さない
+      await run.call('record', { knowledge: [knowledge({ text: '最適化は -O2 にする', status: '候補', source: 'ファイルから読んで確かめた', quote: 'build.md の3行目' })] });
+      const other = await run.call('record', { knowledge: [{ id: 'K-01', status: '決まった', exception: '調べるときは -O0 でよい', quote: '調べるときは -O0 です' }] });
+      assert.equal(other, '記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。');
+      // 後で種類だけを「合否の決め方」に変える（生成前の確認の基準の案）と促す。1行のまま
+      const changed = await run.call('record', { knowledge: [{ id: 'K-01', kind: '合否の決め方', quote: '基準の案にする' }] });
+      assert.equal(changed, `記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。${nudge('K-01')}`);
+      assert.ok(!changed.includes('\n'));
+      assert.deepEqual(internalSymbolsIn(changed), []);
+      // 文だけを直したときは促さない
+      const fixed = await run.call('record', { knowledge: [{ id: 'K-01', text: '最適化は -O2 にする。ただし調べるときは -O0 でよい', quote: '調べるときは -O0 です' }] });
+      assert.equal(fixed, '記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。');
+      assert.equal(run.readState().knowledge[0].exception, '調べるときは -O0 でよい', '例外の欄は残る');
+      // 新しい合否の決め方に例外があるときと、合否の決め方に例外を足したときも促す。例外のない合否の決め方には促さない
+      const added = await run.call('record', {
+        knowledge: [
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: '表が2つあれば合格', status: '候補', exception: '月初めは1つでよい' }),
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: '題があれば合格' }),
+        ],
+      });
+      assert.equal(added, `記録しました（仕事のやり方や決まり K-02、K-03 を追加）。確かめたいこと：1件。${nudge('K-02')}`);
+      const withException = await run.call('record', { knowledge: [{ id: 'K-03', exception: '下書きは題がなくてよい', quote: '下書きは要りません' }] });
+      assert.equal(withException, `記録しました（仕事のやり方や決まり K-03 を更新）。確かめたいこと：1件。${nudge('K-03')}`);
+    });
+  });
 });
 
 describe('生成前の確認（plugin-creator_confirm）と、段階「生成」', () => {
@@ -1091,7 +1120,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       const { folder, text } = await startChange(run);
       assert.equal(
         text,
-        '直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。仕事のやり方や決まり K-01〜K-05 の5件を、確かめたいこととして取り込みました。新しい決まりは K-06 から付きます。',
+        '直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。仕事のやり方や決まり K-01〜K-05 の5件を、確かめたいこととして取り込みました。新しい決まりは K-06 から付きます。\nこれからの流れをまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。',
       );
       assert.deepEqual(internalSymbolsIn(text), []);
       assert.deepEqual(leftWordsIn(text), []);
@@ -1234,6 +1263,17 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       assert.deepEqual([state.change.removed, state.change.maxId, state.knowledgeCounter], [['K-08', 'K-09'], 9, 9]);
       const added = await run.call('record', { knowledge: [knowledge({ text: '新しい決まり' })] });
       assert.match(added, /K-10 を追加/);
+    });
+  });
+
+  test('REQ-058 引き継いだ合否の決め方に例外を足すと、新しい番号で、文に例外のときの合格を書くよう返り値で促す', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const text = await run.call('record', { knowledge: [{ id: 'K-02', status: '決まった', exception: '機器がないときは AVG の行がなくてよい', quote: '機器がないときは別です' }] });
+      assert.equal(
+        text,
+        '記録しました（仕事のやり方や決まり K-02 の中身を直したので、K-02 を外して K-06 にしました）。確かめたいこと：4件。K-06 は、例外のある合否の決め方です。合格の条件には文だけが渡るので、文に、例外のときに何なら合格かが書かれていなければ、文を直して記録し直してください。',
+      );
     });
   });
 
@@ -1427,7 +1467,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       assert.deepEqual([r.generated, r.carried, r.rows, r.criteriaIds, r.evalPrompts], [false, [], 0, {}, []], JSON.stringify(plugin));
       assert.match(
         r.text,
-        /^直すプラグインとして記録しました（edl-sample、今の版 0\.1\.0）。決まりの一覧（tests\/knowledge\.json）と com\.github\.copilot\/extensions\/edl-sample\/task\.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-\d+ から付きます。$/,
+        /^直すプラグインとして記録しました（edl-sample、今の版 0\.1\.0）。決まりの一覧（tests\/knowledge\.json）と com\.github\.copilot\/extensions\/edl-sample\/task\.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-\d+ から付きます。\nこれからの流れ（作っていないプラグインのときの流れ）をまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。$/,
       );
     }
     // 決まりの一覧だけがあるとき：取り込まないが、その番号とは重ならないように付ける
@@ -1438,7 +1478,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     assert.deepEqual([loose.generated, loose.maxId], [false, 12]);
     // 決まりの一覧が空の生成プラグイン
     const empty = await generatedOf({ knowledge: [], removed: [{ id: 'K-03', kind: 'other', item: '進め方', text: 'x' }] });
-    assert.match(empty.text, /決まりの一覧（tests\/knowledge\.json）に決まりがないので、取り込んだものはありません。新しい決まりは K-04 から付きます。$/);
+    assert.match(empty.text, /決まりの一覧（tests\/knowledge\.json）に決まりがないので、取り込んだものはありません。新しい決まりは K-04 から付きます。\nこれからの流れをまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。$/);
   });
 
   test('REQ-054 直すときは、段階と聞くこと「できていたことの確認」を断る（できていたことは、すべて引き継ぐ）', async () => {

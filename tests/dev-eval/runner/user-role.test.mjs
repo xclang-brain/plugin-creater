@@ -3,7 +3,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -26,10 +25,11 @@ import {
   createUserRole,
   joinNotes,
 } from './user-role.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'user-role-test-'));
+const tmp = () => tempDir('user-role-test');
 
 const weekly = (await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true })).persona;
 const training = (await loadPersona(path.join(PERSONAS, 'training-survey'))).persona;

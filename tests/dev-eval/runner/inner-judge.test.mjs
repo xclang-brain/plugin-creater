@@ -7,6 +7,7 @@ import * as realSdk from '@anthropic-ai/claude-agent-sdk';
 import { gradeRun } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { firstUserText, guardSdk, startFakeAnthropic } from './fake-anthropic.mjs';
 import { createAgentSdkJudge, JUDGE_MODEL } from './inner-judge.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const ENV = { ANTHROPIC_API_KEY: 'fake-key', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
 const criterion = { id: 'C-02', text: '数字は半角で書く（例：3件）。' };
@@ -81,9 +82,8 @@ test('REQ-041 モデルの判定：読めない返事・API の誤りは、不�
 
 test('REQ-041 モデルの判定を grade.mjs に渡すと、model の基準だけがモデルで判定され、program の基準は呼ばない', { timeout: 90_000 }, async () => {
   const fs = await import('node:fs');
-  const os = await import('node:os');
   const path = await import('node:path');
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'judge-grade-'));
+  const workDir = tempDir('judge-grade');
   fs.mkdirSync(path.join(workDir, 'out'));
   fs.writeFileSync(path.join(workDir, 'out', 'weekly.md'), '# 週報\n## 今週やったこと\n3件対応した\n');
   const criteria = [

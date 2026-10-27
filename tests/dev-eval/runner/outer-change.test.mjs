@@ -4,7 +4,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -17,8 +16,9 @@ import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { gradeChange } from './outer-grade-change.mjs';
 import { personaFileHashes } from './outer-grade.mjs';
 import { placePersonaFiles, runOuterOnce } from './outer-run.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
-const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `outer-change-${prefix}-`)));
+const tmp = (prefix) => fs.realpathSync(tempDir(`outer-change-${prefix}`));
 const write = (root, rel, text) => {
   const file = path.join(root, ...rel.split('/'));
   fs.mkdirSync(path.dirname(file), { recursive: true });

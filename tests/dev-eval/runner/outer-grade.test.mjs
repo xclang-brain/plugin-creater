@@ -3,7 +3,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +12,7 @@ import {
   HAIKU_REQUIRED,
   collectGeneratedFiles,
   countRecorded,
+  environmentNotGraded,
   exchangesOf,
   gradeAllItemsHeard,
   gradeFirstRun,
@@ -21,6 +21,7 @@ import {
   gradeNoGenerationBeforeApproval,
   gradeOuter,
   gradeScreenUrlShown,
+  isTestCode,
   knowledgeTrace,
   normalizeModelId,
   normalizeQuote,
@@ -29,6 +30,7 @@ import {
   sha256OfBuffer,
   userRoleFaults,
 } from './outer-grade.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
@@ -413,8 +415,22 @@ test('REQ-038 見る範囲：課題と基準のファイルは、tests/eval の 
   assert.ok(!s.embedded.includes('weekly_report.md') || files.some((f) => f.rel === 'com.github.copilot/extensions/w/task.json'), '課題と基準のファイルの文字は、組み込みの範囲にも入る（knowledge.json だけが外れる）');
 });
 
+test('REQ-017 入ってはいけない書き方は、生成プラグインの1・2段目の試験のコード（tests/stage1/・tests/stage2/）では見ない。スキル・スクリプト・エージェント・課題と基準・一覧では見る', () => {
+  // 外側の EVAL〔改善〕3回目：作業エージェントが書いた否定の試験（古いアドレスには応答しない）が、古いアドレスの文字を持っていた
+  const run3 = 'done = self.tool("kxtool", "-d", "192.168.7.20", "send", str(image))\nself.assertIn("no response from 192.168.7.20", done.stderr)';
+  const seen = { 'skills/deploy-rules/SKILL.md': 'W-SKILL', 'skills/deploy-rules/scripts/deploy.sh': 'W-SCRIPT', 'com.github.copilot/agents/worker.agent.md': 'W-AGENT', 'tests/eval/T-01/eval.json': 'W-EVAL', 'com.github.copilot/extensions/w/task.json': 'W-TASK', 'tests/knowledge.json': 'W-LIST', 'tests/run.py': 'W-RUN', 'tests/stage3/x.py': 'W-STAGE3', 'skills/x/tests/stage2/y.py': 'W-NESTED' };
+  const s = scopes([file('tests/stage2/task/test_req107_t02_fake_kx200.py', run3), file('tests/stage1/check_extra.py', 'T-STAGE1'), ...Object.entries(seen).map(([rel, text]) => file(rel, text))], []);
+  assert.doesNotMatch(s.excluded, /192\.168\.7\.20|T-STAGE1/);
+  for (const [rel, text] of Object.entries(seen)) assert.ok(s.excluded.includes(text), rel);
+  // 組み込まれたかを見る範囲は変えない
+  assert.match(s.embedded, /192\.168\.7\.20/);
+  assert.equal(isTestCode('tests/stage2/task/test_req107_t02_fake_kx200.py'), true);
+  assert.equal(isTestCode('tests/stage1/check_structure.py'), true);
+  for (const rel of Object.keys(seen)) assert.equal(isTestCode(rel), false, rel);
+});
+
 test('REQ-039 生成プラグインのファイルを読む：.git・tests/results・node_modules は読まない。バイナリは文字なし', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grade-files-'));
+  const dir = tempDir('grade-files');
   const put = (rel, content) => {
     const full = path.join(dir, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -475,6 +491,84 @@ test('REQ-015 全体の採点：すべての観点に合格する会話と生成
   assert.deepEqual(h.verdict.required, HAIKU_REQUIRED);
   assert.equal(h.verdict.ok, true, '1・2段目を動かしていなくても、Haiku は 2 点だけを見る');
   assert.equal(h.exampleCandidate, false, 'Haiku の会話は会話例にしない');
+});
+
+test('REQ-039 全体の採点：2段目の不合格がすべてディスクの誤り（diskErrorsOnly）なら、環境で止まったとして stage2 を採点しない（点数と合否に入れず、理由を残す）', () => {
+  const s = passingRun();
+  const files = goodFiles();
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const grade = (stage2) => gradeOuter({ persona, personaFiles, items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages: { stage1: { ok: true }, stage2 }, inner: { withScore: 1 }, userSignals: [], model: 'claude-opus-5-5' });
+  const env = grade({ ok: false, status: 'failed', counts: { total: 486, passed: 408, failed: 78 }, diskErrorsOnly: true });
+  assert.equal(env.grades.some((g) => g.id === 'stage2'), false);
+  assert.equal(env.notGraded.length, 1);
+  assert.equal(env.notGraded[0].id, 'stage2');
+  assert.equal(env.notGraded[0].environment, true);
+  assert.match(env.notGraded[0].reason, /環境で止まった（ディスクがいっぱい）.*78 件.*ENOSPC か EIO/);
+  assert.equal(env.verdict.ok, true);
+  assert.equal(env.verdict.partial, true);
+  assert.deepEqual(env.verdict.notGraded, ['stage2']);
+  assert.equal(env.score, 1);
+  assert.equal(env.exampleCandidate, false, '採点しなかった観点のある会話は、会話例にしない');
+  // ほかの理由の不合格が混ざれば（印がなければ）、これまでどおり落ちる
+  const real = grade({ ok: false, status: 'failed', counts: { failed: 79 } });
+  assert.equal(real.grades.find((g) => g.id === 'stage2').ok, false);
+  assert.equal(real.notGraded, undefined);
+  assert.deepEqual(real.verdict.failed, ['stage2']);
+});
+
+test('testing.md 6.5 環境で止まった観点：1段目の不合格がすべてディスクの誤り、入口がディスクの誤りで落ちた、内側の EVAL がディスクの空きで始めなかった', () => {
+  // 1段目だけ・両方
+  assert.deepEqual(Object.keys(environmentNotGraded({ stage1: { ok: false, failures: [{ reason: 'OSError: [Errno 28] No space left on device' }], diskErrorsOnly: true }, stage2: { ok: true } })), ['stage1']);
+  assert.match(environmentNotGraded({ stage1: { ok: false, counts: { failed: 2 }, diskErrorsOnly: true } }).stage1, /1段目の不合格 2 件/);
+  // 入口（tests/run.py）がディスクの誤りで落ちた（印 diskError）なら 1・2段目の両方。道具が足りないときなど、印がなければ外さない
+  const crashed = environmentNotGraded({ skipped: true, reason: 'tests/run.py の結果を読めない（終了コード 1）：OSError: [Errno 28] No space left on device', diskError: true });
+  assert.deepEqual(Object.keys(crashed), ['stage1', 'stage2']);
+  assert.match(crashed.stage1, /入口がディスクの誤りで落ちた/);
+  assert.deepEqual(environmentNotGraded({ skipped: true, reason: '道具が足りなくて止まった：Node.js' }), {});
+  assert.deepEqual(environmentNotGraded({ skipped: true, reason: 'x', stage2: { diskErrorsOnly: true } }), {});
+  // 内側の EVAL：disk_low のときだけ
+  assert.deepEqual(Object.keys(environmentNotGraded(null, { withScore: null, error: '足りない', code: 'disk_low' })), ['inner-deliverable']);
+  assert.deepEqual(environmentNotGraded(null, { withScore: null, error: '課題がない', code: 'usage' }), {});
+  assert.deepEqual(environmentNotGraded(null, null), {});
+});
+
+test('testing.md 6.5 環境の影響を受けた回：クリエイターのツールの結果にディスクの誤りが出たか、環境で止まった観点があれば、environment と partial を付け、会話例にしない', () => {
+  const s = passingRun();
+  const files = goodFiles();
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const grade = ({ items = s.items, stages = { stage1: { ok: true }, stage2: { ok: true } }, inner = { withScore: 1 } } = {}) =>
+    gradeOuter({ persona, personaFiles, items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages, inner, userSignals: [], model: 'claude-opus-5-5' });
+  const base = grade();
+  assert.equal(base.environment, undefined);
+  assert.equal(base.verdict.partial, undefined);
+  assert.equal(base.exampleCandidate, true);
+  // クリエイターの Chromium を入れるコマンドの結果に ENOSPC が出た（外側の EVAL〔改善〕3回目の [539]）。観点はすべて採点し、合否も変えない
+  const last = s.items.at(-1).seq;
+  const items = [...s.items, { seq: last + 1, kind: 'tool.use', owner: 'main', name: 'Bash', input: { command: 'npx playwright install chromium' } }, { seq: last + 2, kind: 'tool.result', owner: 'main', isError: false, text: '[Error: ENOSPC: no space left on device, write]' }];
+  const hit = grade({ items });
+  assert.deepEqual(hit.environment, { notGraded: [], toolResults: [last + 2] });
+  assert.deepEqual(hit.grades.map((g) => g.id), base.grades.map((g) => g.id));
+  assert.equal(hit.verdict.ok, true);
+  assert.equal(hit.verdict.partial, true);
+  assert.equal(hit.verdict.environment, true);
+  assert.equal(hit.verdict.notGraded, undefined);
+  assert.equal(hit.exampleCandidate, false);
+  // 内側の EVAL が disk_low で始めなかった：inner-deliverable を採点せず、環境の観点に残す
+  const inner = grade({ inner: { withScore: null, error: 'ディスクの空きが足りないので始めません', code: 'disk_low' } });
+  assert.equal(inner.grades.some((g) => g.id === 'inner-deliverable'), false);
+  assert.deepEqual(inner.notGraded.map((g) => [g.id, g.environment]), [['inner-deliverable', true]]);
+  assert.deepEqual(inner.environment, { notGraded: ['inner-deliverable'], toolResults: [] });
+  assert.deepEqual([inner.verdict.partial, inner.verdict.notGraded, inner.verdict.environment], [true, ['inner-deliverable'], true]);
+  // 1段目の不合格がすべてディスクの誤り：stage1 を採点しない
+  const stage1 = grade({ stages: { stage1: { ok: false, counts: { failed: 1 }, diskErrorsOnly: true }, stage2: { ok: true } } });
+  assert.deepEqual(stage1.notGraded.map((g) => g.id), ['stage1']);
+  assert.equal(stage1.verdict.ok, true);
 });
 
 test('REQ-015 全体の採点：聞かれないと話すナレッジが組み込まれていなければ不合格（クリエイターが聞かなかったとき）', () => {

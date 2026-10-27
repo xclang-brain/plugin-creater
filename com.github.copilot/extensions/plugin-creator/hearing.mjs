@@ -392,8 +392,9 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
             `仕事のやり方や決まり ${existing.id} は引き継いだ決まりなので、中身（種類・聞くこと・文・例・例外）を直すのは、ユーザーが今の中身を答えたときだけです。状態は「決まった」で渡してください。決まりでなくなったときは、中身を変えずに、状態を「外した」にしてください。`,
           );
         }
-        replaced.push([existing.id, renumber(next, existing, fields, text(e.quote))]);
-        return;
+        const id = renumber(next, existing, fields, text(e.quote));
+        replaced.push([existing.id, id]);
+        return { id, fields };
       }
       // もう「決まった」の行（この確かめを通ったもの）を記録し直すときは確かめない。断ると、決めた一覧の問いをもう一度させてしまうため
       if (
@@ -410,7 +411,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
       Object.assign(existing, fields, { quote: text(e.quote), updatedAt: iso() });
       if (fields.item !== undefined) existing.itemName = itemIndex.nameOf(existing.item); // 項目を直したときも、日本語の名前をそろえる
       updated.push(existing.id);
-      return;
+      return { id: existing.id, fields };
     }
     const missing = ['kind', 'item', 'text', 'source', 'status'].filter((f) => e[f] === undefined || (typeof e[f] === 'string' && !has(e[f])));
     if (missing.length) {
@@ -441,6 +442,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
       itemTouchedAtRecord: !notAsked(statusOf(next, fields.item)),
     });
     added.push(id);
+    return { id, fields };
   }
 
   function applyRecord(args) {
@@ -460,7 +462,16 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const added = [];
     const updated = [];
     const replaced = [];
-    for (const e of knowledge ?? []) applyKnowledge(next, e, added, updated, replaced);
+    const exceptionCriteria = [];
+    for (const e of knowledge ?? []) {
+      const { id, fields } = applyKnowledge(next, e, added, updated, replaced);
+      const row = next.knowledge.find((k) => k.id === id);
+      // 種類か例外を渡して、例外のある合否の決め方になった行。合格の条件には文だけが渡るので、文に例外のときの合格を書くよう促す（hearing.md 6.1、7.5）
+      const exceptionCriterion = row.kind === 'criterion' && row.exception && row.status !== 'dropped';
+      if ((fields.kind !== undefined || fields.exception !== undefined) && exceptionCriterion && !exceptionCriteria.includes(id)) {
+        exceptionCriteria.push(id);
+      }
+    }
 
     let assetCount = 0;
     for (const e of assets ?? []) {
@@ -496,7 +507,13 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     if (assetCount) parts.push(`資産${assetCount}件`);
     if (ossCount) parts.push(`標準機能と公開のプラグイン${ossCount}件`);
     const open = candidatesOf(next).length;
-    return `記録しました（${parts.join('、')}）。${open ? `確かめたいこと：${open}件` : '確かめたいことはありません。'}`;
+    const done = `記録しました（${parts.join('、')}）。${open ? `確かめたいこと：${open}件` : '確かめたいことはありません。'}`;
+    // 種類を後で「合否の決め方」に変えるとき（生成前の確認の基準の案など）は、決まりの確かめの手順（rules.md）を読んでいないので、返り値で促す。
+    // 外側の EVAL（改善）の3回目では、例外のある決まりを確認の前に合否の決め方にしたとき、文から例外が落ちた
+    const nudge = exceptionCriteria.length
+      ? `${exceptionCriteria.join('、')} は、例外のある合否の決め方です。合格の条件には文だけが渡るので、文に、例外のときに何なら合格かが書かれていなければ、文を直して記録し直してください。`
+      : '';
+    return nudge ? `${done}${done.endsWith('。') ? '' : '。'}${nudge}` : done;
   }
 
   // ---- confirm ----------------------------------------------------------------
@@ -630,14 +647,16 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     commit(next);
 
     const head = `直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
+    // 流れを書く手順（change-start.md の7）を、返り値でも促す。手順だけでは、流れを書かずに段階を進めた（外側の EVAL〔改善〕の1〜3回目）
+    const flow = (kind) => `\nこれからの流れ${kind}をまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。`;
     const nextId = `新しい決まりは ${knowledgeNumber(next.knowledgeCounter + 1)} から付きます。`;
     if (!plugin.generated) {
-      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}`;
+      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}${flow('（作っていないプラグインのときの流れ）')}`;
     }
     const ids = next.change.carried;
-    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}`;
+    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}${flow('')}`;
     const range = ids.length === 1 ? ids[0] : `${ids[0]}〜${ids[ids.length - 1]}`;
-    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}`;
+    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}${flow('')}`;
   }
 
   /**

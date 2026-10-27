@@ -93,6 +93,26 @@ test('REQ-041 なしの実行：モデルの利用枠の上限に達したら st
   assert.equal(run.limitHit.where, 'main');
 });
 
+test('testing.md 5章 実行の後に、試すエージェントと統括・作業・検証のエージェントのホームの .cache（Playwright の Chromium など）を消す', async () => {
+  const fixture = buildSamplePlugin();
+  const runDir = tmpDir('cache');
+  const put = (home) => {
+    fs.mkdirSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200', 'chrome'), 'x');
+  };
+  put(path.join(runDir, 'home-orchestrator-1')); // inner-adapter.mjs の home-<id> の代わり
+  const sdk = fakeSdk([[init(), say('週報を作りました。'), done('週報を作りました。')]]);
+  const query = sdk.query;
+  sdk.query = (params) => { put(params.options.env.HOME); return query(params); };
+  const run = await runInnerArm({ arm: 'without', task: fixture.task, runDir, sdk, userRole: async () => '', judge });
+  assert.equal(run.status, 'completed', run.reason);
+  assert.equal(path.dirname(sdk.calls[0].options.env.HOME), runDir);
+  for (const home of ['home-main', 'home-orchestrator-1']) {
+    assert.equal(fs.existsSync(path.join(runDir, home)), true, home);
+    assert.equal(fs.existsSync(path.join(runDir, home, '.cache')), false, home);
+  }
+});
+
 test('REQ-041 なしの実行：エージェントが誤りで終わったら incomplete にして、できていた分を採点する', async () => {
   const fixture = buildSamplePlugin();
   const sdk = fakeSdk([[init(), say('途中です'), { type: 'result', subtype: 'error_max_turns', is_error: true, errors: ['手番の上限'], total_cost_usd: 0, num_turns: 80 }]]);

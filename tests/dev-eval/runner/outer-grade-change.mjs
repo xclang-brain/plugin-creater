@@ -29,14 +29,18 @@
 //                              role が skill のファイル（ユーザーのスキル）の決まりの embedded は、ルールのスキル（入口のスキルを除く skills/*/ の
 //                              SKILL.md と references/）の足した行だけで見る（REQ-055「ルールのスキルに入っている」。エージェントの定義や試験にだけ
 //                              書いても数えない）。not-embedded は、ほかの決まりと同じく足した行のすべて（決まりの一覧も含む）で見る（エージェントの
-//                              定義や決まりの一覧に入っても、その書き方で作業されるため。REQ-055 の受け入れ基準3）
+//                              定義や決まりの一覧に入っても、その書き方で作業されるため。REQ-055 の受け入れ基準3）。ただし、not-embedded は
+//                              1・2段目の試験のコード（tests/stage1/・tests/stage2/。outer-grade.mjs の isTestCode）では見ない（作業のときに読まれず、
+//                              正しい決まりを確かめる否定の試験が古い書き方の文字を持つため）
 //   skill-names-differ         直したプラグインの skills/*/SKILL.md の name が、ユーザーのスキルの name と重ならない（REQ-055）
 //   user-skills-unchanged      ユーザーのスキルのファイルが、前と後で同じ（REQ-055）
 //   assets-reused              role が skill のファイルのうち SKILL.md でないもの（スクリプトなど）と同じ中身のファイルが、skills/*/scripts/ にある（REQ-055・062）
 //   unchanged-items            記録に「変えないので聞かない」の項目があり、画面の項目のうち expect.screenUnchanged（省くと3つすべて）がそれ（REQ-056）
 //   no-screen-questions        expect.screenAsked に当たる問いがない（REQ-056）
 //   last-time-asked            expect.lastTimeAsked に当たる問いがある（REQ-056）
-//   stage1 / stage2            直したプラグインの tests/run.py --json（REQ-059・061・062）
+//   stage1 / stage2            直したプラグインの tests/run.py --json（REQ-059・061・062）。段階の不合格がすべてディスクの誤り（ENOSPC・EIO）か、
+//                              入口がディスクの誤りで落ちたなら、環境で止まったとしてその段階を採点しない（notGraded に environment: true で残し、
+//                              verdict に partial を付ける。outer-grade.mjs の environmentNotGraded。作る流れと同じ）
 //   tests-added                引き継いだ課題のほかに課題があり、bin（inputs/bin）、その下の expect.deviceTool、device-history.log を見る
 //                              program の基準がある（REQ-061）
 //   commit-scoped              初めのコミットの次のコミットが1つ、差分はすべて直すフォルダの中、git add だけのファイルはそのまま、
@@ -47,7 +51,8 @@
 //                              expect.explained のうち版を見る正規表現（確認の版の文字にまるごと当たるもの）は、確認の版の文字そのもので見る
 //                              （版の形の数は、元の版や IP アドレスの一部にも当たるため）。記録に確認の版がなければ、正規表現のまま見る
 //   main-model / worker-model  作る流れと同じ（outer-grade.mjs の gradeModels。REQ-045・046）
-//   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ）
+//   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ。ディスクの空きが足りずに始めなかったときは、環境で止まったとして採点しない）
+// 環境（ディスクがいっぱい）の影響を受けた回には、作る流れと同じく environment を付ける（outer-grade.mjs の environmentOf）。
 // 英語の覚え書きのようなチャットの文の数と、最初の問いより前にこれからの流れを示したかは、作る流れと同じく counts（countRecorded の nonJapaneseTexts と
 // flowShown。outer-grade.mjs の isEnglishNote と isFlowText）に出す。合否には入れない。聞かれずに話した（faults）も、作る流れと同じ（knowledgeTrace）
 
@@ -55,7 +60,8 @@ import { compareVersions } from '../../../com.github.copilot/extensions/plugin-c
 import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { CONFIRM_ANSWERS } from '../personas/validate.mjs';
 import {
-  countRecorded, exchangesOf, gradeModels, gradeScreenUrlShown, INNER_PASS_SCORE, knowledgeTrace, matchesAll, pairToolEvents, quoteFound, userRoleFaults,
+  countRecorded, environmentNotGraded, environmentOf, exchangesOf, gradeModels, gradeScreenUrlShown, INNER_PASS_SCORE, isTestCode, knowledgeTrace, matchesAll, pairToolEvents,
+  partialOf, quoteFound, userRoleFaults,
 } from './outer-grade.mjs';
 
 /** 画面の項目（REQ-056：画面を変えない頼みでは、聞かない） */
@@ -427,11 +433,16 @@ function entrySkillDirs(files, pluginName) {
  * @param {string} [args.model]
  * @param {string} [args.arm]
  * @param {'user-role'|'human'} [args.answerer]
- * @param {object|null} [args.inner] 内側の EVAL の結果（withScore）。なければ採点に入れない
+ * @param {object|null} [args.inner] 内側の EVAL の結果（withScore）。なければ採点に入れない。code が disk_low なら、環境で止まったとして採点しない
  */
 export function gradeChange({ persona, record = {}, state, items, toolEvents, stages, repo, personaFiles = [], modelUse = null, model, arm = 'with', answerer = 'user-role', inner = null }) {
   const grades = [];
-  const add = (id, ok, detail, req) => grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  const skipped = [];
+  const environment = environmentNotGraded(stages, inner);
+  const add = (id, ok, detail, req) => {
+    if (Object.hasOwn(environment, id)) skipped.push({ id, reason: environment[id], environment: true, ...(req ? { req } : {}) });
+    else grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
+  };
   const units = questionUnits(items);
   const exchanges = exchangesOf(items);
   const approval = approvalOf(toolEvents);
@@ -469,15 +480,16 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
   const assetHashes = new Set(assets.map((f) => f.sha256));
   const usable = (f) => !isInputCopy(f.rel) && !(f.sha256 && assetHashes.has(f.sha256));
   const join = (files) => files.map((f) => f.text).join('\n');
+  // 入ってはいけない書き方は、1・2段目の試験のコード（isTestCode）では見ない。足した行でも直した後のファイルでも同じ（testing.md 6.8）
   const addedScope = {
     embedded: join(repo.added.filter((f) => usable(f) && !KNOWLEDGE_LISTS.has(f.rel))),
-    excluded: join(repo.added.filter(usable)),
+    excluded: join(repo.added.filter((f) => usable(f) && !isTestCode(f.rel))),
     task: '',
   };
   const finalFiles = repo.targetFiles.filter((f) => f.text !== null && usable(f));
-  const finalScope = { embedded: join(finalFiles.filter((f) => !KNOWLEDGE_LISTS.has(f.rel))), excluded: join(finalFiles), task: '' };
+  const finalScope = { embedded: join(finalFiles.filter((f) => !KNOWLEDGE_LISTS.has(f.rel))), excluded: join(finalFiles.filter((f) => !isTestCode(f.rel))), task: '' };
   // ユーザーのスキルの決まりが入ったかは、ルールのスキル（入口のスキルを除く）の足した行だけで見る（REQ-055「ルールのスキルに入っている」）。
-  // 入ってはいけない書き方は、足した行のすべてで見る（エージェントの定義や決まりの一覧に入っても、その書き方で作業されるため）
+  // 入ってはいけない書き方は、足した行のすべて（1・2段目の試験のコードを除く）で見る（エージェントの定義や決まりの一覧に入っても、その書き方で作業されるため）
   const entryDirs = entrySkillDirs(repo.targetFiles, repo.pluginNameAfter ?? repo.baseline.pluginName);
   const inRuleSkill = (rel) => {
     const m = RULE_SKILL_FILE.exec(rel);
@@ -562,6 +574,7 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
   const human = answerer === 'human';
   const faults = human ? [] : userRoleFaults({ exchanges, trace });
   const failed = grades.filter((g) => !g.ok).map((g) => g.id);
+  const env = environmentOf({ items, skipped });
   return {
     kind: 'change',
     grades,
@@ -569,9 +582,11 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
     trace,
     faults,
     counts: countRecorded({ items, toolEvents, state }),
-    // すべての観点が必須（BLUEPRINT D36）
-    verdict: { model, required: grades.map((g) => g.id), ok: failed.length === 0, failed },
+    // すべての観点が必須（BLUEPRINT D36）。環境で止まって採点しなかった観点があるか、環境の影響を受けた回は、partial を付ける（作る流れと同じ）
+    verdict: { model, required: grades.map((g) => g.id), ok: failed.length === 0, failed, ...partialOf(skipped, env) },
     // 会話例（REQ-037）は作る流れの会話から選ぶので、改善の会話は候補にしない
     exampleCandidate: false,
+    ...(skipped.length ? { notGraded: skipped } : {}),
+    ...(env ? { environment: env } : {}),
   };
 }

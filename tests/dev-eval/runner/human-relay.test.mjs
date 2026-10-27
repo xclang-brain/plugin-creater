@@ -4,7 +4,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,10 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { STALE_MS, answerQuestion, checkWait, createHumanRelay, currentPidNs, finalizeRelayStatus, listQuestionIds, pendingQuestion, readStatus, startHeartbeat, writeRelayStatus } from './human-relay.mjs';
 import { createUserRole } from './user-role.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(here, 'human-relay.mjs');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `human-relay-${prefix}-`));
+const tmp = (prefix) => tempDir(`human-relay-${prefix}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 条件が成り立つまで待つ（成り立たなければ落とす） */

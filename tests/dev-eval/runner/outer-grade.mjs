@@ -5,7 +5,7 @@
 //   one-plugin-generated          生成プラグインが 1 つできた
 //   stage1 / stage2               1・2段目の試験に通る（REQ-039）
 //   embedded:<ナレッジ>           ナレッジが組み込まれた（markers.embedded にすべて当たる）。聞かれないと話さないナレッジを含む
-//   not-embedded:<ナレッジ>       「違う」「たまたま」の決まりが入っていない（markers.excluded に 1 つも当たらない。REQ-017）
+//   not-embedded:<ナレッジ>       「違う」「たまたま」の決まりが入っていない（markers.excluded に 1 つも当たらない。REQ-017。1・2段目の試験のコードは見ない）
 //   task:<ナレッジ>               EVAL の課題と合否の基準が、ナレッジの言葉を含む（markers.task にすべて当たる。REQ-038）
 //   input-files-in-repo           role が input の示すファイルが、同じ中身で生成プラグインに入っている（REQ-038）
 //   inner-deliverable             内側の EVAL の結果（プラグインありのスコアが基準以上）
@@ -25,13 +25,17 @@
 // 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
 //   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
 // 採点しない観点（notGraded。続きから始めた実行で、前の会話を確かに読み直せなかったときなど）は、grades に入れず、理由を notGraded に残す。
-//   点数と合否には入らない。
+//   点数と合否には入らない。ディスクがいっぱいで止まった観点（1・2段目の不合格がすべてディスクの誤り、内側の EVAL を始めなかったなど）も、
+//   環境で止まったとして採点しない（environmentNotGraded。notGraded の項目に environment: true を付ける。改善の採点も同じ）。
+//   環境で止まった観点があるか、クリエイターのツールの結果にディスクの誤りが出た回は、environment を付ける（environmentOf。結果の要約で、
+//   比べる数に入れない。outer.mjs の summarizeAll）。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
+import { diskErrorResults } from './disk.mjs';
 import { INSTRUCTION_WORDS } from './user-role.mjs';
 
 // ---- 決まった値 -------------------------------------------------------------------------------------
@@ -120,6 +124,13 @@ export function personaFileHashes(personaFiles) {
 
 const isInputCopy = (rel) => /(^|\/)tests\/eval\/[^/]+\/inputs\//.test(rel);
 
+/**
+ * 生成プラグイン（直したプラグイン）の1・2段目の試験のコード（rel はプラグインの根からの相対）。作業するエージェントが作業のときに読まないので、
+ * 入ってはいけない書き方（markers.excluded）の証拠にしない。正しい決まりを確かめる否定の試験（「前のアドレスには応答しない」）が、
+ * 古い書き方の文字を持つためである（testing.md 6.5、外側の EVAL〔改善〕3回目）。作る流れ（scopes）と直す流れ（outer-grade-change.mjs）で同じものを使う
+ */
+export const isTestCode = (rel) => /^tests\/stage[12]\//.test(rel);
+
 /** 見る範囲（personas/FORMAT.md 2.2 の markers）。入力のファイルの写しは、組み込みの証拠にしない */
 export function scopes(generatedFiles, personaFileList) {
   const inputHashes = new Set(personaFileList.map((f) => f.sha256));
@@ -131,14 +142,57 @@ export function scopes(generatedFiles, personaFileList) {
   return {
     // 組み込み：ナレッジの一覧そのもの（tests/knowledge.json）は、ナレッジが記録されただけの印なので、証拠にしない
     embedded: texts((rel) => rel !== KNOWLEDGE_LIST),
-    // 入ってはいけないもの：一覧も含める（外したナレッジは一覧に入らないはずなので、入っていれば誤り）
-    excluded: texts(() => true),
+    // 入ってはいけないもの：一覧も含める（外したナレッジは一覧に入らないはずなので、入っていれば誤り）。1・2段目の試験のコードは含めない（isTestCode）
+    excluded: texts((rel) => !isTestCode(rel)),
     // EVAL の課題と合否の基準のファイル
     task: generatedFiles
       .filter((f) => f.text !== null && !isInputCopy(f.rel) && (/(^|\/)tests\/eval\/[^/]+\/eval\.json$/.test(f.rel) || /(^|\/)task\.json$/.test(f.rel)))
       .map((f) => f.text)
       .join('\n'),
   };
+}
+
+/**
+ * 環境で止まったので採点しない観点（id → 理由）。ディスクがいっぱいで止まったものは、生成プラグインやクリエイターの誤りではないので、
+ * 点数と合否に入れない（testing.md 6.5）。outer-run.mjs の runGeneratedStages と runOuterOnce が印を付ける。
+ *   - 1・2段目の段階の不合格がすべてディスクの誤り（ENOSPC・EIO。印 diskErrorsOnly）なら、その段階
+ *   - 1・2段目の入口（tests/run.py）が結果を出せずに落ち、その理由がディスクの誤り（印 diskError）なら、1・2段目の両方。
+ *     道具が足りなくて止まったときなど、ほかの理由で動かせなかったときは、これまでどおり不合格にする
+ *   - 内側の EVAL が、ディスクの空きが足りずに始めなかった（inner.code が disk_low）なら、inner-deliverable
+ * 外側の EVAL〔改善〕3回目では、ディスクがいっぱいで 2段目の 78 件が ENOSPC で落ち、空きのある場所では 486 件すべて合格した
+ */
+export function environmentNotGraded(stages, inner = null) {
+  const out = {};
+  const full = '環境で止まった（ディスクがいっぱい）';
+  if (stages?.skipped) {
+    if (stages.diskError) for (const id of ['stage1', 'stage2']) out[id] = `${full}：1・2段目の入口がディスクの誤りで落ちた（${stages.reason ?? ''}）。点数と合否に入れない`;
+  } else {
+    for (const [id, n] of [['stage1', 1], ['stage2', 2]]) {
+      const stage = stages?.[id];
+      if (stage?.diskErrorsOnly) out[id] = `${full}：${n}段目の不合格 ${stage.counts?.failed ?? stage.failures?.length} 件が、すべて ENOSPC か EIO。点数と合否に入れない`;
+    }
+  }
+  if (inner?.code === 'disk_low') out['inner-deliverable'] = `${full}：ディスクの空きが足りず、内側の EVAL を始めなかった。点数と合否に入れない`;
+  return out;
+}
+
+/**
+ * 環境（ディスクがいっぱい）の影響を受けた回か。環境で採点しなかった観点（skipped の environment）があるか、クリエイター（とそのサブ
+ * エージェント）のツールの結果にディスクの誤りが出た（disk.mjs の diskErrorResults）なら、影響を受けたとする。採点した観点の数が
+ * ほかの回と違ううえ、クリエイターの振る舞いも変わる（3回目では、Chromium を入れられずに理由を調べ続け、最後の報告も変わった）ので、
+ * 結果の要約で、平均点・合格の数・あり・なしの差に入れず、別に数える（testing.md 6.5）。影響がなければ null
+ * @returns {null|{ notGraded: string[], toolResults: number[] }} toolResults はディスクの誤りが出たツールの結果の番号（seq）
+ */
+export function environmentOf({ items, skipped }) {
+  const notGraded = skipped.filter((g) => g.environment).map((g) => g.id);
+  const toolResults = diskErrorResults(items);
+  return notGraded.length || toolResults.length ? { notGraded, toolResults } : null;
+}
+
+/** 合否（verdict）に足す印：採点しなかった観点（notGraded）か、環境の影響（environment）があれば partial */
+export function partialOf(skipped, env) {
+  if (!skipped.length && !env) return {};
+  return { partial: true, ...(skipped.length ? { notGraded: skipped.map((g) => g.id) } : {}), ...(env ? { environment: true } : {}) };
 }
 
 // ---- 会話の記録から ---------------------------------------------------------------------------------------
@@ -547,7 +601,7 @@ export function gradeModels({ use, generatedCount }) {
  * @param {number} args.generatedCount 見つけた生成プラグインの数
  * @param {Array|null} args.generatedFiles 生成プラグインのファイル（1 つできたとき）
  * @param {object|null} args.stages 1・2段目の結果 { stage1: { ok }, stage2: { ok }, skipped?, reason? }
- * @param {object|null} args.inner 内側の EVAL の結果（withScore）。なければ採点に入れない
+ * @param {object|null} args.inner 内側の EVAL の結果（withScore）。なければ採点に入れない。code が disk_low なら、環境で止まったとして採点しない
  * @param {Array} args.userSignals 急ぐ合図の位置 [{ answerIndex }]
  * @param {object|null} args.modelUse 動いたモデル { requested, main, subagents: [{ type, models }], lowCost }。腕 with で渡すと REQ-045・REQ-046 を採点する
  * @param {string} args.model クリエイターのモデルの ID
@@ -558,8 +612,10 @@ export function gradeModels({ use, generatedCount }) {
 export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role', notGraded = {} }) {
   const grades = [];
   const skipped = [];
+  const environment = environmentNotGraded(stages, inner);
   const add = (id, ok, detail, req) => {
-    if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
+    if (Object.hasOwn(environment, id)) skipped.push({ id, reason: environment[id], environment: true, ...(req ? { req } : {}) });
+    else if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
     else grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
   };
   const exchanges = exchangesOf(items);
@@ -618,17 +674,19 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
   const required = isHaiku ? HAIKU_REQUIRED.filter((id) => grades.some((g) => g.id === id)) : grades.map((g) => g.id);
   const failedRequired = grades.filter((g) => required.includes(g.id) && !g.ok).map((g) => g.id);
   const score = grades.length ? grades.filter((g) => g.ok).length / grades.length : 0;
+  const env = environmentOf({ items, skipped });
   return {
     grades,
     score,
     trace,
     faults,
     counts: countRecorded({ items, toolEvents, state }),
-    // 採点しなかった観点があるときは、合否が一部の観点だけのものだと分かるように、partial と、その観点を付ける
-    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...(skipped.length ? { partial: true, notGraded: skipped.map((g) => g.id) } : {}) },
+    // 採点しなかった観点があるか、環境（ディスクがいっぱい）の影響を受けた回は、合否がふだんの回と同じ重みでないと分かるように、partial を付ける
+    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...partialOf(skipped, env) },
     // 会話例の候補（6.6）：採点の観点にすべて合格し、ユーザー役の誤りがない。最後は全文を読んで確かめる
-    // 開発者が答えた会話は、会話例にしない（6.6）
-    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0,
+    // 開発者が答えた会話と、環境の影響を受けた会話は、会話例にしない（6.6）
+    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0 && env === null,
     ...(skipped.length ? { notGraded: skipped } : {}),
+    ...(env ? { environment: env } : {}),
   };
 }

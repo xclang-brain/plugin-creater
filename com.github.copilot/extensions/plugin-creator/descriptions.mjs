@@ -4,7 +4,7 @@
 // 引数の説明は、{ ツールの名前の後ろの部分: { 引数の道筋: 文 } }。道筋は tool-defs.mjs の組み立てと同じ名前（'items.item' など）。
 
 export const TOOL_DESCRIPTIONS = Object.freeze({
-  open: 'plugin-creator の画面（お話で決まったことの一覧、生成前の確認で示すもの、試験の結果を見るブラウザーの画面）を起動し、URL を返す。make-plugin、change-plugin、test-plugin の始めに呼び、返った URL をチャットで示す。画面は見るだけで、答えはチャットで受ける。',
+  open: 'plugin-creator の画面（お話で決まったことの一覧、生成前の確認で示すもの、試験の結果を見るブラウザーの画面）を起動し、URL を返す。make-plugin、change-plugin、test-plugin の始めに呼ぶ。ほかのツールと同じ応答では呼ばず、返った URL を、ほかのツールを呼ぶ前にチャットで示す。画面は見るだけで、答えはチャットで受ける。',
   state:
     'ヒアリングの記録（今の段階、項目ごとの状態、確かめていない候補、保留と AI の判断、画面の URL、セッションの番号、記録のファイルの場所）を返す。コンパクションの後、再開の後、段階の始めに、まず呼ぶ。止まっている画面は起動し直す。',
   progress:

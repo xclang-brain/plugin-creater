@@ -15,10 +15,12 @@
 //   模擬ユーザーに device（例：kx200）があれば、腕ごとの実行のたびに擬似の機器（tests/dev-eval/device/）を起動して使う（testing.md 7章）。
 //   サンドボックス（bubblewrap、socat）が既定で要る。ないときは始めずに断る。--no-sandbox で外せる（結果に警告が残る。擬似の機器の通信と中身の
 //   制限も効かないので、その警告も残る）。
+//   / と OS の一時フォルダと結果のフォルダ（--out）の空きが 2GB 未満なら、始めずに断る（disk.mjs）。サンドボックスの道具と空きは、
+//   結果のフォルダを作って置き換える前に確かめる（外側の EVAL と同じ順）。
 //   終了コード：0 最後まで動いた（点数が低くても 0）、1 途中で止まった（利用枠の上限、中断）、2 始められなかった。
 //   標準出力は結果の JSON、進み具合は標準エラー出力。結果は <結果のフォルダ>/inner-result.json に、実行が1つ終わるたびに書き直す。
 //   実行ごとの記録（result.json、events.jsonl、screen.png、作業フォルダ work/）は <結果のフォルダ>/inner-runs/<課題>/<with|without|standalone>-<回>/ にある
-//   （単体の腕の <課題> は、単体の課題の id）。
+//   （単体の腕の <課題> は、単体の課題の id）。ユーザー役のホームは <結果のフォルダ>/user-<課題>-<腕>-<回>-*/ にある。
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -29,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createScreen } from '../../../skills/test-plugin/scripts/screen.mjs';
 import { createAgentSdkJudge } from './inner-judge.mjs';
 import { ARMS, DEFAULTS, DEVICE_UNFENCED_WARNING, runInnerArm } from './inner-run.mjs';
+import { checkFreeSpace } from './disk.mjs';
 import { sandboxStatus } from './isolation.mjs';
 import { readConversionReport } from './model-map.mjs';
 
@@ -42,6 +45,22 @@ export class InnerEvalError extends Error {
     this.name = 'InnerEvalError';
     this.code = code;
   }
+}
+
+/**
+ * 始める前の確かめ。サンドボックスの道具（sandbox のとき）、次にディスクの空き（/ と OS の一時フォルダと outDir）。外側の EVAL（outer.mjs）と
+ * 同じ順である。足りなければ InnerEvalError（sandbox_missing・disk_low）を投げる（testing.md 5章）。outDir はまだなくてよい（置かれる場所で見る）
+ */
+export function preflight({ sandbox, sandboxCheck = sandboxStatus, diskCheck = checkFreeSpace, outDir }) {
+  if (sandbox) {
+    const status = sandboxCheck();
+    if (!status.available) {
+      throw new InnerEvalError('sandbox_missing', `OS のサンドボックスの道具が足りません（${status.missing.join('、')}）。入れるか、--no-sandbox で外してください（外すと、コマンドが作業フォルダの外に書けます）。`);
+    }
+  }
+  // 足りないまま動かすと、環境の誤り（ENOSPC）で採点が乱れる
+  const disk = diskCheck({ dirs: [outDir] });
+  if (!disk.ok) throw new InnerEvalError('disk_low', disk.message);
 }
 
 const mean = (values) => (values.length === 0 ? null : values.reduce((a, b) => a + b, 0) / values.length);
@@ -112,23 +131,20 @@ function readVersions({ sdkDir }) {
  * @param {string} o.outDir 結果の置き場所
  * @param {Array<'with'|'without'|'standalone'>} [o.arms]
  * @param {Function} [o.startDevice] 擬似の機器を起動する関数（試験で差し替える。省くと、課題の device から DEVICE_STARTERS で選ぶ）
+ * @param {Function} [o.diskCheck] ディスクの空きを確かめる関数（既定は disk.mjs の checkFreeSpace。試験で差し替える）。足りなければ始めない（preflight）
  */
 export async function innerEval(o) {
   const {
     sdk, chromium, pluginRoot, convertedRoot, tasks, userRoleFor, outDir, runs = 1, arms = ['with', 'without'], models, taskSettings, model = DEFAULTS.model,
     judgeModel, envExtra = {}, sandbox = true, timeoutMs = DEFAULTS.timeoutMs, signal, pollMs, onProgress = () => {}, env = process.env, judge: injectedJudge,
-    sandboxCheck = sandboxStatus,
+    sandboxCheck = sandboxStatus, diskCheck = checkFreeSpace,
   } = o;
   if (!tasks?.length) throw new InnerEvalError('usage', '課題が1つもありません。');
   for (const task of tasks) {
     if (task.device && !o.startDevice && !Object.hasOwn(DEVICE_STARTERS, task.device)) throw new InnerEvalError('usage', `知らない擬似の機器です：${task.device}（使えるもの：${Object.keys(DEVICE_STARTERS).join('、')}）`);
   }
-  if (sandbox) {
-    const status = sandboxCheck();
-    if (!status.available) {
-      throw new InnerEvalError('sandbox_missing', `OS のサンドボックスの道具が足りません（${status.missing.join('、')}）。入れるか、--no-sandbox で外してください（外すと、コマンドが作業フォルダの外に書けます）。`);
-    }
-  }
+  // サンドボックスの道具とディスクの空き。コマンドラインの入口（main）は置き換えの前にも確かめるが、外側の EVAL から呼ぶときのために、ここでも確かめる
+  preflight({ sandbox, sandboxCheck, diskCheck, outDir });
   readConversionReport(convertedRoot); // 置き換えていなければ、ここで断る
   fs.mkdirSync(outDir, { recursive: true });
   const screen = arms.includes('with') ? createScreen({ chromium, env }) : null;
@@ -291,7 +307,7 @@ export function describeFailure(error) {
   return { error: error?.code ?? 'failed', message: error?.message ?? String(error) };
 }
 
-/** deps は試験用：sdk（Agent SDK）と chromium を差し替える */
+/** deps は試験用：sdk（Agent SDK）と chromium と diskCheck（ディスクの空きの確かめ。disk.mjs の checkFreeSpace）を差し替える */
 export async function main(argv = process.argv.slice(2), deps = {}) {
   let args;
   try {
@@ -307,6 +323,9 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const chromium = deps.chromium ?? (await import('playwright')).chromium;
     const { createUserRole } = await import('./user-role.mjs');
     const pluginRoot = path.resolve(args.plugin);
+    // 結果のフォルダを作って置き換える前に、サンドボックスの道具とディスクの空きを確かめる（始めずに断る。testing.md 5章）
+    const diskCheck = deps.diskCheck ?? checkFreeSpace;
+    preflight({ sandbox: args.sandbox, diskCheck, outDir: path.resolve(args.out ?? os.tmpdir()) });
     const outDir = path.resolve(args.out ?? fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-creator-dev-inner-')));
     fs.mkdirSync(outDir, { recursive: true });
     const convertedRoot = path.resolve(args.converted ?? path.join(outDir, 'converted'));
@@ -315,14 +334,15 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     for (const dir of args.personas) loaded.push(await loadPersonaTask(path.resolve(dir)));
     const envExtra = Object.fromEntries(args.passEnv.filter((name) => process.env[name] !== undefined).map((name) => [name, process.env[name]]));
     const personaOf = new Map(loaded.map((l) => [l.task.id, l.persona]));
+    // ユーザー役のホームは、結果のフォルダに置く（OS の一時フォルダに残さない。outer-inner.mjs と同じ）
     const userRoleFor = (task, arm, n) => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), `plugin-creator-dev-user-${task.id}-${arm}-${n}-`));
+      const home = fs.mkdtempSync(path.join(outDir, `user-${task.id}-${arm}-${n}-`));
       const role = createUserRole({ persona: personaOf.get(task.id), styleName: args.style, query: sdk.query, home, envExtra });
       return userRoleFunction(role);
     };
     const record = await innerEval({
       sdk, chromium, pluginRoot, convertedRoot, tasks: loaded.map((l) => l.task), userRoleFor, outDir, runs: args.runs, arms: args.arms, models: args.models, taskSettings: args.settings,
-      model: args.model, judgeModel: args.judgeModel, envExtra, sandbox: args.sandbox, timeoutMs: args.timeoutMs, signal: abort.signal,
+      model: args.model, judgeModel: args.judgeModel, envExtra, sandbox: args.sandbox, timeoutMs: args.timeoutMs, signal: abort.signal, diskCheck,
       onProgress: (p) => console.error(p.phase === 'start' ? `[内側の EVAL] ${p.task} ${p.arm} ${p.n} 回目を始める` : `[内側の EVAL] ${p.task} ${p.arm} ${p.n} 回目：${p.status}${p.score !== null && p.score !== undefined ? `（点数 ${p.score}）` : ''}${p.reason ? ` ${p.reason}` : ''}`),
     });
     console.log(JSON.stringify(record, null, 2));

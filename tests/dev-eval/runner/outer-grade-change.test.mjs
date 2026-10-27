@@ -618,6 +618,85 @@ test('REQ-060 explained：本物の模擬ユーザー（edl-change）の版の�
   assert.doesNotMatch(g.explained.detail, /revert|起動し直|marketplace/);
 });
 
+/** 外側の EVAL〔改善〕3回目で not-embedded:dp-ip を落とした2行（作業エージェントが書いた、擬似のボードが前のアドレスに応答しないことの否定の試験） */
+const RUN3_TEST_LINES = 'done = self.tool("kxtool", "-d", "192.168.7.20", "send", str(image))\nself.assertIn("no response from 192.168.7.20", done.stderr)';
+
+test('REQ-055 not-embedded：1・2段目の試験のコード（tests/stage1/・tests/stage2/）では見ない。ルールのスキル・スクリプト・エージェント・課題と基準・一覧では見る（3回目の dp-ip）', () => {
+  // 本物の模擬ユーザーの dp-ip の正規表現（なければ同じ形の短いもの）。3回目の2行は、これに当たる
+  const real = existsSync(REAL_PERSONA) ? JSON.parse(readFileSync(REAL_PERSONA, 'utf8')).knowledge.find((k) => k.id === 'dp-ip') : null;
+  const excluded = real?.markers.excluded ?? ['192\\.168\\.7\\.20(?!\\d)'];
+  assert.ok(excluded.some((p) => new RegExp(p).test(RUN3_TEST_LINES)));
+  const withDpIp = (a, place) => a.persona.knowledge.push({
+    id: 'dp-ip', fact: 'ボードのアドレスは 192.168.7.2', volunteer: true, from: 'file',
+    file: { path: place, evidence: '192.168.7.20', kind: 'wrong', answer: '違う' }, markers: { asked: 'アドレス', answered: '192\\.168\\.7\\.2(?!\\d)', excluded },
+  });
+  const USER_SKILL = 'tools/skills/build/SKILL.md'; // role が skill（足した行で見る）
+  const REPO_FILE = 'market/plugins/demo/skills/rules/SKILL.md'; // role が repo（直した後のファイルで見る）
+  const put = (a, where, rel) => a.repo[where].push({ rel, text: RUN3_TEST_LINES, sha256: `h-${rel}` });
+  // 試験のコードにだけあれば合格（足した行でも、直した後のファイルでも）
+  for (const place of [USER_SKILL, REPO_FILE]) {
+    for (const rel of ['tests/stage2/task/test_req107_t02_fake_kx200.py', 'tests/stage1/check_extra.py']) {
+      const ok = goodCase();
+      withDpIp(ok, place);
+      put(ok, 'added', rel);
+      put(ok, 'targetFiles', rel);
+      const g = gradesOf(ok)['not-embedded:dp-ip'];
+      assert.equal(g.ok, true, `${place} ${rel}`);
+    }
+  }
+  // 作業のときに読まれるファイルにあれば落ちる（試験のコードでない tests/ の下と、スキルの中の tests/stage2/ も見る）
+  const read = ['skills/deploy-rules/SKILL.md', 'skills/deploy-rules/scripts/deploy.sh', 'com.github.copilot/agents/worker.agent.md', 'tests/eval/T-02/eval.json', 'tests/knowledge.json', 'tests/stage3/x.py', 'skills/deploy-rules/tests/stage2/x.py'];
+  for (const rel of read) expectOnlyFails((a) => { withDpIp(a, USER_SKILL); put(a, 'added', rel); }, ['not-embedded:dp-ip']);
+  // role が repo のファイルの決まりは、書き足された決まりの確かめ（added-rule-confirmed）も出るので、この観点だけを見る
+  for (const rel of read) {
+    const ng = goodCase();
+    withDpIp(ng, REPO_FILE);
+    put(ng, 'targetFiles', rel);
+    assert.equal(gradesOf(ng)['not-embedded:dp-ip'].ok, false, rel);
+  }
+});
+
+test('REQ-061 stage2：不合格がすべてディスクの誤り（diskErrorsOnly）なら、環境で止まったとして採点しない（点数と合否に入れず、理由と partial を残す）', () => {
+  const env = goodCase();
+  env.stages.stage2 = { ok: false, status: 'failed', counts: { total: 486, passed: 408, failed: 78 }, diskErrorsOnly: true };
+  const r = gradeChange(env);
+  assert.equal(r.grades.some((g) => g.id === 'stage2'), false);
+  assert.deepEqual(r.notGraded.map((g) => [g.id, g.environment]), [['stage2', true]]);
+  assert.match(r.notGraded[0].reason, /環境で止まった（ディスクがいっぱい）.*78 件/);
+  assert.equal(r.verdict.ok, true);
+  assert.equal(r.verdict.partial, true);
+  assert.deepEqual(r.verdict.notGraded, ['stage2']);
+  assert.equal(r.verdict.required.includes('stage2'), false);
+  assert.equal(r.score, 1);
+  // 印がなければ、これまでどおり落ちる。1・2段目を動かせなかったときも、環境として外さない
+  expectOnlyFails((a) => { a.stages.stage2 = { ok: false, status: 'failed', counts: { failed: 79 } }; }, ['stage2']);
+  expectOnlyFails((a) => { a.stages = { skipped: true, reason: '道具が足りない', stage2: { diskErrorsOnly: true } }; }, ['stage1', 'stage2']);
+  assert.equal(gradeChange(goodCase()).notGraded, undefined);
+});
+
+test('testing.md 6.5 環境の影響を受けた回：入口がディスクの誤りで落ちた・内側の EVAL が disk_low・クリエイターのツールの結果に ENOSPC。作る流れと同じく、採点しないか environment を付ける', () => {
+  const crashed = goodCase();
+  crashed.stages = { skipped: true, reason: 'tests/run.py の結果を読めない（終了コード 1）：OSError: [Errno 28] No space left on device', diskError: true };
+  const c = gradeChange(crashed);
+  assert.deepEqual(c.notGraded.map((g) => [g.id, g.environment]), [['stage1', true], ['stage2', true]]);
+  assert.equal(c.verdict.ok, true);
+  assert.deepEqual(c.environment, { notGraded: ['stage1', 'stage2'], toolResults: [] });
+  const inner = goodCase();
+  inner.inner = { withScore: null, error: 'ディスクの空きが足りないので始めません', code: 'disk_low' };
+  const i = gradeChange(inner);
+  assert.equal(i.grades.some((g) => g.id === 'inner-deliverable'), false);
+  assert.deepEqual(i.notGraded.map((g) => g.id), ['inner-deliverable']);
+  // クリエイターのツールの結果に ENOSPC（外側の EVAL〔改善〕3回目の [539]）：観点はすべて採点し、回に environment と partial を付ける
+  const tool = goodCase();
+  const last = Math.max(...tool.items.map((x) => x.seq));
+  tool.items.push({ seq: last + 1, kind: 'tool.result', owner: 'main', isError: false, text: "[Error: ENOSPC: no space left on device, write] {\n  errno: -28, code: 'ENOSPC' }" });
+  const t = gradeChange(tool);
+  assert.deepEqual(t.grades.map((g) => g.id), gradeChange(goodCase()).grades.map((g) => g.id));
+  assert.deepEqual(t.environment, { notGraded: [], toolResults: [last + 1] });
+  assert.deepEqual([t.verdict.ok, t.verdict.partial, t.verdict.environment, t.verdict.notGraded], [true, true, true, undefined]);
+  assert.equal(gradeChange(goodCase()).environment, undefined);
+});
+
 test('REQ-060 explained：.git の場所や文字の中の commit は、コミットとして数えない（説明の始まりがずれない）', () => {
   const ok = goodCase();
   ok.items.push(

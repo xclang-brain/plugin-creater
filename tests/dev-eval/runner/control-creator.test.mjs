@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -14,12 +13,13 @@ import { loadPersona } from '../personas/validate.mjs';
 import { CONTROL_DIR, evaluateControl } from './outer.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { convertPlugin, runOuterOnce } from './outer-run.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
 const PERSONAS = path.join(here, '..', 'personas');
 const BUILD = path.join(CONTROL_DIR, 'skills', 'make-plugin', 'scripts', 'control_build.py');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `control-${prefix}-`));
+const tmp = (prefix) => tempDir(`control-${prefix}`);
 const loadedWeekly = await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true });
 
 test('REQ-015 対照のクリエイターは、本物の組み立てのスクリプトで、本物と同じ形の生成プラグインを作る（1段目に通る）', () => {

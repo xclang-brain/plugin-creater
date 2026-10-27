@@ -12,7 +12,8 @@
 //   --models             クリエイターのモデル。既定は claude-opus-5-5（思考力の高いモデル）。Claude Haiku 5.5 でも回すなら、コンマで足す
 //   --inner              できた生成プラグインに内側の EVAL（inner.mjs）も動かす（プラグインあり・なしの比べ合い。時間と費用が増える）
 //   サンドボックス（bubblewrap、socat）が既定で要る。ないときは始めずに断る。--no-sandbox で外せる（結果に警告が残る）。
-//   終了コード：0 最後まで動いた（点数が低くても 0）、1 途中で止まった（利用枠の上限、中断）、2 始められなかった。
+//   / と OS の一時フォルダと結果のフォルダ（--out）の空きが 2GB 未満なら、始めずに断る。1 回ごとにも始める前に確かめ、足りなければ残りを飛ばす（disk.mjs）。
+//   終了コード：0 最後まで動いた（点数が低くても 0）、1 途中で止まった（利用枠の上限、中断、ディスクの空き）、2 始められなかった。
 //   標準出力は結果の要約の JSON、進み具合は標準エラー出力。結果は <out>/outer-report.json に、実行が 1 つ終わるたびに書き直す。
 //   --inner-runs <n>     内側の EVAL の、あり・なしそれぞれの回数（既定 1）
 //   改善の模擬ユーザー（persona.json の kind が change。testing.md 6章）は、題材のリポジトリの直すフォルダを直させ、outer-grade-change.mjs で採点する
@@ -65,6 +66,7 @@ import { loadPersona } from '../personas/validate.mjs';
 import {
   abandonedIds, abandonUnanswered, createHumanRelay, deadBy, finalizeRelayStatus, listQuestionIds, nextQuestionNumber, readRelayAnswer, readStatus, startHeartbeat, TERMINAL_STATES, writeRelayStatus,
 } from './human-relay.mjs';
+import { checkFreeSpace } from './disk.mjs';
 import { findSessionTranscript, runDirsOf } from './outer-resume.mjs';
 import { sandboxStatus } from './isolation.mjs';
 import { REPO_ROOT } from './creator-tools.mjs';
@@ -415,8 +417,11 @@ export function summarizeRecord(record, { heldout = false } = {}) {
     score: record.grading.score,
     verdictOk: record.grading.verdict.ok,
     failed: record.grading.grades.filter((g) => !g.ok).map((g) => redactGrade(g, heldout, order).id),
-    // 採点しなかった観点（verdictOk と score は、残りの観点だけで決めた）
+    // 採点しなかった観点（verdictOk と score は、残りの観点だけで決めた）。そのうち環境で止まった観点（ディスクがいっぱい）は environmentStopped にも出す
     ...(record.grading.notGraded?.length ? { notGraded: record.grading.notGraded.map((g) => g.id) } : {}),
+    ...(record.grading.notGraded?.some((g) => g.environment) ? { environmentStopped: record.grading.notGraded.filter((g) => g.environment).map((g) => g.id) } : {}),
+    // 環境（ディスクがいっぱい）の影響を受けた回（outer-grade.mjs の environmentOf）。summarizeAll が、比べる数に入れずに別に数える
+    ...(record.grading.environment ? { environmentAffected: true } : {}),
     exampleCandidate: heldout ? false : record.grading.exampleCandidate,
     faults: heldout ? record.grading.faults.length : record.grading.faults,
     costUsd: Number(((record.costUsd?.creator ?? 0) + (record.costUsd?.userRole ?? 0)).toFixed(4)),
@@ -454,16 +459,23 @@ export function evaluateControl(records) {
 /**
  * 全体の要約。腕・モデルごとの平均点と、あり・なしの差。
  * ユーザー役が答えられずに止まった回（終わりの理由 user_role_failed。試験の仕組みの失敗）は、会話が途中で切れていて、クリエイターの出来を
- * 表さないので、平均点・合格の数・記録する数の合計・あり・なしの差に入れず、腕・モデルごとに userRoleFailed として別に数える（testing.md 6.5）
+ * 表さないので、平均点・合格の数・記録する数の合計・あり・なしの差に入れず、腕・モデルごとに userRoleFailed として別に数える（testing.md 6.5）。
+ * 環境（ディスクがいっぱい）の影響を受けた回（environmentAffected）も、採点した観点の数がほかの回と違い、クリエイターの振る舞いも変わるので、
+ * 同じく入れずに、environmentAffected として別に数える
  */
 export function summarizeAll(records, summaries) {
   const key = (s) => `${s.arm}:${s.model}`;
-  const graded = summaries.filter((s) => s.stopped !== USER_ROLE_FAILED);
+  const userRoleFailed = (s) => s.stopped === USER_ROLE_FAILED;
+  const environmentAffected = (s) => !userRoleFailed(s) && s.environmentAffected === true;
+  const graded = summaries.filter((s) => !userRoleFailed(s) && !environmentAffected(s));
   const groups = {};
   for (const s of summaries) groups[key(s)] ??= [];
   for (const s of graded) groups[key(s)].push(s);
-  const failedOf = (k) => summaries.filter((s) => key(s) === k && s.stopped === USER_ROLE_FAILED).length;
-  const scores = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, { runs: xs.length, score: mean(xs.map((x) => x.score)), verdictOk: xs.filter((x) => x.verdictOk).length, userRoleFailed: failedOf(k) }]));
+  const countOf = (k, pick) => summaries.filter((s) => key(s) === k && pick(s)).length;
+  const scores = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, {
+    runs: xs.length, score: mean(xs.map((x) => x.score)), verdictOk: xs.filter((x) => x.verdictOk).length,
+    userRoleFailed: countOf(k, userRoleFailed), environmentAffected: countOf(k, environmentAffected),
+  }]));
   const counts = Object.fromEntries(Object.entries(groups).map(([k, xs]) => [k, aggregateCounts(xs)]));
   const withScores = graded.filter((s) => s.arm === 'with').map((s) => s.score);
   const withoutScores = graded.filter((s) => s.arm === 'without').map((s) => s.score);
@@ -485,8 +497,11 @@ export function summarizeAll(records, summaries) {
  * @param {Map<string, { loaded: object, heldout: boolean }>} o.personaById
  * @param {string} o.outDir
  * @param {Function} [o.runOne] 1 回を動かす関数（既定は runOuterOnce。試験で差し替える）
+ * @param {Function} [o.diskCheck] ディスクの空きを確かめる関数（既定は disk.mjs の checkFreeSpace。試験で差し替える）。1 回ごとに、始める前に、
+ *   / と OS の一時フォルダと outDir（実行のフォルダとクリエイターのホームが入る）を確かめ、足りなければ、残りを飛ばして status を stopped
+ *   （reason は disk_low）にする（前の回が空きを使い切ることがあるため。testing.md 5章）
  */
-export async function runPlan({ plan, personaById, outDir, creatorRoot, controlRoot, convertedCreator, convertedControl, runOne = runOuterOnce, common = {}, signal, onProgress = () => {} }) {
+export async function runPlan({ plan, personaById, outDir, creatorRoot, controlRoot, convertedCreator, convertedControl, runOne = runOuterOnce, diskCheck = checkFreeSpace, common = {}, signal, onProgress = () => {} }) {
   fs.mkdirSync(outDir, { recursive: true });
   const reportFile = path.join(outDir, 'outer-report.json');
   const records = [];
@@ -501,6 +516,10 @@ export async function runPlan({ plan, personaById, outDir, creatorRoot, controlR
   let stopped = null;
   for (const [index, item] of plan.entries()) {
     const { loaded, heldout } = personaById.get(item.persona);
+    if (!stopped && !signal?.aborted) {
+      const disk = diskCheck({ dirs: [outDir] });
+      if (!disk.ok) stopped = { reason: 'disk_low', message: disk.message, at: `${item.persona}/${item.arm}/${item.model}/${item.n}` };
+    }
     if (stopped || signal?.aborted) {
       summaries.push({ persona: heldout ? 'heldout' : item.persona, heldout, style: item.style, arm: item.arm, model: item.model, stopped: stopped ? 'skipped' : 'interrupted', score: 0, verdictOk: false, failed: [], exampleCandidate: false, faults: [], costUsd: 0 });
       continue;
@@ -528,7 +547,7 @@ export async function runPlan({ plan, personaById, outDir, creatorRoot, controlR
     records.push(record);
     summaries.push(summarizeRecord(record, { heldout }));
     save();
-    onProgress({ phase: 'end', index: index + 1, total: plan.length, ...item, persona: heldout ? '(見ない模擬ユーザー)' : item.persona, score: record.grading.score, stopped: record.stopped?.reason });
+    onProgress({ phase: 'end', index: index + 1, total: plan.length, ...item, persona: heldout ? '(見ない模擬ユーザー)' : item.persona, score: record.grading.score, stopped: record.stopped?.reason, notGraded: (record.grading.notGraded ?? []).map((g) => `${g.id}${g.environment ? '〔環境〕' : ''}`), environment: Boolean(record.grading.environment) });
     if (record.stopped?.reason === 'usage_limit') stopped = { reason: 'usage_limit', message: record.stopped.message ?? '', at: `${item.persona}/${item.arm}/${item.model}/${item.n}` };
     if (record.stopped?.reason === 'interrupted') stopped = { reason: 'interrupted', at: `${item.persona}/${item.arm}/${item.model}/${item.n}` };
   }
@@ -541,8 +560,8 @@ export async function runPlan({ plan, personaById, outDir, creatorRoot, controlR
 
 /**
  * @param {string[]} argv
- * @param {{ query?: Function, runOptions?: object, deadOptions?: object }} [deps] 試験用：query（Agent SDK）と、runOuterOnce に足す引数（runStages、convert など）を差し替える。
- *   deadOptions は、続きから始めるときの、前のプロセスの有無の確かめ（human-relay.mjs の deadBy）に渡す
+ * @param {{ query?: Function, runOptions?: object, deadOptions?: object, diskCheck?: Function }} [deps] 試験用：query（Agent SDK）と、runOuterOnce に足す引数（runStages、convert など）を差し替える。
+ *   deadOptions は、続きから始めるときの、前のプロセスの有無の確かめ（human-relay.mjs の deadBy）に渡す。diskCheck は、ディスクの空きの確かめ（disk.mjs の checkFreeSpace）
  */
 export async function main(argv = process.argv.slice(2), deps = {}) {
   let args;
@@ -613,6 +632,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const status = sandboxStatus();
       if (!status.available) throw new OuterEvalError('sandbox_missing', `OS のサンドボックスの道具が足りません（${status.missing.join('、')}）。入れるか、--no-sandbox で外してください（外すと、コマンドが作業フォルダの外に書けます）。`);
     }
+    // ディスクの空き（/ と OS の一時フォルダと結果のフォルダ）が足りなければ、結果のフォルダを作る前に断る（testing.md 5章）。足りないまま動かすと、
+    // 環境の誤りで採点が乱れる。結果のフォルダは、まだなければ、置かれる場所（--out か、結果の置き場所の既定）で見る
+    const diskCheck = deps.diskCheck ?? checkFreeSpace;
+    const disk = diskCheck({ dirs: [outDir ?? path.resolve(args.out ?? defaultRunRoot())] });
+    if (!disk.ok) throw new OuterEvalError('disk_low', disk.message);
     if (!outDir) outDir = path.resolve(args.out ?? fs.mkdtempSync(path.join(defaultRunRootEnsured(), 'outer-')));
     fs.mkdirSync(outDir, { recursive: true });
     const creatorRoot = path.resolve(args.creator ?? REPO_ROOT);
@@ -635,14 +659,14 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         }
       : {};
     const report = await runPlan({
-      plan, personaById, outDir, creatorRoot, controlRoot, convertedCreator, convertedControl, signal: abort.signal,
+      plan, personaById, outDir, creatorRoot, controlRoot, convertedCreator, convertedControl, diskCheck, signal: abort.signal,
       common: {
         query, sandbox: args.sandbox, userRoleModel: args.userModel, maxExchanges: args.maxExchanges,
         ...(args.innerRuns !== undefined ? { innerRuns: args.innerRuns } : {}), ...humanOptions, ...(deps.runOptions ?? {}),
       },
       onProgress: (p) => {
         if (p.phase === 'start') console.error(`[外側の EVAL] ${p.index}/${p.total} ${p.persona} ${p.style} ${p.arm} ${p.model} ${p.n} 回目を始める`);
-        else if (p.phase === 'end') console.error(`[外側の EVAL] ${p.index}/${p.total} 終わり：点数 ${p.score.toFixed(2)}${p.stopped ? `（${p.stopped}）` : ''}`);
+        else if (p.phase === 'end') console.error(`[外側の EVAL] ${p.index}/${p.total} 終わり：点数 ${p.score.toFixed(2)}${p.stopped ? `（${p.stopped}）` : ''}${p.notGraded?.length ? `（採点しなかった観点：${p.notGraded.join('、')}）` : ''}${p.environment ? '（ディスクがいっぱいの影響を受けた回。比べる数に入れない）' : ''}`);
       },
     });
     reportFile = report.reportFile;

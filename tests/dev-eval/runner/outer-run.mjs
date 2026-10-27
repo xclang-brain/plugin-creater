@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DISK_ERROR, diskErrorsOnly, removeAgentCache } from './disk.mjs';
 import { makeQueryOptions, sandboxStatus } from './isolation.mjs';
 import { readConversionReport } from './model-map.mjs';
 import { collectGeneratedFiles, gradeOuter, personaFileHashes } from './outer-grade.mjs';
@@ -132,24 +133,31 @@ export function preexistingPlugins(runDir, workDir, { resume = false } = {}) {
  * 生成プラグインの 1・2段目の入口（tests/run.py）を動かす。Playwright（1.56.1）は、このリポジトリの開発の試験の道具から、
  * 生成プラグインの tests/node_modules に一時的に写す（run.py は ESM で import するので、全体に入れたものは見つからない）。
  * 写しは終わったら消す（根の外を指すシンボリックリンクは 1段目で不合格になるので、写す）。
+ * run.py には、1回ごとの一時フォルダ（tmpRoot の下の dev-eval-stages-*）を TMPDIR で渡し、終わったら消す。生成プラグインの試験の残り
+ * （画面の試験が chrome・msedge を試して見つからないときに Playwright が残す playwright-artifacts-*・playwright_chromiumdev_profile-* など）を、
+ * OS の一時フォルダにためないためである（testing.md 5章）。
+ * 段階の不合格がすべてディスクの誤りなら、その段階に diskErrorsOnly を、run.py がディスクの誤りで結果を出せずに落ちたら diskError を付ける
+ * （採点は、環境で止まったとして点数に入れない。outer-grade.mjs の environmentNotGraded。testing.md 6.5）。
  */
-export async function runGeneratedStages(pluginDir, { python = 'python3', env = process.env, timeoutMs = DEFAULTS.stageTimeoutMs, nodeModules = path.join(DEV_EVAL, 'node_modules') } = {}) {
+export async function runGeneratedStages(pluginDir, { python = 'python3', env = process.env, timeoutMs = DEFAULTS.stageTimeoutMs, nodeModules = path.join(DEV_EVAL, 'node_modules'), tmpRoot = os.tmpdir() } = {}) {
   const runPy = path.join(pluginDir, 'tests', 'run.py');
   if (!fs.existsSync(runPy)) return { skipped: true, reason: 'tests/run.py がない（1・2段目の入口がない）' };
   const target = path.join(pluginDir, 'tests', 'node_modules');
   const copied = [];
-  for (const name of ['playwright', 'playwright-core']) {
-    const from = path.join(nodeModules, name);
-    const to = path.join(target, name);
-    if (fs.existsSync(from) && !fs.existsSync(to)) {
-      fs.mkdirSync(target, { recursive: true });
-      fs.cpSync(from, to, { recursive: true });
-      copied.push(to);
-    }
-  }
-  const childEnv = { ...env };
-  if (!childEnv.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/pw-browsers')) childEnv.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
+  let tmp = null;
   try {
+    for (const name of ['playwright', 'playwright-core']) {
+      const from = path.join(nodeModules, name);
+      const to = path.join(target, name);
+      if (fs.existsSync(from) && !fs.existsSync(to)) {
+        fs.mkdirSync(target, { recursive: true });
+        copied.push(to); // 写す途中で落ちても（ENOSPC など）、写しかけを消す
+        fs.cpSync(from, to, { recursive: true });
+      }
+    }
+    tmp = fs.mkdtempSync(path.join(tmpRoot, 'dev-eval-stages-'));
+    const childEnv = { ...env, TMPDIR: tmp };
+    if (!childEnv.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/pw-browsers')) childEnv.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
     const result = await new Promise((resolve) => {
       const child = spawn(python, ['tests/run.py', '--json'], { cwd: pluginDir, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
@@ -164,18 +172,30 @@ export async function runGeneratedStages(pluginDir, { python = 'python3', env = 
     try {
       report = JSON.parse(result.stdout);
     } catch {
-      return { skipped: true, reason: `tests/run.py の結果を読めない（終了コード ${result.code}）：${(result.stderr || result.stdout).slice(-300)}` };
+      // 結果のファイル（tests/results/latest.json）を書けずに落ちたときなど。理由がディスクの誤りなら印を付ける（道具が足りないときは付けない）
+      const disk = DISK_ERROR.test(`${result.stderr}\n${result.stdout}`);
+      return { skipped: true, reason: `tests/run.py の結果を読めない（終了コード ${result.code}）：${(result.stderr || result.stdout).slice(-300)}`, ...(disk ? { diskError: true } : {}) };
     }
     if (result.code === 2) return { skipped: true, reason: `道具が足りなくて止まった：${(report.tools?.missing ?? []).map((m) => m.name ?? m.id ?? m).join('、')}`, report };
     const byId = (id) => (report.stages ?? []).find((s) => s.id === id);
     const summary = (s) => (s ? { ok: s.status === 'passed', status: s.status, counts: s.counts ?? null, failures: (s.failures ?? []).slice(0, 10), failedTests: (s.tests ?? []).filter((t) => t.status === 'failed').slice(0, 10) } : { ok: false, status: 'missing' });
-    return { skipped: false, ok: report.ok === true, exitCode: result.code, stage1: summary(byId('stage1')), stage2: summary(byId('stage2')), resultsFile: report.resultsFile ?? null, durationSeconds: report.durationSeconds ?? null };
+    // 段階の不合格がすべてディスクの誤り（ENOSPC・EIO）なら、印を付ける（採点は、環境で止まったとして点数に入れない。testing.md 6.5）。
+    // 記録の failures は 10 件までなので、ここで全件を見る
+    const marked = (id) => {
+      const stage = byId(id);
+      return { ...summary(stage), ...(diskErrorsOnly(stage) ? { diskErrorsOnly: true } : {}) };
+    };
+    return {
+      skipped: false, ok: report.ok === true, exitCode: result.code, stage1: marked('stage1'), stage2: marked('stage2'),
+      resultsFile: report.resultsFile ?? null, durationSeconds: report.durationSeconds ?? null,
+    };
   } finally {
     for (const dir of copied) fs.rmSync(dir, { recursive: true, force: true });
     try {
+      if (tmp) fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
       if (fs.existsSync(target) && fs.readdirSync(target).length === 0) fs.rmdirSync(target);
     } catch {
-      // 残っていてもよい
+      // 残っていてもよい（止めた子プロセスがまだ書いているときなど）
     }
   }
 }
@@ -575,6 +595,10 @@ export async function runOuterOnce(o) {
       stopped = { reason: 'interrupted', ...(stopped?.reason ? { detail: stopped.reason } : {}) };
     }
     userRole.setStatus?.({ phase: 'grading' });
+    // クリエイターが入れたもの（.cache/ms-playwright の Chromium など。1回で約 1GB）は、1・2段目を動かす前に消す。実行ごとにたまって、
+    // ディスクをあふれさせないため（testing.md 5章）。開発者が答えるときは、セッションの記録（.claude）と同じく残す（続きから始めたときに、
+    // クリエイターが入れたブラウザーがなくなって、入れ直しを開発者に聞くことがないように）
+    if (!keepHomes && !human) removeAgentCache(dirs.agentHome);
 
     // ---- 生成プラグインの採点 ----
     const plugins = generatedPlugins();
@@ -595,7 +619,8 @@ export async function runOuterOnce(o) {
       try {
         stages = await runStages(pluginDir, {});
       } catch (error) {
-        stages = { skipped: true, reason: `1・2段目を動かせなかった：${error.message}` };
+        // Playwright の写しや一時フォルダを作れなかったときなど。理由がディスクの誤りなら印を付ける（採点しない。testing.md 6.5）
+        stages = { skipped: true, reason: `1・2段目を動かせなかった：${error.message}`, ...(DISK_ERROR.test(String(error?.message ?? error)) ? { diskError: true } : {}) };
       }
       if (inner && stages?.stage1?.ok) {
         onProgress({ phase: 'inner' });
@@ -613,7 +638,8 @@ export async function runOuterOnce(o) {
             if (innerRecord?.taskProblems?.length) innerResult.taskProblems = innerRecord.taskProblems;
           }
         } catch (error) {
-          innerResult = { withScore: null, error: error?.message ?? String(error) };
+          // code（disk_low など）も残す。ディスクの空きが足りずに始めなかったときは、環境で止まったとして採点しない（outer-grade.mjs の environmentNotGraded）
+          innerResult = { withScore: null, error: error?.message ?? String(error), ...(error?.code ? { code: error.code } : {}) };
         }
       }
     }
@@ -629,6 +655,9 @@ export async function runOuterOnce(o) {
     const notGraded = replay && !replay.reliable
       ? Object.fromEntries(CONVERSATION_GRADES.map((id) => [id, `続きから始めた実行で、前の会話を確かに読み直せなかったので採点しない（${replay.problems.slice(0, 3).join(' / ')}）`]))
       : {};
+    // 内側の EVAL の結果を点数に入れるのは、点数が出たとき。ディスクの空きが足りずに始めなかったとき（disk_low）も渡し、環境で止まったとして
+    // 採点しなかった観点に残す。開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
+    const innerForGrading = !human && innerResult && (innerResult.withScore !== null || innerResult.code === 'disk_low') ? innerResult : null;
     const modelUse = {
       requested: model,
       main: models.main ?? [],
@@ -649,7 +678,7 @@ export async function runOuterOnce(o) {
           model,
           arm,
           answerer: answererKind,
-          inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
+          inner: innerForGrading,
         })
       : gradeOuter({
           persona,
@@ -660,8 +689,7 @@ export async function runOuterOnce(o) {
           generatedCount: plugins.length,
           generatedFiles,
           stages,
-          // 開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
-          inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
+          inner: innerForGrading,
           userSignals: userRole.signals,
           modelUse,
           model,
@@ -733,6 +761,8 @@ export async function runOuterOnce(o) {
       failed: grading.verdict.failed,
       // 採点しなかった観点（合否は残りの観点だけで決めた。続きから始めて、前の会話を確かに読み直せなかったときなど）
       ...(grading.notGraded?.length ? { notGraded: grading.notGraded.map((g) => g.id) } : {}),
+      // 環境（ディスクがいっぱい）の影響を受けた回（outer-grade.mjs の environmentOf）
+      ...(grading.environment ? { environment: grading.environment } : {}),
       inner: innerResult,
       recordFile: file,
     };
