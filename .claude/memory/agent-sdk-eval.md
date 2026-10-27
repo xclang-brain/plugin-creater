@@ -45,6 +45,11 @@ Claude Code の Agent SDK（TypeScript 版 0.3.302、Claude Code 2.1.302）で�
 - サブエージェントの種類と、それが使ったモデルは、実行の記録（ツール呼び出しの ID とメッセージのモデル名）から分かる。0.3.310 では、サブエージェントの始まりのフック（`SubagentStart`）に `agent_id` と `agent_type`、`Agent` の呼び出しの `PreToolUse` に `description`・`subagent_type`・`run_in_background`、サブエージェントのメッセージに `agent_id` と `message.model` が付いた。
 - 試されるエージェントも、モデルの利用枠を使う。EVAL を続けて回したところ、利用枠の上限に達したというエラー（「You've hit your session limit」）で止まり、示された時刻（約3時間後）まで再開できなかった。
 
+## 同時に起動したサブエージェントの見分け方（0.3.310。2026年10月、make-idea の流れの試験）
+
+- 1つの応答で並べた `Agent` の呼び出しは、別々の assistant のメッセージで届く。同じ応答のものは `message.id` が同じである（型定義の SDKAssistantMessage の説明にもある）。
+- メッセージの数で数えると、同時に起動したものを別々に数えてしまう。`message.id` でまとめて数える。
+
 ## 出典
 
 - [Claude Agent SDK: Handle approvals and user input](https://code.claude.com/docs/en/agent-sdk/user-input)
