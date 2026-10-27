@@ -211,9 +211,9 @@
 
 ### REQ-076 機能の分離
 
-- 要件：アイデア創出スキルは、make-plugin・change-plugin・test-plugin の仕組み（クリエイターの画面、ヒアリングの記録、`plugin-creator_` で始まるツール、読み取り役と作業エージェント）を使わない。終わりに、作ったアイデアでプラグインを作るときは、`/clear` してから make-plugin に頼むよう示す。make-plugin・change-plugin・test-plugin の振る舞いは、アイデア創出スキルを足す前と変わらない。
+- 要件：アイデア創出スキルは、make-plugin・change-plugin・test-plugin の仕組み（クリエイターの画面、ヒアリングの記録、`plugin-creator_` で始まるツール、読み取り役と作業エージェント）を使わない。終わりに、作ったアイデアでプラグインを作るときや、今あるプラグインに足すときは、`/clear` してから make-plugin・change-plugin に頼むよう示す。make-plugin・change-plugin・test-plugin の振る舞いは、アイデア創出スキルを足す前と変わらない。
 - 根拠：憲章 第28条
 - 受け入れ基準：
   - アイデア創出の間に、`plugin-creator_` で始まるツールが呼ばれず、ヒアリングの記録ができない。
-  - 終わりに、`/clear` してから make-plugin に頼むよう示される。
+  - 終わりに、`/clear` してから make-plugin・change-plugin に頼むよう示される。
   - クリエイターの既存の試験が、アイデア創出スキルを足す前と同じく通る。

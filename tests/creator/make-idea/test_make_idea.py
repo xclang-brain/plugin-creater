@@ -88,7 +88,7 @@ def numbers(text):
 
 
 class Params(unittest.TestCase):
-    def test_REQ_062_names_and_defaults_match_the_spec_table(self):
+    def test_REQ_073_names_and_defaults_match_the_spec_table(self):
         p = params()
         rows = spec_param_rows()
         self.assertEqual(23, len(rows), rows)
@@ -104,7 +104,7 @@ class Params(unittest.TestCase):
             else:
                 self.assertEqual(numbers(default), [value], name)
 
-    def test_REQ_062_defaults_follow_the_value_rules(self):
+    def test_REQ_073_defaults_follow_the_value_rules(self):
         p = params()
         for pillar, group in p.items():
             if not isinstance(group, dict):
@@ -122,7 +122,7 @@ class Params(unittest.TestCase):
             self.assertGreaterEqual(p[pillar][name], 2, name)
         self.assertGreaterEqual(p["本質の見極め"]["本質の数"], size["最大"])
 
-    def test_REQ_062_developer_values(self):
+    def test_REQ_073_developer_values(self):
         """開発者が決めた初期値（ナレッジ「アイデア創出（6つの柱）」）"""
         p = params()
         self.assertGreaterEqual(p["徹底的な事前調査"]["集める作品の数"], 100)
@@ -139,7 +139,7 @@ class Params(unittest.TestCase):
 
 
 class Pillars(unittest.TestCase):
-    def test_constitution_article_25_has_the_six_pillars_in_order(self):
+    def test_constitution_article_26_has_the_six_pillars_in_order(self):
         text = read(CONSTITUTION)
         part = text[text.index("### 第26条"):text.index("### 第27条")]
         found = re.findall(r"^ {3,}\d\. (.+)$", part, re.M)   # 1項の下の入れ子の番号つきの行
@@ -163,7 +163,7 @@ class Agents(unittest.TestCase):
         meta, _ = agent_meta(agent_id)
         return [t.lower() for t in meta.get("tools", [])]
 
-    def test_REQ_059_reader_cannot_find_or_change_files(self):
+    def test_REQ_070_reader_cannot_find_or_change_files(self):
         """読み手は read だけ（場所を渡されず、探すツールを持たない）。ツールなしは Claude Code が起動を断る（アイデア創出の設計 1章）"""
         tools = self.tools("idea-reader")
         self.assertEqual(["read"], tools)
@@ -189,18 +189,21 @@ class Agents(unittest.TestCase):
 
 
 class Separation(unittest.TestCase):
-    def test_REQ_065_no_creator_extension_tool_is_named(self):
+    def test_REQ_076_no_creator_extension_tool_is_named(self):
         for path in skill_files() + [os.path.join(AGENTS_DIR, a + ".agent.md") for a in IDEA_AGENTS]:
             self.assertIsNone(re.search(r"plugin-creator_[a-z]", read(path)), path)
 
-    def test_REQ_065_make_plugin_agents_are_named_only_to_forbid_them(self):
+    def test_REQ_076_make_plugin_agents_are_named_only_to_forbid_them(self):
         for path in skill_files():
             for line in read(path).splitlines():
                 if "plugin-creator:reader" in line or "plugin-creator:worker" in line:
                     self.assertIn("使わない", line, path)
 
-    def test_REQ_065_the_end_tells_to_clear_before_make_plugin(self):
-        self.assertIn("/clear", read(os.path.join(SKILL_DIR, "references", "accumulate.md")))
+    def test_REQ_076_the_end_tells_to_clear_before_make_or_change_plugin(self):
+        end = read(os.path.join(SKILL_DIR, "references", "accumulate.md"))
+        end = end[end.index("### 5. 終わり"):]
+        for word in ("/clear", "make-plugin", "change-plugin"):
+            self.assertIn(word, end)
 
     def test_only_idea_agents_are_called(self):
         for path in skill_files():
@@ -217,7 +220,7 @@ class Separation(unittest.TestCase):
 
 
 class Readme(unittest.TestCase):
-    def test_REQ_063_readme_tells_where_the_data_is_and_how_to_delete_it(self):
+    def test_REQ_074_readme_tells_where_the_data_is_and_how_to_delete_it(self):
         text = read(os.path.join(REPO, "README.md"))
         part = text[text.index("## アイデアを作る"):]
         part = part[:part.index("\n## ", 1)]

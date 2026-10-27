@@ -889,7 +889,7 @@
 
 **1段目 構造の検査**（クリエイター自身）
 
-- どのスキル（make-plugin、test-plugin、change-plugin）も、SKILL.md の本文が500行以内で、5,000トークン以内である（トークンの数え方は未決。14章）。
+- どのスキル（skills/ のすべて。make-plugin、test-plugin、change-plugin、make-idea）も、SKILL.md の本文が500行以内で、5,000トークン以内である（トークンの数え方は未決。14章）。
 - references の各ファイルが 20KB 未満である。
 
 **2段目 部品の試験**（クリエイターのエクステンション。偽物のつなぎ口からイベントを流す）
@@ -995,7 +995,7 @@
 | H24 | change-plugin が、隣の make-plugin のフォルダの SKILL.md と references を、確認なしで読めるか（test-plugin が make-plugin の references を読むときも同じ）。更新履歴 1.0.83 の「Host-provided plugin customizations can be read without redundant path permission prompts」が、どこまでを指すか | 10.5 |
 | H25 | 生成プラグインの作業・検証のエージェントが、インストールしたプラグインの写しにあるルールのスキルのファイルを、確認なしで読めるか | 3.4（[生成プラグインの構造](generated-plugin-structure.md) 4.7） |
 | H26 | 作業フォルダや個人のフォルダに、プラグインのスキルと同じ名前のスキルがあると、プラグインのスキルが黙って無視されるか（公式のプラグインリファレンスの記述どおりか） | 3.4、6.3 |
-| H27 | 日本語の頼みで、change-plugin・make-plugin・test-plugin が頼みどおりに選ばれるか。開発の試験の呼ばれ方の試験（[試験の設計](testing.md) 6.9）は、Claude Code での見込みである | 10.5 |
+| H27 | 日本語の頼みで、change-plugin・make-plugin・test-plugin・make-idea が頼みどおりに選ばれるか（アイデアの頼みで make-idea が選ばれ、プラグインを作る・直す・試験する頼みで make-idea が選ばれないか）。開発の試験の呼ばれ方の試験（[試験の設計](testing.md) 6.9）は、Claude Code での見込みである | 10.5、[アイデア創出の設計](idea.md) 8章 |
 
 未決のこと：
 
