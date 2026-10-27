@@ -21,7 +21,23 @@ export function pythonHasModules() {
   return spawnSync('python3', ['-c', 'import yaml, jsonschema'], { encoding: 'utf8' }).status === 0;
 }
 
-export const tmpDir = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `dev-eval-${prefix}-`)));
+// 試験が作った一時フォルダは、試験のプロセスが終わるときに消す（見本の生成プラグインは1つで十数 MB あり、残すとディスクがあふれる）
+const TEMP_DIRS = [];
+process.on('exit', () => {
+  for (const dir of TEMP_DIRS) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 子プロセスがまだ書いているなどで消せないものは残す（OS の一時フォルダなので、試験の合否には入れない）
+    }
+  }
+});
+
+export const tmpDir = (prefix) => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `dev-eval-${prefix}-`)));
+  TEMP_DIRS.push(dir);
+  return dir;
+};
 
 /** 見本から生成プラグインを組み立て、Claude Code 向けに置き換える。@returns {{ root, pluginRoot, convertedRoot, taskDir, task }} */
 export function buildSamplePlugin() {
