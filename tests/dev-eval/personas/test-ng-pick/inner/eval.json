@@ -1,0 +1,13 @@
+{
+  "id": "T-01",
+  "prompt": "inputs/results.xlsx と inputs/spec.docx から、最初に台で再現させる NG を選んでください。",
+  "inputs": ["inputs/results.xlsx", "inputs/spec.docx"],
+  "criteria": [
+    { "id": "C-01", "knowledge": "output", "text": "成果物は pick.md という名前のファイルである", "grading": "program", "check": { "type": "file_exists", "file": "pick.md" } },
+    { "id": "C-02", "knowledge": "cold-chamber", "text": "最初に台へ戻す項目が T-2205 である（いちばん多い機能 SPI 送信の中で、恒温槽の要る T-2203 を除き、前提条件がいちばん少ない）", "grading": "program", "check": { "type": "regex", "file": "pick.md", "pattern": "最初に台へ戻す[：:][^\\n]*T-2205" } },
+    { "id": "C-03", "knowledge": "grouping", "text": "書き方の違う「SPI 送信」と「SPI送信処理」が1つの機能にまとめられ、NG が4件と数えられている", "grading": "program", "check": { "type": "regex", "file": "pick.md", "pattern": "SPI ?送信[^\\n]*4 ?件" } },
+    { "id": "C-04", "knowledge": "hold", "text": "判定が「保留」の T-2303 を数えず、電源断の復帰の NG が2件と数えられている", "grading": "program", "check": { "type": "regex", "file": "pick.md", "pattern": "電源断の復帰[^\\n]*2 ?件" } },
+    { "id": "C-05", "knowledge": "reason-line", "text": "理由が「理由：」の1行で書かれている", "grading": "program", "check": { "type": "regex", "file": "pick.md", "pattern": "(?:^|\\n)\\s*理由[：:][^\\n]+" } },
+    { "id": "C-06", "knowledge": "pick-rule", "text": "理由に、NG の件数がいちばん多い機能であることと、前提条件の数で選んだことが書かれている", "grading": "model", "check": { "files": ["pick.md"] } }
+  ]
+}
