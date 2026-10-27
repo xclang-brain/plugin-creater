@@ -48,7 +48,8 @@
 //                              （版の形の数は、元の版や IP アドレスの一部にも当たるため）。記録に確認の版がなければ、正規表現のまま見る
 //   main-model / worker-model  作る流れと同じ（outer-grade.mjs の gradeModels。REQ-045・046）
 //   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ）
-// 英語の覚え書きのようなチャットの文の数は、作る流れと同じく counts（countRecorded の nonJapaneseTexts。outer-grade.mjs の isEnglishNote）に出す。合否には入れない
+// 英語の覚え書きのようなチャットの文の数と、最初の問いより前にこれからの流れを示したかは、作る流れと同じく counts（countRecorded の nonJapaneseTexts と
+// flowShown。outer-grade.mjs の isEnglishNote と isFlowText）に出す。合否には入れない。聞かれずに話した（faults）も、作る流れと同じ（knowledgeTrace）
 
 import { compareVersions } from '../../../com.github.copilot/extensions/plugin-creator/change.mjs';
 import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';

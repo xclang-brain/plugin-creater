@@ -197,3 +197,20 @@ test('REQ-015 ユーザー役の試験：道具の呼び出しの形で答える
   // 見本のユーザー役では 0 件
   assert.equal((await run(loadedWeekly, good)).observations.toolMarkup.count, 0);
 });
+
+test('REQ-015 ユーザー役の試験：まとめた質問で、言わないはずのナレッジ（forbid）を話すユーザー役は、まとめて答える観点で落ちる', async () => {
+  const loadedChange = await loadPersona(path.join(PERSONAS, 'edl-change'));
+  const persona = loadedChange.persona;
+  const stumble = persona.userRoleTests.compound.find((c) => (c.forbid ?? []).length > 0);
+  assert.ok(stumble, 'edl-change に forbid のあるまとめた質問がある');
+  const byId = new Map(persona.knowledge.map((k) => [k.id, k]));
+  const good = oracle(persona);
+  const allowed = stumble.expect.map((id) => byId.get(id).fact).join(' ');
+  const goodRole = (req) => (questionOf(req.prompt) === stumble.question ? allowed : good(req));
+  const leakyRole = (req) => (questionOf(req.prompt) === stumble.question ? `${allowed} ${byId.get(stumble.forbid[0]).fact}` : good(req));
+  const ok = await run(loadedChange, goodRole);
+  assert.equal(ok.observations.compound.rate, 1, JSON.stringify(ok.failures));
+  const bad = await run(loadedChange, leakyRole);
+  assert.ok(bad.observations.compound.rate < 1);
+  assert.match(bad.failures.join('\n'), /まとめて答える/);
+});

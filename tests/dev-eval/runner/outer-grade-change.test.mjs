@@ -162,6 +162,8 @@ test('REQ-052〜062 作り例：すべての観点に合格する。観点はす
   ]);
   assert.equal(grading.trace.length, 4);
   assert.ok(grading.counts.questions.total >= 4);
+  // 流れを示したかは数えるだけ（合否に入れない）。作り例の「これから、今のプラグインを読んで…」は、段階を並べていないので流れに数えない
+  assert.deepEqual(grading.counts.flowShown, { shown: false, seq: null });
   // 要件の番号を持つ
   assert.ok(grading.grades.every((g) => /^REQ-\d{3}$/.test(g.req)), JSON.stringify(grading.grades.filter((g) => !g.req)));
 });

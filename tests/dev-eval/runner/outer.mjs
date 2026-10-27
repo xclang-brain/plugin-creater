@@ -381,7 +381,7 @@ function redactCounts(counts, heldout) {
   return { ...counts, recordRefusals: { ...counts.recordRefusals, samples: [] }, ...(counts.nonJapaneseTexts ? { nonJapaneseTexts: { ...counts.nonJapaneseTexts, samples: [] } } : {}) };
 }
 
-/** 実行の要約の数（counts）を、まとめる。合計と、問いの欄の数の最大 */
+/** 実行の要約の数（counts）を、まとめる。合計と、問いの欄の数の最大と、流れを示した回の数 */
 export function aggregateCounts(summaries) {
   const list = summaries.map((s) => s.counts).filter(Boolean);
   const sum = (pick) => list.reduce((n, c) => n + (pick(c) ?? 0), 0);
@@ -397,6 +397,8 @@ export function aggregateCounts(summaries) {
     aiDecisions: sum((c) => c.aiDecisions.count),
     recordRefusals: { total: sum((c) => c.recordRefusals.total), fixed: sum((c) => c.recordRefusals.fixed), unfixed: sum((c) => c.recordRefusals.unfixed) },
     nonJapaneseTexts: sum((c) => c.nonJapaneseTexts?.count),
+    // 最初の問いより前に、これからの流れを示した回の数（数のない古い記録は、示さなかったとする）
+    flowShown: sum((c) => (c.flowShown?.shown ? 1 : 0)),
   };
 }
 

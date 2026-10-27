@@ -19,7 +19,7 @@
 //   worker-model                  作業エージェントが、費用の低いモデルで動いた（REQ-046。腕 with で、生成プラグインができたときだけ）
 // 採点とは別に、設計書（testing.md 6.5）が「記録する」とした数を数える（countRecorded。合否には入れない）：
 //   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか、
-//   英語の覚え書きのようなチャットの文の数。
+//   英語の覚え書きのようなチャットの文の数、最初の問いより前にこれからの流れを示したか。
 // 画面の URL の観点（gradeScreenUrlShown）は、改善の採点（outer-grade-change.mjs）も使う。
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
 // 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
@@ -143,23 +143,50 @@ export function scopes(generatedFiles, personaFileList) {
 
 // ---- 会話の記録から ---------------------------------------------------------------------------------------
 
-/** 会話の記録（items）から、問いと答えの組を取り出す */
+/**
+ * 会話の記録（items）から、問いと答えの組を取り出す。
+ * shown は、この答えより前にクリエイターがユーザーに示した、この問いの外の文である。前の答えの後のチャットの文（creator.text）と、
+ * 同じ質問のツールの呼び出しのほかの問い（見出し・問い・選択肢）。1 回の呼び出しの問いは、ユーザーに同時に見えるため（testing.md 6.3）
+ */
 export function exchangesOf(items) {
-  return items
-    .filter((i) => i.kind === 'user.answer')
-    .map((i) => ({
-      seq: i.seq,
-      index: i.index,
-      via: i.via,
-      question: i.question,
-      header: i.header ?? '',
-      choices: i.choices ?? [],
-      answer: i.answer,
-      signal: Boolean(i.signal),
-    }));
+  // 質問のツールの 1 回の呼び出しの問い：続けて記録された、group が同じ creator.question（間には答えだけが入る）
+  const callOf = new Map();
+  let call = null;
+  for (const i of items) {
+    if (i.kind === 'creator.question') {
+      if (!call || i.group === undefined || call[0].group !== i.group) call = [];
+      call.push(i);
+      callOf.set(i, call);
+    } else if (['creator.text', 'creator.question-text', 'user.request'].includes(i.kind)) call = null;
+  }
+  const out = [];
+  let texts = [];
+  let lastQuestion = null;
+  for (const i of items) {
+    if (i.kind === 'creator.text') texts.push(String(i.text ?? ''));
+    else if (i.kind === 'creator.question') lastQuestion = i;
+    else if (i.kind === 'user.answer') {
+      const others = i.via === 'AskUserQuestion' && lastQuestion ? callOf.get(lastQuestion).filter((q) => q !== lastQuestion) : [];
+      out.push({
+        seq: i.seq,
+        index: i.index,
+        via: i.via,
+        question: i.question,
+        header: i.header ?? '',
+        choices: i.choices ?? [],
+        answer: i.answer,
+        signal: Boolean(i.signal),
+        shown: [...texts, ...others.map((q) => promptTextOf({ header: q.header ?? '', question: q.question, choices: q.options }))].join('\n'),
+      });
+      texts = [];
+    }
+  }
+  return out;
 }
 
 const questionTextOf = (e) => `${e.header} ${e.question}`.trim();
+/** クリエイターが示した問いのすべて（見出し・問い・選択肢の名前と説明） */
+const promptTextOf = (e) => [questionTextOf(e), ...(e.choices ?? []).map((c) => `${c.label ?? ''} ${c.description ?? ''}`)].join(' ');
 
 /** 記録のツールの呼び出しと結果を組にする */
 export function pairToolEvents(toolEvents) {
@@ -175,6 +202,9 @@ export function pairToolEvents(toolEvents) {
 
 const succeeded = (pair) => pair.result !== null && pair.result.isError === false;
 
+/** 最初の問い（質問のツールの問いか、文章の問い）。なければ undefined */
+const firstQuestionOf = (items) => items.find((i) => i.kind === 'creator.question' || i.kind === 'creator.question-text');
+
 /** 文の中の URL（日本語の閉じかっこと句読点の前で切る） */
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>`）」』\]。、]+/;
 
@@ -185,7 +215,7 @@ const URL_IN_TEXT = /https?:\/\/[^\s"'<>`）」』\]。、]+/;
  * 最初の問いの前の文（問いのまとまりの前の文）も、ここに入る。
  */
 export function gradeScreenUrlShown({ items, toolEvents }) {
-  const first = items.find((i) => i.kind === 'creator.question' || i.kind === 'creator.question-text');
+  const first = firstQuestionOf(items);
   const beforeFirst = (seq) => first === undefined || seq < first.seq;
   const open = pairToolEvents(toolEvents).find((p) => p.call.tool === 'open' && succeeded(p) && beforeFirst(p.call.seq));
   if (!open) return { ok: false, detail: '最初の問いより前に、画面を開くツール（open）が成功していない' };
@@ -201,18 +231,42 @@ export function gradeScreenUrlShown({ items, toolEvents }) {
 // ---- ナレッジごとの記録 ---------------------------------------------------------------------------------------
 
 /**
+ * 聞かれずに話した最初の答え（ユーザー役の誤り。FORMAT.md 5章）。なければ null。隠すべきナレッジを、その話題でない質問
+ * （見出しと問いが markers.asked に当たらない）に答えて話し、そのナレッジがまだ会話に出ていなかった答えである（testing.md 6.3）。
+ * 出たとは、前の答えが markers.answered に当たった（ユーザーが話した）か、この答えより前にクリエイターが示した文（この問いと前の問いの
+ * 見出し・問い・選択肢、exchangesOf の shown）が markers.answered に当たったこと。前に話した決まりや、クリエイターが示した決まりを
+ * くり返しただけの答えは、人として自然で、隠していたことを漏らしたのではないため。前の問いが asked に当たっただけでは、出たにしない
+ * （asked は問いの話題を広めに見る言葉なので、当たった後の会話のすべての漏れを見落とすため）。
+ * 最初に出たところで決まるので、ナレッジごとに 1 つだけになる。
+ * markers.leak は大まかな質問への答えを見る言葉（ユーザー役の試験用）で、自分から話すほかのナレッジの文にも出うるので、ここでは使わない
+ */
+function firstUnprompted(markers, exchanges) {
+  const m = markers ?? {};
+  for (const e of exchanges) {
+    // クリエイターが先に示した：この答えから後は、出たナレッジのくり返し
+    if (matchesAny(m.answered, promptTextOf(e)) || matchesAny(m.answered, e.shown ?? '')) return null;
+    // ユーザーが初めて話した：聞かれた問いへの答えなら漏れではなく、聞かれていない問いへの答えなら漏れ
+    if (matchesAny(m.answered, e.answer)) return matchesAny(m.asked, questionTextOf(e)) ? null : e;
+  }
+  return null;
+}
+
+/**
  * ナレッジごとに、聞いたか・答えたか・組み込まれたか（testing.md 6.3）。
  * 正しくない型の見分けは、最後に会話を読んで確かめる。
+ * exchanges は exchangesOf の形（index・header・question・choices・answer、あれば shown）で、会話の順に並べる（exchangesOf は記録の順）。
+ * leakedAt は、聞かれずに話した最初の答えの index（firstUnprompted）。ナレッジごとに 1 つで、漏れていないか、index のない exchanges では null。
  */
 export function knowledgeTrace({ persona, exchanges, scope }) {
   return persona.knowledge.map((k) => {
     const m = k.markers ?? {};
     const asked = exchanges.some((e) => matchesAny(m.asked, questionTextOf(e)));
     const answered = exchanges.some((e) => matchesAny(m.answered, e.answer));
-    // 聞かれずに話した：隠すべきナレッジを、その話題でない質問に答えて話した（ユーザー役の誤り。FORMAT.md 5章）。
-    // markers.leak は大まかな質問への答えを見る言葉（ユーザー役の試験用）で、自分から話すほかのナレッジの文にも出うるので、ここでは使わない
-    const unprompted = !k.volunteer && exchanges.some((e) => matchesAny(m.answered, e.answer) && !matchesAny(m.asked, questionTextOf(e)));
+    // 聞かれずに話した：隠すべきナレッジを、その話題でない質問に答えて、まだ会話に出ていないのに話した（firstUnprompted）
+    const leakedAnswer = k.volunteer ? null : firstUnprompted(m, exchanges);
+    const unprompted = leakedAnswer !== null;
     const leaked = unprompted;
+    const leakedAt = leakedAnswer?.index ?? null;
     const embedded = toList(m.embedded).length ? matchesAll(m.embedded, scope.embedded) : null;
     const excludedHit = toList(m.excluded).length ? matchesAny(m.excluded, scope.excluded) : null;
     const taskIncluded = toList(m.task).length ? matchesAll(m.task, scope.task) : null;
@@ -235,15 +289,16 @@ export function knowledgeTrace({ persona, exchanges, scope }) {
       taskIncluded,
       unprompted,
       leaked,
+      leakedAt,
       verdict,
     };
   });
 }
 
-/** ユーザー役の誤り（6.6 の会話例の選び方で除く）：聞かれていないのに隠すべきナレッジを話した、自分への指示のことを話した */
+/** ユーザー役の誤り（6.6 の会話例の選び方で除く）：聞かれていないのに隠すべきナレッジを話した（最初の答えの index つき）、自分への指示のことを話した */
 export function userRoleFaults({ exchanges, trace }) {
   const faults = [];
-  for (const t of trace) if (t.leaked) faults.push({ kind: 'leaked', knowledge: t.id });
+  for (const t of trace) if (t.leaked) faults.push({ kind: 'leaked', knowledge: t.id, ...(Number.isInteger(t.leakedAt) ? { answerIndex: t.leakedAt } : {}) });
   for (const e of exchanges) {
     const hit = INSTRUCTION_WORDS.exec(e.answer);
     if (hit) faults.push({ kind: 'instruction-words', answerIndex: e.index, match: hit[0] });
@@ -346,22 +401,38 @@ const stripCodeAndUrls = (text) => String(text ?? '')
   .replace(/```[\s\S]*?(?:```|$)/g, ' ')
   .replace(/`[^`\n]*`/g, ' ')
   .replace(/https?:\/\/[^\s"'<>`）」』\]。、]+/g, ' ');
-/** かぎ括弧と引用符の中（英語の覚え書きの中に引いた日本語の問いなど） */
+/** かぎ括弧と引用符の中（英語の覚え書きの中に引いた日本語の問いや、日本語の文の中に引いた機器の出力など） */
 const QUOTED = /「[^」\n]*」|『[^』\n]*』|"[^"\n]*"|“[^”\n]*”/g;
 /** 英単語（字だけ。数字・点・下線・スラッシュ・ハイフンでつながったファイル名や番号の一部は数えない）が、空白だけを挟んで3つ以上続く */
 const ENGLISH_WORD = String.raw`(?<![\w./-])[A-Za-z][A-Za-z'’]*(?![\w/-]|\.\w)`;
 const ENGLISH_RUN = new RegExp(String.raw`${ENGLISH_WORD}(?:[ \t]+${ENGLISH_WORD}){2,}`);
 
 /**
- * 英語の覚え書きのようなチャットの文か（testing.md 6.5）。コードの区切りの中と URL を除いて、
- * (1) かぎ括弧と引用符の中も除くと日本語の字がなく、英字がある（「Now run tests.」「K-25 next.」「Ask "ほかにありますか" first.」）か、
+ * 英語の覚え書きのようなチャットの文か（testing.md 6.5）。コードの区切りの中と URL、かぎ括弧と引用符の中を除いて、
+ * (1) 日本語の字がなく、英字がある（「Now run tests.」「K-25 next.」「Ask "ほかにありますか" first.」）か、
  * (2) 英単語が空白を挟んで3つ以上続く（「Next: いつもと違うとき, including K-25 in different form.」）。
- * URL だけの文とコードだけの文は数えない。日本語の文の中のファイル名の並び（main.c, sensor_avg.c, …）は (2) に当たらない
+ * URL だけの文とコードだけの文は数えない。日本語の文の中のファイル名の並び（main.c, sensor_avg.c, …）は (2) に当たらない。
+ * 日本語の文の中に引いた機器の出力（「not installed (pending: reboot to activate)」と出ます。）も (2) に当たらない（外側の EVAL〔改善〕2回目の [524]）
  */
 export function isEnglishNote(text) {
-  const s = stripCodeAndUrls(text);
-  const unquoted = s.replace(QUOTED, ' ');
-  return (!JAPANESE_CHAR.test(unquoted) && /[A-Za-z]/.test(unquoted)) || ENGLISH_RUN.test(s);
+  const unquoted = stripCodeAndUrls(text).replace(QUOTED, ' ');
+  return (!JAPANESE_CHAR.test(unquoted) && /[A-Za-z]/.test(unquoted)) || ENGLISH_RUN.test(unquoted);
+}
+
+/** 段階を並べた矢印 */
+const FLOW_ARROW = /→|⇒|->/g;
+/** 番号付きの行（「1. 」「2) 」など） */
+const NUMBERED_LINE = /^[ \t]*\d+[.)．）][ \t]*\S/gm;
+
+/**
+ * これからの流れを示した文か（testing.md 6.5）：段階を並べた矢印が2つ以上か、番号付きの行が3つ以上ある。
+ * 作る流れ（make-plugin の start.md の3）と直す流れ（change-plugin の change-start.md の7）の示す例は、どちらも「これから、次の順に…。A → B → …」の形。
+ * 言い方（「これから」など）は見ない。最初の問いより前の文は、ほぼ画面の URL と流れだけで、言い方の条件は誤ったヒットをほとんど防がず、
+ * 例と違う言い方の流れを見落とすだけのため
+ */
+export function isFlowText(text) {
+  const s = String(text ?? '');
+  return (s.match(FLOW_ARROW) ?? []).length >= 2 || (s.match(NUMBERED_LINE) ?? []).length >= 3;
 }
 
 /**
@@ -375,6 +446,8 @@ export function isEnglishNote(text) {
  *                    断りは、ツールの結果が失敗（resultType: 'failure'。MCP では isError）で返ったもの
  *   nonJapaneseTexts クリエイターのチャットの文（creator.text）のうち、英語の覚え書きのような文（isEnglishNote）の数と例。
  *                    ユーザーに向けた文は日本語で書くので、英語の覚え書きや内部の番号だけの文がチャットに出たかを見る（合否には入れない）
+ *   flowShown        最初の問いより前のクリエイターのチャットの文（creator.text）に、これからの流れ（isFlowText）を示したか と、その文の seq。
+ *                    作る流れと直す流れの両方で数える（外側の EVAL〔改善〕2回目は、URL だけを示して流れを示さなかった）
  * @param {{ items: Array, toolEvents: Array, state: object|null }} args
  */
 export function countRecorded({ items = [], toolEvents = [], state = null }) {
@@ -399,6 +472,8 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
   const fixedTotal = Object.values(byTool).reduce((n, t) => n + t.fixed, 0);
 
   const nonJapanese = items.filter((i) => i.kind === 'creator.text' && isEnglishNote(i.text));
+  const first = firstQuestionOf(items);
+  const flow = items.find((i) => i.kind === 'creator.text' && (first === undefined || i.seq < first.seq) && isFlowText(i.text));
 
   const pendingItems = ITEMS.filter((i) => state?.items?.[i.key]?.status === 'pending').map((i) => i.name);
   const aiDecisions = (state?.knowledge ?? []).filter((k) => k.source === 'ai_decision' && k.status !== 'dropped').length;
@@ -409,6 +484,7 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
     aiDecisions: { count: aiDecisions },
     recordRefusals: { total: refusedTotal, fixed: fixedTotal, unfixed: refusedTotal - fixedTotal, byTool, samples },
     nonJapaneseTexts: { count: nonJapanese.length, samples: nonJapanese.slice(0, NON_JAPANESE_SAMPLES).map((i) => ({ seq: i.seq, text: String(i.text).trim().slice(0, 80) })) },
+    flowShown: { shown: Boolean(flow), seq: flow?.seq ?? null },
   };
 }
 

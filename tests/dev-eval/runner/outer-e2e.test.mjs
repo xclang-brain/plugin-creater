@@ -58,13 +58,29 @@ function script(log) {
   };
 }
 
+
+/**
+ * 一時フォルダの後始末。止めた後も Agent SDK の子プロセスが少しのあいだ書き込むことがあり、消すのと競って ENOTEMPTY になる。
+ * 少し待って何回か試し、それでも消せなければ残す（OS の一時フォルダなので、試験の合否には入れない）。
+ */
+async function removeTemp(dir) {
+  for (let i = 0; i < 5; i += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+}
+
 test('REQ-015 本物の SDK で通す：質問のツールにユーザー役が答え、文章の問いにも答える。置き換えたクリエイターが読み込まれ、エクステンションの代わりのツールが使える', { skip: SKIP, timeout: 240_000 }, async (t) => {
   const loaded = await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true });
   const log = [];
   const api = await startFakeAnthropic(script(log));
   t.after(() => api.close());
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-'));
-  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  t.after(() => removeTemp(runRoot));
   // 本物の置き換え（クリエイター全体を Claude Code の形にして、claude plugin validate に通す）
   const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
   assert.equal(converted.summary.validate.ok, true);
@@ -132,7 +148,7 @@ test('REQ-015 本物の SDK でも、ユーザー役の答えが道具の呼び�
   const api = await startFakeAnthropic((req) => (req.system.includes('あなたは営業チームのリーダー') ? (base(req), { blocks: [{ type: 'text', text: markup }] }) : base(req)));
   t.after(() => api.close());
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-markup-'));
-  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  t.after(() => removeTemp(runRoot));
   const converted = convertPlugin(REPO_ROOT, path.join(runRoot, 'converted', 'creator'));
   const guarded = guardSdk(sdk, api);
   const record = await runOuterOnce({
@@ -167,7 +183,7 @@ test('REQ-039 サンドボックスの中のコマンドは、cd の後でも、
   });
   t.after(() => api.close());
   const runRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'outer-e2e-cwd-'));
-  t.after(() => fs.rmSync(runRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
+  t.after(() => removeTemp(runRoot));
   const guarded = guardSdk(sdk, api);
   const record = await runOuterOnce({
     loaded, runRoot, sandbox: true, arm: 'without', query: guarded.query, maxExchanges: 1, model: 'claude-opus-5-5',

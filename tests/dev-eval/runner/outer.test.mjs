@@ -257,6 +257,7 @@ test('REQ-015 記録する数は、各回の要約と全体の要約に出る。
     aiDecisions: { count: 2 },
     recordRefusals: { total: 3, fixed: 2, unfixed: 1, byTool: {}, samples: [{ tool: 'progress', seq: 1, reason: '抜き書きがありません' }] },
     nonJapaneseTexts: { count: 2, samples: [{ seq: 7, text: 'Now extract.' }, { seq: 9, text: 'K-25 next.' }] },
+    flowShown: { shown: true, seq: 3 },
   };
   const open = summarizeRecord(record);
   assert.equal(open.counts.questions.total, 5);
@@ -278,7 +279,9 @@ test('REQ-015 記録する数は、各回の要約と全体の要約に出る。
   assert.deepEqual(total.recordRefusals, { total: 4, fixed: 2, unfixed: 2 });
   assert.equal(total.nonJapaneseTexts, 4, '英語の覚え書きのようなチャットの文の数の合計（数のない古い記録は 0 とする）');
   assert.equal(aggregateCounts([open, { ...open, counts: { ...open.counts, nonJapaneseTexts: undefined } }]).nonJapaneseTexts, 2);
-  assert.deepEqual(aggregateCounts([]), { runs: 0, questions: { total: 0, askTool: 0, text: 0 }, askToolCalls: { calls: 0, maxQuestionsPerCall: 0, callsWithMultiple: 0 }, pending: 0, aiDecisions: 0, recordRefusals: { total: 0, fixed: 0, unfixed: 0 }, nonJapaneseTexts: 0 });
+  assert.equal(total.flowShown, 2, '最初の問いより前に、これからの流れを示した回の数');
+  assert.equal(aggregateCounts([open, { ...open, counts: { ...open.counts, flowShown: { shown: false, seq: null } } }, { ...open, counts: { ...open.counts, flowShown: undefined } }]).flowShown, 1, '示さなかった回と、数のない古い記録は数えない');
+  assert.deepEqual(aggregateCounts([]), { runs: 0, questions: { total: 0, askTool: 0, text: 0 }, askToolCalls: { calls: 0, maxQuestionsPerCall: 0, callsWithMultiple: 0 }, pending: 0, aiDecisions: 0, recordRefusals: { total: 0, fixed: 0, unfixed: 0 }, nonJapaneseTexts: 0, flowShown: 0 });
   const all = summarizeAll([record], [open, second]);
   assert.equal(all.counts['with:claude-opus-5-5'].runs, 2);
   assert.equal(all.counts['with:claude-opus-5-5'].questions.total, 10);

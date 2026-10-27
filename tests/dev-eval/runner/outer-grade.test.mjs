@@ -13,6 +13,7 @@ import {
   HAIKU_REQUIRED,
   collectGeneratedFiles,
   countRecorded,
+  exchangesOf,
   gradeAllItemsHeard,
   gradeFirstRun,
   gradeHurryOptions,
@@ -26,6 +27,7 @@ import {
   quoteFound,
   scopes,
   sha256OfBuffer,
+  userRoleFaults,
 } from './outer-grade.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -269,6 +271,119 @@ test('REQ-015 ナレッジごとの記録：聞いた・答えた・組み込ま
   // 聞かれても答えてもいない
   assert.equal(by['man-yen'].asked, false);
   assert.equal(by['man-yen'].verdict, 'not-asked');
+});
+
+// 外側の EVAL（改善）2回目の問いと答え（記録の seq。文は抜き書き）。ナレッジの言葉は、そのときの edl-change の模擬ユーザーのもの
+const RUN2_KNOWLEDGE = [
+  { id: 'cc-toolchain', volunteer: false, markers: { asked: 'コンパイラ|ツールチェーン|arm-linux|gcc|ビルドのやり方|ビルドの仕方|ビルドの決まり', answered: 'arm-linux-gnueabihf' } },
+  { id: 'dp-console', volunteer: false, markers: { asked: 'console|コマンドを打|打ち方|打つ方法|入り方|どうやって入|kxtool', answered: 'console' } },
+  { id: 'log-dbg', volunteer: false, markers: { asked: 'DBG_LOG|dbg_log|ログ関数|ログの出し方|ログをどう出|printf|書き足|ログ追加', answered: 'DBG_LOG' } },
+];
+const RUN2 = {
+  194: { header: 'つまずき', question: '初めての人がつまずくところは、AI もつまずきやすいところです。KX-200 でクロスコンパイルしてボードにデプロイし、ログを取るとき、初めての人がやると、どこで間違えそうですか？', choices: [{ label: '書く', description: 'Other 欄に書く' }, { label: '特にない', description: '思い当たるところはない' }], answer: '書く\n\n1. 開発機の gcc でビルドしてしまう。KX-200 は arm-linux-gnueabihf-gcc でビルドしないと動きません。' },
+  228: { header: 'DBG_LOG', question: '「KX-200 では、dbg_log.h の DBG_LOG でログを出し、printf を直接使わない」という決まりですか？', choices: [{ label: 'このとおり', description: 'この決まりで合っている' }], answer: 'このとおり\n\nKX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出す決まりで、printf は直接使いません。' },
+  397: { header: '進め方', question: '次の順で進めると理解しました。\n1. ソースにログを足す（dbg_log.h の DBG_LOG）\n4. kxtool -d <アドレス> send でボードに送る\n違うところと足りないところを書いてください。', choices: [{ label: 'ない', description: 'このとおり' }, { label: '書く', description: 'Other 欄に書く' }], answer: '書く\n\n2. 手順5で、ボードでコマンドを打つときは `kxtool -d <アドレス> console -c "<コマンド>"` で打ちます。' },
+  411: { header: '守ること', question: 'KX-200 で守らないと困ることは、次のとおりと理解しました。\n- arm-linux-gnueabihf-gcc でビルドする\n\nKX-200 で、ほかに守らないと困ることはありますか？', choices: [{ label: 'ない', description: 'このとおり' }, { label: '書く', description: 'Other 欄に書く' }], answer: '書く\n\n2. ボードでコマンドを打つときは、kxtool -d <アドレス> console -c "<コマンド>" で打ちます。\n\nほかに、KX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出し、printf は直接使わない決まりです。' },
+};
+const run2Exchanges = (seqs) => seqs.map((seq, index) => ({ seq: seq + 1, index, via: 'AskUserQuestion', signal: false, ...RUN2[seq] }));
+const leakedOf = (exchanges) => knowledgeTrace({ persona: { knowledge: RUN2_KNOWLEDGE }, exchanges, scope: { embedded: '', excluded: '', task: '' } }).filter((t) => t.leaked);
+// answered の言葉（arm-linux-gnueabihf）が asked に当たらないナレッジ。問いに示しただけで聞いてはいない、を作るため（RUN2_KNOWLEDGE の3つは、answered の言葉が asked にも当たる）
+const NARROW = { id: 'cc-name', volunteer: false, markers: { asked: 'コンパイラ|ツールチェーン', answered: 'arm-linux-gnueabihf' } };
+const traceNarrow = (exchanges) => knowledgeTrace({ persona: { knowledge: [NARROW] }, exchanges, scope: { embedded: '', excluded: '', task: '' } });
+
+test('REQ-015 聞かれずに話した：前に答えた・クリエイターが示したナレッジを、後の答えでくり返しただけなら、漏れにしない（外側の EVAL〔改善〕2回目の [412]）', () => {
+  // [412] は、確かめで答えた DBG_LOG（[229]）と、進め方の問いへの答えで足した console（[398]）をくり返した。
+  // [195] の arm-linux-gnueabihf は、まだ会話に出ていないナレッジを、つまずきの問い（asked に当たらない）に答えて話した
+  const exchanges = run2Exchanges([194, 228, 397, 411]);
+  const trace = leakedOf(exchanges);
+  assert.deepEqual(trace.map((t) => [t.id, t.leakedAt]), [['cc-toolchain', 0]]);
+  assert.deepEqual(userRoleFaults({ exchanges, trace }), [{ kind: 'leaked', knowledge: 'cc-toolchain', answerIndex: 0 }]);
+  // 前のやり取りがなければ、[412] の DBG_LOG と console は、守ることの問い（どちらの asked にも当たらない）に答えて話したことになる
+  assert.deepEqual(leakedOf(run2Exchanges([411])).map((t) => t.id), ['dp-console', 'log-dbg']);
+  // [411] の問いは arm-linux-gnueabihf-gcc を示している（クリエイターが示した）ので、[412] でくり返しても漏れにしない。
+  // asked が [411] の問いに当たらないナレッジで見る（cc-toolchain の asked は gcc で [411] に当たり、示した経路を確かめられないため）
+  const repeated = run2Exchanges([411]).map((e) => ({ ...e, answer: `${e.answer}\narm-linux-gnueabihf-gcc でビルドします。` }));
+  assert.equal(traceNarrow(repeated)[0].leaked, false);
+  // 問いが示していなければ、同じ答えは漏れ
+  assert.deepEqual(traceNarrow(repeated.map((e) => ({ ...e, question: 'KX-200 で、ほかに守らないと困ることはありますか？' }))).map((t) => [t.leaked, t.leakedAt]), [[true, 0]]);
+});
+
+/** 質問のツールの問いと答えの組（exchangesOf の形） */
+const ask = (index, header, question, choices, answer, shown = '') => ({ seq: index * 2 + 2, index, via: 'AskUserQuestion', signal: false, header, question, choices, answer, shown });
+
+test('REQ-015 聞かれずに話した：前の答えで話した（聞かれて答えた）ナレッジは、問いに示されていなくても、後でくり返して漏れにしない', () => {
+  // 問い0は log-dbg の asked（ログの出し方）に当たり、DBG_LOG（answered）を示していない。答え0で初めて話した
+  const exchanges = [
+    ask(0, 'ログ', 'ログの出し方に決まりはありますか？', [], 'ログは DBG_LOG で出します。'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'printf ではなく DBG_LOG を使います。'),
+  ];
+  assert.deepEqual(leakedOf(exchanges).map((t) => t.id), []);
+  // 答え0が、聞かれていない問いへの漏れなら、漏れは答え0の1つだけ（答え1は、出たナレッジのくり返し）
+  const leakedTwice = [
+    ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ログは DBG_LOG で出します。'),
+    ask(1, 'まとめ', 'ほかにありますか？', [], 'DBG_LOG の決まりだけです。'),
+  ];
+  assert.deepEqual(leakedOf(leakedTwice).map((t) => [t.id, t.leakedAt]), [['log-dbg', 0]]);
+});
+
+test('REQ-015 聞かれずに話した：クリエイターが問い・選択肢・チャットの文・同じ呼び出しのほかの問いに示したナレッジは、出たものとして扱う', () => {
+  // この問いの選択肢の説明に DBG_LOG がある（クリエイターが示した）
+  const shownInChoice = [ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [{ label: 'ない', description: 'DBG_LOG で出す決まりのほかはない' }], '書く\n\nログは DBG_LOG で出します。')];
+  assert.deepEqual(leakedOf(shownInChoice).map((t) => t.id), []);
+  // 前の問いが arm-linux-gnueabihf を示した（asked には当たらない）。答え0では話さず、後のほかの話題の答えで話しても漏れにしない
+  const shownEarlier = [
+    ask(0, '進め方', '次の順で進めると理解しました。1. arm-linux-gnueabihf-gcc でビルドする 2. ボードに送る。よいですか？', [], 'はい'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'arm-linux-gnueabihf-gcc でビルドしないと動きません。'),
+  ];
+  assert.deepEqual(traceNarrow(shownEarlier).map((t) => [t.asked, t.leaked]), [[false, false]]);
+  // 選択肢に示したときも同じ
+  const shownInEarlierChoice = [ask(0, '進め方', 'ビルドはどうしますか？', [{ label: '今のまま', description: 'arm-linux-gnueabihf-gcc でビルドする' }], '今のまま'), shownEarlier[1]];
+  assert.deepEqual(traceNarrow(shownInEarlierChoice).map((t) => t.leaked), [false]);
+  // 前の問いが示していなければ、答え1は漏れ
+  assert.deepEqual(traceNarrow([{ ...shownEarlier[0], question: '次の順で進めると理解しました。よいですか？' }, shownEarlier[1]]).map((t) => [t.leaked, t.leakedAt]), [[true, 1]]);
+  // 前の答えの後のチャットの文（shown）に示した
+  assert.deepEqual(leakedOf([ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ログは DBG_LOG で出します。', '読み取った決まり：ログは DBG_LOG で出す。')]).map((t) => t.id), []);
+  // 前の問いの選択肢が console の asked（打ち方）に当たった（聞いた）だけでは、出たにしない。後のほかの話題の答えで話したら漏れ
+  const choice = [{ label: '打ち方を書く', description: 'Other 欄に書く' }, { label: 'ない', description: 'このとおり' }];
+  const askedInChoice = [
+    ask(0, '進め方', 'ボードでの手順は、次のとおりでよいですか？', choice, 'ない'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ボードでは console -c で打ちます。'),
+  ];
+  assert.deepEqual(leakedOf(askedInChoice).map((t) => [t.id, t.leakedAt]), [['dp-console', 1]]);
+  // 見出しと問いが asked に当たらず、選択肢だけに当たる問いへの答えで話したら、漏れにする（その問いが聞いたかは、見出しと問いで見る）
+  const answeredInChoiceQuestion = [ask(0, '進め方', 'ボードでの手順は、次のとおりでよいですか？', choice, 'ボードでは console -c で打ちます。')];
+  assert.deepEqual(leakedOf(answeredInChoiceQuestion).map((t) => [t.id, t.leakedAt]), [['dp-console', 0]]);
+});
+
+test('REQ-015 会話の記録から：答えの shown は、前の答えの後のチャットの文と、同じ質問のツールの呼び出しのほかの問い', () => {
+  const items = [
+    { seq: 1, kind: 'user.request', text: '直したい' },
+    { seq: 2, kind: 'creator.text', text: '画面：http://127.0.0.1:1/?k=x' },
+    { seq: 3, kind: 'creator.question', header: 'ファイル', question: 'どこにありますか？', options: [], group: 1, groupSize: 1 },
+    { seq: 4, kind: 'user.answer', index: 0, via: 'AskUserQuestion', header: 'ファイル', question: 'どこにありますか？', choices: [], answer: 'ここです' },
+    { seq: 5, kind: 'creator.text', text: '読み取った決まり：ログは DBG_LOG で出す。' },
+    { seq: 6, kind: 'tool.use', owner: 'main', id: 't6', name: 'Read', input: {} },
+    // 1 回の呼び出しに問いが 2 つ（group 2）。答えは問いごとに記録される
+    { seq: 7, kind: 'creator.question', header: '守ること', question: 'ほかに守らないと困ることは？', options: [], group: 2, groupSize: 2 },
+    { seq: 8, kind: 'user.answer', index: 1, via: 'AskUserQuestion', header: '守ること', question: 'ほかに守らないと困ることは？', choices: [], answer: 'ボードでは console -c で打ちます。' },
+    { seq: 9, kind: 'creator.question', header: '打ち方', question: 'ボードでは kxtool console -c で打ちますか？', options: [{ label: 'はい', description: 'console -c で打つ' }], group: 2, groupSize: 2 },
+    { seq: 10, kind: 'user.answer', index: 2, via: 'AskUserQuestion', header: '打ち方', question: 'ボードでは kxtool console -c で打ちますか？', choices: [{ label: 'はい', description: 'console -c で打つ' }], answer: 'はい' },
+    // 続きから始めた後の記録で、group の番号が前と同じでも、チャットの文を挟めば別の呼び出し
+    { seq: 11, kind: 'creator.text', text: '続けます。' },
+    { seq: 12, kind: 'creator.question', header: '次', question: 'ほかには？', options: [], group: 2, groupSize: 1 },
+    { seq: 13, kind: 'user.answer', index: 3, via: 'AskUserQuestion', header: '次', question: 'ほかには？', choices: [], answer: 'ない' },
+  ];
+  const ex = exchangesOf(items);
+  assert.deepEqual(ex.map((e) => e.shown), [
+    '画面：http://127.0.0.1:1/?k=x',
+    '読み取った決まり：ログは DBG_LOG で出す。\n打ち方 ボードでは kxtool console -c で打ちますか？ はい console -c で打つ',
+    '守ること ほかに守らないと困ることは？',
+    '続けます。',
+  ]);
+  // 答え1の console は、同じ呼び出しの後の問い（同時に見えている）が示しているので、漏れにしない
+  assert.deepEqual(leakedOf(ex).map((t) => t.id), []);
+  // 後の問いがなければ、答え1の console は漏れ
+  assert.deepEqual(leakedOf(exchangesOf(items.filter((i) => i.seq < 9))).map((t) => [t.id, t.leakedAt]), [['dp-console', 1]]);
 });
 
 test('REQ-017 たまたまの書き方が入っていない：入っていなければ ok。入力の写しにある手がかりの文字は、組み込みに数えない', () => {
@@ -548,11 +663,36 @@ test('REQ-015 記録する数：日本語が混ざった英語の覚え書きも
     'Copilot CLI を起動し直してください。戻すときは `git revert HEAD` です。',
     '画面：http://127.0.0.1:1/?k=x を開いてください。',
     '0.2.0',
+    // かぎ括弧の中に引いた機器の出力は、英単語の続きに数えない（外側の EVAL〔改善〕2回目の [524]）
+    '初めて入れたアプリなら「not installed (pending: reboot to activate)」と出ます。',
+    'ボードは "bad magic: not a kximg file" と返します。',
   ];
   const items = [...counted, ...skipped].map((text, n) => ({ seq: n + 1, kind: 'creator.text', text }));
   const c = countRecorded({ items, toolEvents: [], state: null }).nonJapaneseTexts;
   assert.equal(c.count, counted.length, JSON.stringify(c.samples));
   assert.deepEqual(c.samples.map((x) => x.seq), counted.map((_, n) => n + 1));
+});
+
+test('REQ-015 記録する数：最初の問いより前のチャットの文に、これからの流れ（矢印2つ以上か、番号付きの行3つ以上）を示したか。合否には入れない', () => {
+  const FLOW = 'これから、次の順に進めます。今使っているスキルやファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 直す前に、まとめを確かめてもらう。';
+  const q = (seq) => ({ seq, kind: 'creator.question', header: 'ファイル', question: 'どこにありますか？', options: [] });
+  const t = (seq, text) => ({ seq, kind: 'creator.text', text });
+  const flowOf = (items) => countRecorded({ items, toolEvents: [], state: null }).flowShown;
+  // URL と同じ文でも、別の文でもよい
+  assert.deepEqual(flowOf([t(1, `plugin-creator の画面: http://127.0.0.1:1/?k=x\n\n${FLOW}`), q(2)]), { shown: true, seq: 1 });
+  assert.deepEqual(flowOf([t(1, 'plugin-creator の画面: http://127.0.0.1:1/?k=x'), t(2, FLOW), q(3)]), { shown: true, seq: 2 });
+  assert.deepEqual(flowOf([t(1, 'これから、次の順にお話を聞きます。\n1. ファイルを教えてもらう\n2. 最近やった1回の流れを聞く\n3. まとめを確かめてもらう'), q(2)]), { shown: true, seq: 1 });
+  // 言い方は見ない（例の書き出し「これから」と違う言い方の流れも数える）
+  assert.deepEqual(flowOf([t(1, '次の順に進めます。A → B → C'), q(2)]), { shown: true, seq: 1 });
+  assert.deepEqual(flowOf([t(1, '流れ：\n1) ファイル\n2) 決まりの確かめ\n3) 直す前の確認'), q(2)]), { shown: true, seq: 1 });
+  // URL だけ（外側の EVAL〔改善〕2回目の [11]）、最初の問いの後、問いの中、矢印が1つ、番号付きの行が2つの文は数えない
+  assert.deepEqual(flowOf([t(1, 'plugin-creator の画面: http://127.0.0.1:1/?k=x'), q(2), t(3, FLOW)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([{ ...q(1), question: FLOW }]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([t(1, 'これから、今のプラグインを読んで → 変えるところだけをお聞きします。'), q(2)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([t(1, 'これから、次の順に進めます。\n1. ファイルを教えてもらう\n2. まとめを確かめてもらう'), q(2)]), { shown: false, seq: null });
+  // 文章の問いも、最初の問いに数える
+  assert.deepEqual(flowOf([{ seq: 1, kind: 'creator.question-text', text: 'どこにありますか？' }, t(2, FLOW)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([]), { shown: false, seq: null });
 });
 
 test('REQ-043 画面の URL：画面を開くツールの返り値の URL が、最初の問いより前のチャットの文にあれば合格', () => {

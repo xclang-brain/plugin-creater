@@ -224,7 +224,7 @@ describe('状態取得ツール（plugin-creator_state）', () => {
 
   test('REQ-043 画面のサーバーを起動できなくても、状態は返す（理由を添える）', async () => {
     const loadUi = async () => {
-      throw new Error('画面の部品（ひな形の ui/server.mjs）を読み込めません：見つかりません');
+      throw new Error('画面の部品（plugin-creator が用意した共通の形の ui/server.mjs）を読み込めません：見つかりません');
     };
     await withRun(
       async (run) => {

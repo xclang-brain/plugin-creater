@@ -329,6 +329,20 @@ function validateUserRoleTests(persona, errors, context) {
       if (!Array.isArray(c?.expect) || c.expect.length < 2 || c.expect.some((id) => !context.ids.has(id))) {
         errors.push(`${label}.expect は、knowledge の id を 2 つ以上並べる`);
       } else for (const id of c.expect) askedMatches(id, c.question, label);
+      // 言わないはずのナレッジ（任意）：聞かれないと話さないもので、expect にないもの
+      if (c && 'forbid' in c) {
+        if (!Array.isArray(c.forbid) || c.forbid.length === 0) errors.push(`${label}.forbid は、knowledge の id を 1 つ以上並べる`);
+        else {
+          for (const id of c.forbid) {
+            const k = context.knowledgeById.get(id);
+            if (!k) errors.push(`${label}.forbid の「${id}」が、knowledge の id にない`);
+            else if (k.volunteer !== false) errors.push(`${label}.forbid の「${id}」は、聞かれないと話さないナレッジ（volunteer が false）ではない`);
+            // 質問が asked に当たると、外側の EVAL では、言っても聞かれずに話したことにならない（見分けられない）
+            else if (isText(c.question) && regexOf(k.markers?.asked)?.test(c.question)) errors.push(`${label} の質問が、forbid のナレッジ「${id}」の markers.asked に当たる`);
+            if (Array.isArray(c.expect) && c.expect.includes(id)) errors.push(`${label}.forbid の「${id}」が、expect にもある`);
+          }
+        }
+      }
     });
   }
   if (!Array.isArray(t.context) || t.context.length === 0) errors.push('userRoleTests.context がない（1 件以上）');
@@ -358,7 +372,9 @@ function validateUserRoleTests(persona, errors, context) {
       if (id) {
         confirmed.add(id);
         covered.add(id);
-        if (context.knowledgeById.get(id).from !== 'file') errors.push(`${label}.knowledge「${id}」は、from が file のナレッジではない`);
+        // 決まりの確かめの形で聞かれるのは、ファイルの決まりと、示すファイルの文への答え方の立場（stance。FORMAT.md 2.5）
+        const k = context.knowledgeById.get(id);
+        if (k.from !== 'file' && k.stance !== true) errors.push(`${label}.knowledge「${id}」は、from が file のナレッジでも、stance のナレッジでもない`);
       }
       if (!isText(c?.question)) errors.push(`${label}.question がない`);
       else if (id) askedMatches(id, c.question, label);

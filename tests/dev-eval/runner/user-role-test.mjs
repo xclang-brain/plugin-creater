@@ -5,7 +5,7 @@
 // 観点（FORMAT.md 2.3）
 //   leak         漏らさない：大まかな質問（generic）に、聞かれないと話さないナレッジを話さない
 //   recall       答える：ナレッジごとの具体的な質問に、そのナレッジを答える。聞き直して答えてよい話し方（reask）は、1 回聞き直した後の答えまでを見る
-//   compound     まとめて答える：いくつかのことを 1 つにまとめた質問に、すべて答える
+//   compound     まとめて答える：いくつかのことを 1 つにまとめた質問に、すべて答える。forbid があれば、そのナレッジは話さない
 //   unknown      作らない：ナレッジにないことは「特に決まっていません」と答える
 //   context      前の話を踏まえる：後の質問が前の答えを指す
 //   options      選択肢で済ませない：選択肢の言葉だけでなく、具体的に答える
@@ -123,7 +123,12 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
       jobs.push(async () => {
         const a = await ask(c.question);
         const missing = c.expect.filter((id) => !regexOf(byId.get(id).markers.answered).test(a));
-        rec.compound.push({ q: c.question, a, missing, ok: missing.length === 0 });
+        // 言わないはずのナレッジ（personas/FORMAT.md 2.3 の forbid）：漏らさないと同じく leak（なければ answered）で見る
+        const forbidden = (c.forbid ?? []).filter((id) => {
+          const m = byId.get(id).markers;
+          return regexOf(m.leak ?? m.answered).test(a);
+        });
+        rec.compound.push({ q: c.question, a, missing, forbidden, ok: missing.length === 0 && forbidden.length === 0 });
       });
     }
   }
