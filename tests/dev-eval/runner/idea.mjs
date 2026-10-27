@@ -119,9 +119,15 @@ export function currentPillar(dataDir) {
   return m ? Number(m[1]) : null;
 }
 
-export function isFinished(dataDir) {
+/**
+ * この実行の回が「終わり」になったか。前の実行から写した回（runsBefore）は、続きの試験（resume）のときだけ見る。
+ * 写した回が終わっていても、この実行の回ができていなければ終わりではない。
+ */
+export function isFinished(dataDir, { runsBefore = [], resume = false } = {}) {
   const run = latestRun(dataDir);
-  return Boolean(run) && /状態[：:]\s*終わり/.test(readIf(path.join(run, 'state.md')));
+  if (!run) return false;
+  if (!resume && runsBefore.includes(path.basename(run))) return false;
+  return /状態[：:]\s*終わり/.test(readIf(path.join(run, 'state.md')));
 }
 
 async function main() {
@@ -246,7 +252,7 @@ async function main() {
         stopped = { reason: LIMIT_PATTERN.test(String(turn.result.result ?? '')) ? 'usage_limit' : turn.result.subtype, message: String(turn.result.result ?? '').slice(0, 300) };
         break;
       }
-      if (isFinished(dataDir)) { stopped = { reason: 'finished' }; break; }
+      if (isFinished(dataDir, { runsBefore, resume: o.expectResume })) { stopped = { reason: 'finished' }; break; }
       if (o.stopAtPillar !== null && (currentPillar(dataDir) ?? 0) >= o.stopAtPillar) { stopped = { reason: 'stopped_at_pillar', pillar: currentPillar(dataDir) }; break; }
       const question = (turn.result.result ?? '').trim() || turn.lastText.trim() || '（発言がありませんでした）';
       const notes = unreadNotes.splice(0).filter((t) => t !== question);

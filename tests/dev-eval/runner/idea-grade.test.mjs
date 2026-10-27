@@ -214,6 +214,8 @@ test('部品：組の行、数の移り方、候補と外した番号、今の�
   assert.deepEqual(candidatesOf('外した番号：なし').excluded, []);
   const { dataDir } = finishedRun();
   assert.equal(currentPillar(dataDir), 6);
+  assert.equal(isFinished(dataDir, { runsBefore: ['20261027-1000'] }), false);
+  assert.equal(isFinished(dataDir, { runsBefore: ['20261027-1000'], resume: true }), true);
 });
 
 test('部品：URL、本質の番号、知識・経験の項目、同時の数、終わりの見分け', () => {
