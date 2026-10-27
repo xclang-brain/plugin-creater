@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,14 +12,16 @@ import { fileURLToPath } from 'node:url';
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runOuterOnce } from './outer-run.mjs';
+import { conversationOf, createRecorder, findGeneratedPlugins, placePersonaFiles, preexistingPlugins, PREEXISTING_PLUGINS_FILE, readConvertedAgentModel, runGeneratedStages, runOuterOnce, USER_ROLE_FAILED } from './outer-run.mjs';
+import { CALL_RETRIES, MARKUP_RETRIES } from './user-role.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
 const PERSONAS = path.join(here, '..', 'personas');
 const SAMPLE_PARTS = path.join(REPO, 'tests', 'creator', 'scaffold', 'sample', 'parts');
 const SCAFFOLD = path.join(REPO, 'skills', 'make-plugin', 'scripts', 'scaffold.py');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `outer-run-${prefix}-`));
+const tmp = (prefix) => tempDir(`outer-run-${prefix}`);
 const SETTABLE = ITEMS.filter((i) => !i.computed && !i.rebuildOnly).map((i) => i.name);
 const T = (name) => `mcp__plugin-creator__${name}`;
 
@@ -293,6 +294,162 @@ test('REQ-015 流れ：利用枠の上限のエラーで止まったら、理由
   fs.rmSync(runRoot, { recursive: true, force: true });
 });
 
+test('testing.md 5章 実行の後に、クリエイターのホームの .cache（Playwright の Chromium など）を消す。keepHomes なら残す。開発者が答えるときも残す', async () => {
+  const runRoot = tmp('cache');
+  const homes = [];
+  const sdk = createFakeSdk({
+    userRole: () => 'x',
+    agent: async (ctx) => {
+      const home = ctx.options.env.HOME;
+      homes.push(home);
+      fs.mkdirSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200', 'chrome'), 'x');
+      return '終わりました。';
+    },
+  });
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1 });
+  assert.ok(homes[0].includes('agent-home'));
+  assert.equal(fs.existsSync(path.join(homes[0], '.cache')), false);
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1, keepHomes: true });
+  assert.equal(fs.existsSync(path.join(homes[1], '.cache', 'ms-playwright')), true);
+  // 開発者が答えるときは、セッションの記録（.claude）と同じく残す（続きから始めたときに、クリエイターが入れたブラウザーがなくならないように）
+  const developer = () => ({ answers: [], signals: [], cost: 0, answer: async () => ({ index: 0, answer: 'x', rawAnswer: 'x', signal: false, choices: [] }) });
+  await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 1, answerer: 'human', createAnswerer: developer });
+  assert.equal(fs.existsSync(path.join(homes[2], '.cache', 'ms-playwright')), true);
+});
+
+test('REQ-039 1・2段目：2段目の不合格がすべてディスクの誤り（ENOSPC・EIO）なら、記録の stage2 に diskErrorsOnly を付ける。全件で見る（記録の failures は 10 件まで）', async () => {
+  const plugin = tmp('stages');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  const runWith = async (reasons) => {
+    const report = { ok: false, resultsFile: 'tests/results/latest.json', stages: [{ id: 'stage1', status: 'passed', failures: [] }, { id: 'stage2', status: 'failed', counts: { failed: reasons.length }, failures: reasons.map((reason, i) => ({ test: `t${i}`, reason })) }] };
+    fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), `import sys\nsys.stdout.write(${JSON.stringify(JSON.stringify(report))})\nsys.exit(1)\n`);
+    return runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none') });
+  };
+  const enospc = Array.from({ length: 12 }, (_, i) => `ENOSPC: no space left on device, mkdtemp '/tmp/adapter-plugin-${i}'`);
+  const disk = await runWith(enospc);
+  assert.equal(disk.stage1.ok, true);
+  assert.equal(disk.stage2.ok, false);
+  assert.equal(disk.stage2.diskErrorsOnly, true);
+  assert.equal(disk.stage2.failures.length, 10);
+  assert.equal(disk.stage1.diskErrorsOnly, undefined);
+  // 11 件目にほかの理由があれば、付けない
+  const mixed = await runWith([...enospc.slice(0, 10), 'AssertionError: 期待と違う']);
+  assert.equal(mixed.stage2.diskErrorsOnly, undefined);
+});
+
+test('testing.md 6.5 1・2段目：1段目の不合格がすべてディスクの誤りなら stage1 に、run.py がディスクの誤りで結果を出せずに落ちたら diskError を付ける', async () => {
+  const plugin = tmp('stages-disk');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  const runPy = (body) => {
+    fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), body);
+    return runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none') });
+  };
+  const report = { ok: false, stages: [{ id: 'stage1', status: 'failed', failures: [{ test: '構造の検査', reason: '結果を読めなかった: OSError: [Errno 28] No space left on device' }] }, { id: 'stage2', status: 'passed', failures: [] }] };
+  const stage1 = await runPy(`import sys\nsys.stdout.write(${JSON.stringify(JSON.stringify(report))})\nsys.exit(1)\n`);
+  assert.equal(stage1.stage1.diskErrorsOnly, true);
+  assert.equal(stage1.stage2.diskErrorsOnly, undefined);
+  // 結果のファイルを書けずに落ちた（Python の例外の文が標準エラー出力の最後に出る）
+  const crashed = await runPy("import sys\nsys.stderr.write('Traceback (most recent call last):\\nOSError: [Errno 28] No space left on device\\n')\nsys.exit(1)\n");
+  assert.equal(crashed.skipped, true);
+  assert.equal(crashed.diskError, true);
+  assert.match(crashed.reason, /結果を読めない/);
+  // ほかの理由で落ちたときは付けない
+  const other = await runPy("import sys\nsys.stderr.write('SyntaxError: invalid syntax\\n')\nsys.exit(1)\n");
+  assert.equal(other.skipped, true);
+  assert.equal(other.diskError, undefined);
+});
+
+test('testing.md 5章 1・2段目：run.py には1回ごとの一時フォルダを TMPDIR で渡し、終わったら消す（生成プラグインの試験の残りを OS の一時フォルダにためない）', async () => {
+  const plugin = tmp('stages-tmpdir');
+  const tmpRoot = tmp('stages-tmproot');
+  fs.mkdirSync(path.join(plugin, 'tests'), { recursive: true });
+  // 試験が残すもの（Playwright の playwright-artifacts-* など）を TMPDIR に作り、その場所を結果に書く
+  fs.writeFileSync(path.join(plugin, 'tests', 'run.py'), [
+    'import json, os, sys',
+    "t = os.environ['TMPDIR']",
+    "os.makedirs(os.path.join(t, 'playwright-artifacts-abc'))",
+    "open(os.path.join(t, 'playwright-artifacts-abc', 'x'), 'w').write('x')",
+    "sys.stdout.write(json.dumps({'ok': True, 'resultsFile': t, 'stages': [{'id': 'stage1', 'status': 'passed'}, {'id': 'stage2', 'status': 'passed'}]}))",
+    '',
+  ].join('\n'));
+  const r = await runGeneratedStages(plugin, { nodeModules: path.join(plugin, 'none'), tmpRoot });
+  assert.equal(r.ok, true);
+  assert.equal(path.dirname(r.resultsFile), tmpRoot);
+  assert.match(path.basename(r.resultsFile), /^dev-eval-stages-/);
+  assert.equal(fs.existsSync(r.resultsFile), false, '終わったら消す');
+  assert.deepEqual(fs.readdirSync(tmpRoot), []);
+});
+
+test('REQ-015 ユーザー役の答えが道具の呼び出しの形のまま直らなければ、クリエイターに渡さず、試験の仕組みの失敗（user_role_failed）で会話を止める', async () => {
+  const runRoot = tmp('markup');
+  const markup = `${'<'}invoke name="Read">\n${'<'}parameter name="file_path">資料/先週の週報.docx${'<'}/parameter>\n${'<'}/invoke>`;
+  let userCalls = 0;
+  const seen = [];
+  const sdk = createFakeSdk({
+    userRole: () => { userCalls += 1; return markup; },
+    agent: async (ctx) => {
+      seen.push(ctx.turn);
+      const answers = await ctx.ask([{ question: '先週の週報には、何が書いてありますか？', header: '週報', options: [{ label: '答えを書く', description: '' }], multiSelect: false }]);
+      seen.push(`answered:${JSON.stringify(answers)}`);
+      return '分かりました。';
+    },
+  });
+  const record = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 3 });
+  assert.equal(record.stopped.reason, USER_ROLE_FAILED);
+  assert.match(record.stopped.message, /道具の呼び出しの形でした/);
+  assert.equal(userCalls, MARKUP_RETRIES + 1);
+  // クリエイターは答えを受け取らず、次の手番も始まらない。答えの記録も残らない
+  assert.deepEqual(seen, [1]);
+  assert.equal(sdk.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(record.items.filter((i) => i.kind === 'user.answer').length, 0);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
+test('REQ-015 文章の問いへのユーザー役の答えが道具の呼び出しの形のまま直らなくても、同じく user_role_failed で止める', async () => {
+  const runRoot = tmp('markup-text');
+  const sdk = createFakeSdk({
+    userRole: () => `${'<'}function_calls>`,
+    agent: async () => 'ファイルはどこにありますか？',
+  });
+  const record = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: sdk.query, maxExchanges: 3 });
+  assert.equal(record.stopped.reason, USER_ROLE_FAILED);
+  assert.equal(sdk.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(record.items.filter((i) => i.kind === 'user.answer').length, 0);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
+test('REQ-015 ユーザー役の呼び出しの失敗は呼び直す。呼び直しても失敗したら user_role_failed、利用枠の上限なら呼び直さずに usage_limit で止める', async () => {
+  const runRoot = tmp('call-failed');
+  const ask = async (ctx) => {
+    await ctx.ask([{ question: '成果物は何ですか？', header: '成果物', options: [{ label: '答えを書く', description: '' }], multiSelect: false }]);
+    return '分かりました。';
+  };
+  // 1回だけ失敗する（空の答え）：呼び直した答えで続く
+  let n1 = 0;
+  const once = createFakeSdk({ userRole: () => ((n1 += 1) === 1 ? '' : '成果物は weekly_report.md です'), agent: ask });
+  const r1 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: once.query, maxExchanges: 1 });
+  assert.notEqual(r1.stopped.reason, USER_ROLE_FAILED);
+  assert.equal(r1.items.filter((i) => i.kind === 'user.answer')[0].answer, '成果物は weekly_report.md です');
+  assert.equal(r1.userRole.answers[0].callRetries, 1);
+  // ふつうの失敗が続く：CALL_RETRIES 回呼び直した後、user_role_failed で止め、クリエイターに渡さない
+  let n2 = 0;
+  const failing = createFakeSdk({ userRole: () => { n2 += 1; return new Error('API Error: 500 Internal server error'); }, agent: ask });
+  const r2 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: failing.query, maxExchanges: 3 });
+  assert.equal(r2.stopped.reason, USER_ROLE_FAILED);
+  assert.match(r2.stopped.message, /ユーザー役の呼び出しに失敗しました/);
+  assert.equal(n2, CALL_RETRIES + 1);
+  assert.equal(failing.calls.filter((c) => c.kind === 'agent').length, 1);
+  assert.equal(r2.items.filter((i) => i.kind === 'user.answer').length, 0);
+  // 利用枠の上限：呼び直さずに usage_limit で止める（比べる EVAL の全体が止まる）
+  let n3 = 0;
+  const limited = createFakeSdk({ userRole: () => { n3 += 1; return new Error("You've hit your usage limit · resets at 3am"); }, agent: ask });
+  const r3 = await runOuterOnce({ ...baseOptions(runRoot), loaded: loadedWeekly, query: limited.query, maxExchanges: 3 });
+  assert.equal(r3.stopped.reason, 'usage_limit');
+  assert.equal(n3, 1);
+  fs.rmSync(runRoot, { recursive: true, force: true });
+});
+
 test('REQ-015 サンドボックスの道具がなければ、始めずに断る（黙って外で動かさない）', async () => {
   const runRoot = tmp('sandbox');
   await assert.rejects(
@@ -340,7 +497,12 @@ test('REQ-020 生成までたどる：本物の記録のツールで承認まで
     },
     agent: async (ctx) => {
       const work = ctx.options.cwd;
-      await ctx.say('お話を聞きます。');
+      // 画面を開き、返った URL を最初の問いより前にチャットに示す（REQ-043。make-plugin の始まりの手番の2）
+      const opened = await ctx.tool(T('open'), {});
+      assert.equal(opened.isError, false, opened.text);
+      const url = /https?:\/\/\S+/.exec(opened.text)?.[0];
+      assert.ok(url, opened.text);
+      await ctx.say(`お話を聞きます。決まったことは plugin-creator の画面で見られます：${url}`);
       await ctx.ask([{ question: '成果物と、週報に書くことを教えてください', header: '成果物', options: [{ label: 'A', description: '' }, { label: 'B', description: '' }] }]);
       await ctx.tool(T('progress'), { stage: '始まり' });
       await ctx.tool(T('progress'), { items: SETTABLE.map((item) => ({ item, status: '聞いた', quote: '成果物は weekly_report.md です' })) });
@@ -407,6 +569,7 @@ test('REQ-020 生成までたどる：本物の記録のツールで承認まで
   assert.equal(byId['all-items-heard'].ok, true, byId['all-items-heard'].detail);
   assert.equal(byId['no-generation-before-approval'].ok, true, byId['no-generation-before-approval'].detail);
   assert.equal(byId['one-plugin-generated'].ok, true);
+  assert.equal(byId['screen-url-shown'].ok, true, byId['screen-url-shown'].detail);
   assert.equal(byId['embedded:output'].ok, true, byId['embedded:output'].detail);
   assert.equal(byId['task:output'].ok, true, byId['task:output'].detail);
   assert.equal(byId['main-model'].ok, true, byId['main-model'].detail);

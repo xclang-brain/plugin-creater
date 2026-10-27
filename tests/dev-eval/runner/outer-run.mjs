@@ -7,6 +7,9 @@
 //   4. 会話の全文と採点を、記録（record.json）に残す（6.6）。
 // 開発者が答えるとき（6.7）は、ユーザー役の代わりに、中継（human-relay.mjs）を作る関数を引数 createAnswerer で渡し、answerer を human にする。
 // 止まった実行を続きから始めるとき（outer.mjs --resume）は、引数 resume で、前の実行のフォルダとクリエイターへの最初の発言を渡す。
+// 改善の模擬ユーザー（persona.kind が change。testing.md 6章）では、題材のリポジトリを作業フォルダに置き（outer-change.mjs）、
+// 問いに答える直前・記録のツールのたび・手番の終わりに、直すプラグインのフォルダの HEAD と git status を記録する（repo.snapshot）。
+// 終わりは「承認の後に HEAD が進み、直すフォルダに変更が残っていない」で見分け、直したフォルダの 1・2段目を動かして、outer-grade-change.mjs で採点する。
 // 前の会話の記録は、クリエイターのセッションの記録から読み直す（outer-resume.mjs）。
 // 実際のモデルを使うのは、query（Agent SDK）を渡さないときだけ。試験では偽物の query を渡す。
 // 統括がユーザーの承認をとってから、実際のモデルで動かすこと。
@@ -17,11 +20,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DISK_ERROR, diskErrorsOnly, removeAgentCache, removeSessionRecords } from './disk.mjs';
 import { makeQueryOptions, sandboxStatus } from './isolation.mjs';
 import { readConversionReport } from './model-map.mjs';
-import { collectGeneratedFiles, gradeOuter } from './outer-grade.mjs';
+import { collectGeneratedFiles, gradeOuter, personaFileHashes } from './outer-grade.mjs';
+import { changeEnded, changePaths, changeRecordOf, collectChangeRepo, manifestOf, placeWorkspace, readBaseline, takeBaseline, takeSnapshot } from './outer-change.mjs';
+import { gradeChange } from './outer-grade-change.mjs';
 import { createCreatorToolkit, REPO_ROOT } from './creator-tools.mjs';
-import { createUserRole, loadQuery } from './user-role.mjs';
+import { createUserRole, LIMIT_PATTERN, loadQuery } from './user-role.mjs';
 import { conversationOf, createMessageRecorder, createRecorder, questionItemData } from './outer-record.mjs';
 import { abandonedQuestionOf, checkReplayAgainstRelay, findSessionTranscript, NO_TEXT_QUESTION, readResumes, replayTranscript, resumeQuestionItem, runDirsOf, writeResumes } from './outer-resume.mjs';
 
@@ -45,8 +51,8 @@ export const DEFAULTS = Object.freeze({
 /** 開発者が答えるときに、クリエイターの Claude Code に足す環境変数（testing.md 6.7）。待ちの期限なしは 0（Claude Code 2.1.310 で、0 以下を期限なしに扱う） */
 export const HUMAN_ENV = Object.freeze({ ENABLE_PROMPT_CACHING_1H: '1', CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS: '0' });
 
-/** 利用枠の上限のエラーの文（agent-sdk-eval.md） */
-export const LIMIT_PATTERN = /hit your (session|usage|weekly)? ?limit|usage limit|rate limit|limit reached|resets at|quota/i;
+/** 利用枠の上限のエラーの文（agent-sdk-eval.md）。ユーザー役の呼び出しでも使うので、user-role.mjs が持つ */
+export { LIMIT_PATTERN };
 
 // ---- 置き換え --------------------------------------------------------------------------------------------
 
@@ -127,24 +133,31 @@ export function preexistingPlugins(runDir, workDir, { resume = false } = {}) {
  * 生成プラグインの 1・2段目の入口（tests/run.py）を動かす。Playwright（1.56.1）は、このリポジトリの開発の試験の道具から、
  * 生成プラグインの tests/node_modules に一時的に写す（run.py は ESM で import するので、全体に入れたものは見つからない）。
  * 写しは終わったら消す（根の外を指すシンボリックリンクは 1段目で不合格になるので、写す）。
+ * run.py には、1回ごとの一時フォルダ（tmpRoot の下の dev-eval-stages-*）を TMPDIR で渡し、終わったら消す。生成プラグインの試験の残り
+ * （画面の試験が chrome・msedge を試して見つからないときに Playwright が残す playwright-artifacts-*・playwright_chromiumdev_profile-* など）を、
+ * OS の一時フォルダにためないためである（testing.md 5章）。
+ * 段階の不合格がすべてディスクの誤りなら、その段階に diskErrorsOnly を、run.py がディスクの誤りで結果を出せずに落ちたら diskError を付ける
+ * （採点は、環境で止まったとして点数に入れない。outer-grade.mjs の environmentNotGraded。testing.md 6.5）。
  */
-export async function runGeneratedStages(pluginDir, { python = 'python3', env = process.env, timeoutMs = DEFAULTS.stageTimeoutMs, nodeModules = path.join(DEV_EVAL, 'node_modules') } = {}) {
+export async function runGeneratedStages(pluginDir, { python = 'python3', env = process.env, timeoutMs = DEFAULTS.stageTimeoutMs, nodeModules = path.join(DEV_EVAL, 'node_modules'), tmpRoot = os.tmpdir() } = {}) {
   const runPy = path.join(pluginDir, 'tests', 'run.py');
   if (!fs.existsSync(runPy)) return { skipped: true, reason: 'tests/run.py がない（1・2段目の入口がない）' };
   const target = path.join(pluginDir, 'tests', 'node_modules');
   const copied = [];
-  for (const name of ['playwright', 'playwright-core']) {
-    const from = path.join(nodeModules, name);
-    const to = path.join(target, name);
-    if (fs.existsSync(from) && !fs.existsSync(to)) {
-      fs.mkdirSync(target, { recursive: true });
-      fs.cpSync(from, to, { recursive: true });
-      copied.push(to);
-    }
-  }
-  const childEnv = { ...env };
-  if (!childEnv.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/pw-browsers')) childEnv.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
+  let tmp = null;
   try {
+    for (const name of ['playwright', 'playwright-core']) {
+      const from = path.join(nodeModules, name);
+      const to = path.join(target, name);
+      if (fs.existsSync(from) && !fs.existsSync(to)) {
+        fs.mkdirSync(target, { recursive: true });
+        copied.push(to); // 写す途中で落ちても（ENOSPC など）、写しかけを消す
+        fs.cpSync(from, to, { recursive: true });
+      }
+    }
+    tmp = fs.mkdtempSync(path.join(tmpRoot, 'dev-eval-stages-'));
+    const childEnv = { ...env, TMPDIR: tmp };
+    if (!childEnv.PLAYWRIGHT_BROWSERS_PATH && fs.existsSync('/opt/pw-browsers')) childEnv.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
     const result = await new Promise((resolve) => {
       const child = spawn(python, ['tests/run.py', '--json'], { cwd: pluginDir, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
@@ -159,21 +172,39 @@ export async function runGeneratedStages(pluginDir, { python = 'python3', env = 
     try {
       report = JSON.parse(result.stdout);
     } catch {
-      return { skipped: true, reason: `tests/run.py の結果を読めない（終了コード ${result.code}）：${(result.stderr || result.stdout).slice(-300)}` };
+      // 結果のファイル（tests/results/latest.json）を書けずに落ちたときなど。理由がディスクの誤りなら印を付ける（道具が足りないときは付けない）
+      const disk = DISK_ERROR.test(`${result.stderr}\n${result.stdout}`);
+      return { skipped: true, reason: `tests/run.py の結果を読めない（終了コード ${result.code}）：${(result.stderr || result.stdout).slice(-300)}`, ...(disk ? { diskError: true } : {}) };
     }
     if (result.code === 2) return { skipped: true, reason: `道具が足りなくて止まった：${(report.tools?.missing ?? []).map((m) => m.name ?? m.id ?? m).join('、')}`, report };
     const byId = (id) => (report.stages ?? []).find((s) => s.id === id);
     const summary = (s) => (s ? { ok: s.status === 'passed', status: s.status, counts: s.counts ?? null, failures: (s.failures ?? []).slice(0, 10), failedTests: (s.tests ?? []).filter((t) => t.status === 'failed').slice(0, 10) } : { ok: false, status: 'missing' });
-    return { skipped: false, ok: report.ok === true, exitCode: result.code, stage1: summary(byId('stage1')), stage2: summary(byId('stage2')), resultsFile: report.resultsFile ?? null, durationSeconds: report.durationSeconds ?? null };
+    // 段階の不合格がすべてディスクの誤り（ENOSPC・EIO）なら、印を付ける（採点は、環境で止まったとして点数に入れない。testing.md 6.5）。
+    // 記録の failures は 10 件までなので、ここで全件を見る
+    const marked = (id) => {
+      const stage = byId(id);
+      return { ...summary(stage), ...(diskErrorsOnly(stage) ? { diskErrorsOnly: true } : {}) };
+    };
+    return {
+      skipped: false, ok: report.ok === true, exitCode: result.code, stage1: marked('stage1'), stage2: marked('stage2'),
+      resultsFile: report.resultsFile ?? null, durationSeconds: report.durationSeconds ?? null,
+    };
   } finally {
     for (const dir of copied) fs.rmSync(dir, { recursive: true, force: true });
     try {
+      if (tmp) fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 3 });
       if (fs.existsSync(target) && fs.readdirSync(target).length === 0) fs.rmdirSync(target);
     } catch {
-      // 残っていてもよい
+      // 残っていてもよい（止めた子プロセスがまだ書いているときなど）
     }
   }
 }
+
+/** 会話が終わったとき（終わりの理由）。生成プラグインができた、または改善の模擬ユーザーで直すフォルダを直した・新しいフォルダに作った */
+export const FINISHED_REASONS = Object.freeze(['generated', 'generated_without_approval', 'changed', 'changed_without_approval', 'generated_new_folder']);
+
+/** ユーザー役が答えられずに会話を止めたときの終わりの理由（試験の仕組みの失敗。クリエイターの誤りではない） */
+export const USER_ROLE_FAILED = 'user_role_failed';
 
 /** 続きから始めたとき、読み直しが確かでなければ採点しない観点（会話の全体にもとづく観点） */
 export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generation-before-approval']);
@@ -200,6 +231,7 @@ export const CONVERSATION_GRADES = Object.freeze(['all-items-heard', 'no-generat
  *   省くとユーザー役（createUserRole）。開発者が答えるときは、中継（human-relay.mjs の createHumanRelay）を作る関数を渡す（testing.md 6.7）
  * @param {'user-role'|'human'} [o.answerer] 答える人の種類。human なら、記録・採点・内側の EVAL を開発者が答える形にする（testing.md 6.7）
  * @param {number} [o.innerRuns] 内側の EVAL の、あり・なしそれぞれの回数（省くと 1）
+ * @param {string} [o.fixturesDir] 改善の模擬ユーザーの題材の置き場所（試験用。省くと tests/dev-eval/fixtures）
  * @param {{ runDir: string, prompt: string, sessionId?: string, relayDir?: string, fromRelayId?: string|null, abandoned?: string[] }} [o.resume]
  *   止まった実行を続きから始める（開発者が答えるときだけ。testing.md 6.7）。runDir は前の実行のフォルダ（その中の work などを使い、
  *   示すファイルは置き直さない）。prompt は、続けるセッションに送る最初の発言。sessionId を省くと、agent-home のセッションの記録から探す。
@@ -240,6 +272,8 @@ export async function runOuterOnce(o) {
   }
   let { persona } = loaded;
   const { files: personaFiles } = loaded;
+  // 改善の模擬ユーザー（testing.md 6章）。直すプラグインのフォルダを直す（新しいフォルダに作らない）
+  const change = persona.kind === 'change';
   if (!persona.styles?.[styleName]) throw new Error(`話し方「${styleName}」は、模擬ユーザー ${persona.id} にありません。`);
   if (sandbox) {
     const status = (o.sandboxCheck ?? sandboxStatus)();
@@ -261,9 +295,23 @@ export async function runOuterOnce(o) {
   }
   const dirs = runDirsOf(runDir);
   for (const d of [dirs.work, dirs.agentHome, dirs.copilotHome, dirs.userHome]) fs.mkdirSync(d, { recursive: true });
-  if (!resume) placePersonaFiles(dirs.work, personaFiles);
+  let baseline = null;
+  if (!resume) {
+    // role が repo のファイルは、題材のリポジトリの初めのコミットの前に置く（placeWorkspace）
+    placePersonaFiles(dirs.work, change ? personaFiles.filter((f) => f.role !== 'repo') : personaFiles);
+    if (change) {
+      const placed = placeWorkspace(dirs.work, persona, loaded.dir, { ...(o.fixturesDir ? { fixturesDir: o.fixturesDir } : {}), originDir: path.join(runDir, 'origin.git') });
+      baseline = takeBaseline(runDir, { workDir: dirs.work, persona, originDir: placed.originDir, now: clock.now });
+    }
+  } else if (change) baseline = readBaseline(runDir);
+  // 改善の模擬ユーザーの直すフォルダも、始める前からあるプラグインに入る（新しいフォルダの見分けに使う）。直すフォルダのマニフェストが
+  // 直下にないとき（.claude-plugin/ など）は、始める前の記録に入らないが、直して直下に plugin.json ができても、新しいフォルダに数えない
   const preexisting = preexistingPlugins(runDir, dirs.work, { resume: Boolean(resume) });
-  const generatedPlugins = () => findGeneratedPlugins(dirs.work).filter((d) => !preexisting.includes(path.relative(dirs.work, d).split(path.sep).join('/')));
+  const targetRel = change ? path.relative(dirs.work, changePaths(dirs.work, persona).targetDir).split(path.sep).join('/') : null;
+  const generatedPlugins = () => findGeneratedPlugins(dirs.work)
+    .map((d) => ({ d, rel: path.relative(dirs.work, d).split(path.sep).join('/') }))
+    .filter(({ rel }) => !preexisting.includes(rel) && rel !== targetRel)
+    .map(({ d }) => d);
   // 続きから始めるときのセッションの番号と、その記録（ここで探せなければ、何も動かさずに断る）
   const transcript = resume ? findSessionTranscript(dirs.agentHome, resume.sessionId) : null;
 
@@ -279,6 +327,13 @@ export async function runOuterOnce(o) {
   let sessionId = transcript?.sessionId;
   let stopped = null;
   const messageRecorder = createMessageRecorder({ recorder, models, subagents, skills });
+  /** 改善の模擬ユーザーで、直すフォルダの HEAD と git status を記録する（承認の前に変わっていないかを見る材料） */
+  const snapshot = (reason) => {
+    if (!change) return null;
+    const { at, ...s } = takeSnapshot({ workDir: dirs.work, persona, reason, now: clock.now });
+    recorder.add('repo.snapshot', s);
+    return { at, ...s };
+  };
 
   // クリエイターの置き換え（置き換えた版と、エクステンションの代わりの MCP サーバー）
   let converted = null;
@@ -308,7 +363,11 @@ export async function runOuterOnce(o) {
         sessionId: `outer-${path.basename(runDir)}`,
         clock,
         pluginRoot: creatorRoot,
-        onEvent: (e) => { e.seq = recorder.next(); },
+        onEvent: (e) => {
+          // 記録のツールが動く前のスナップショットを、呼び出しより前の順番にする（承認の呼び出しの直前の状態が、承認の前に入る）
+          if (e.type === 'tool.call') snapshot(`tool:${e.tool}`);
+          e.seq = recorder.next();
+        },
       })
     : null;
   if (toolkit && report) {
@@ -337,6 +396,28 @@ export async function runOuterOnce(o) {
     // 人は、質問と一緒にこれを読む。「上のまとめで…」のような質問に答えるために、次の質問と一緒にユーザー役へ渡す（testing.md 6.1）
     const unreadNotes = [];
 
+    // ユーザー役が答えられなかった（呼び直しても呼び出しが失敗した、答えが道具の呼び出しの形のまま。user-role.mjs）ときは、試験の仕組みの
+    // 失敗としてこの会話を止める（理由 user_role_failed）。質問のツールの答えの失敗は、そのままだと Agent SDK がクリエイターに誤りとして渡し、
+    // クリエイターが本物の利用者では起きない問題に対応してしまうので、手番も中断する（testing.md 6.1）。
+    // ユーザー役が利用枠の上限に当たったときは、クリエイターと同じく理由を usage_limit にする（比べる EVAL の全体を止めるため。outer.mjs の runPlan）
+    let userRoleFailure = null;
+    let turnAbort = null;
+    const answerOrStop = async (...args) => {
+      try {
+        return await userRole.answer(...args);
+      } catch (error) {
+        userRoleFailure ??= error;
+        turnAbort?.abort();
+        throw error;
+      }
+    };
+    const userRoleStop = () => {
+      const message = String(userRoleFailure?.message ?? userRoleFailure).slice(0, 300);
+      // user-role.mjs は利用枠の上限を code で知らせる。code のない誤り（別の答えるものなど）は、文で見る
+      const limited = userRoleFailure?.code ? userRoleFailure.code === 'usage_limit' : LIMIT_PATTERN.test(message);
+      return { reason: limited ? 'usage_limit' : USER_ROLE_FAILED, message };
+    };
+
     // 質問のツール（AskUserQuestion）への答え。ユーザー役が答える
     let askGroup = 0; // 質問のツールの呼び出しの番号。1 回の呼び出しの問いの欄の数を数えるため（testing.md 6.5、hearing.md 4.1）
     const onQuestion = async (questions) => {
@@ -346,13 +427,14 @@ export async function runOuterOnce(o) {
       // 質問の直前の文の処理が、この呼び出しより後になることがあるので、1 回譲ってから受け取る
       await new Promise((resolve) => setImmediate(resolve));
       let notes = unreadNotes.splice(0);
+      snapshot('question');
       for (const q of questions) {
         const item = questionItemData(q, group, questions.length);
         const { options } = item;
         recorder.add('creator.question', item);
         // 1 回の呼び出しの問いの欄の番号と数は、別の答えるもの（開発者の中継）にだけ渡す（ユーザー役の答えの記録を変えないため）
         const meta = { header: q.header ?? '', multiSelect: Boolean(q.multiSelect), ...(createAnswerer ? { group, groupSize: questions.length } : {}) };
-        const entry = await userRole.answer(q.question, options, 'AskUserQuestion', meta, notes);
+        const entry = await answerOrStop(q.question, options, 'AskUserQuestion', meta, notes);
         notes = []; // 1 回の呼び出しに問いの欄が複数あるときも、前の文は最初の欄にだけ付ける（履歴に入るため）
         answers[q.question] = entry.answer;
         recorder.add('user.answer', { index: entry.index, via: 'AskUserQuestion', question: q.question, header: q.header ?? '', choices: entry.choices, answer: entry.answer, rawAnswer: entry.rawAnswer, signal: entry.signal });
@@ -367,6 +449,7 @@ export async function runOuterOnce(o) {
     async function runTurn(prompt, resumeSessionId) {
       turnNumber += 1;
       const abortController = new AbortController();
+      turnAbort = abortController;
       const onAbort = () => abortController.abort();
       signal?.addEventListener('abort', onAbort, { once: true });
       const options = makeQueryOptions({
@@ -419,7 +502,11 @@ export async function runOuterOnce(o) {
 
     const readState = () => (toolkit ? toolkit.readState() : null);
     /** 生成プラグインができて手番が終わったら、会話は終わり。承認（段階「生成」）の記録がないまま作られたときは、その理由で終える（採点で落ちる） */
-    const finishedReason = () => {
+    const finishedReason = (turnSnapshot) => {
+      if (change) {
+        const newPlugins = generatedPlugins().map((d) => path.relative(dirs.work, d).split(path.sep).join('/'));
+        return changeEnded({ baseline, snapshot: turnSnapshot, approved: arm !== 'with' || readState()?.stage === 'generate', newPlugins });
+      }
       if (generatedPlugins().length === 0) return null;
       return arm === 'with' && readState()?.stage !== 'generate' ? 'generated_without_approval' : 'generated';
     };
@@ -477,6 +564,8 @@ export async function runOuterOnce(o) {
         if (signal?.aborted) { stopped = { reason: 'interrupted' }; break; }
         onProgress({ phase: 'turn', n: exchanges + 1 });
         const turn = await runTurn(prompt, sessionId);
+        if (userRoleFailure) { stopped = userRoleStop(); break; }
+        const turnSnapshot = snapshot('turn-end');
         const text = (turn.result?.result ?? '').trim() || turn.lastText.trim();
         if (text) lastCreatorText = text;
         if (!turn.result) { stopped = { reason: 'no_result' }; break; }
@@ -484,14 +573,14 @@ export async function runOuterOnce(o) {
           stopped = { reason: LIMIT_PATTERN.test(`${turn.result.result ?? ''}`) ? 'usage_limit' : turn.result.subtype ?? 'error', message: String(turn.result.result ?? '').slice(0, 300) };
           break;
         }
-        const finished = finishedReason();
+        const finished = finishedReason(turnSnapshot);
         if (finished) { stopped = { reason: finished }; break; }
         // 文章で質問して手番を終えたときも、ユーザー役の答えを次の発言として返す（6.1）
         const question = text || NO_TEXT_QUESTION;
         recorder.add('creator.question-text', { text: question, turn: turn.number });
         // 手番の最後の文は問いそのもの。それより前に書いた文だけを、前の文として渡す
         const notes = unreadNotes.splice(0).filter((n) => n !== question.trim());
-        const entry = await userRole.answer(question, [], 'text', {}, notes);
+        const entry = await answerOrStop(question, [], 'text', {}, notes);
         recorder.add('user.answer', { index: entry.index, via: 'text', question, header: '', choices: [], answer: entry.answer, rawAnswer: entry.rawAnswer, signal: entry.signal });
         toolkit?.recordPrompt(entry.answer);
         onProgress({ phase: 'answer', via: 'text', index: entry.index });
@@ -499,28 +588,39 @@ export async function runOuterOnce(o) {
       }
       if (!stopped) stopped = { reason: 'max_exchanges' };
     } catch (error) {
-      stopped = { reason: 'exception', message: error?.message ?? String(error) };
+      stopped = userRoleFailure ? userRoleStop() : { reason: 'exception', message: error?.message ?? String(error) };
     }
     // 開発者の答えを待つ間などに中断されたら、生成まで進んでいなければ、中断として終える（ユーザー役の AI のときは、これまでどおり）
-    if (createAnswerer && signal?.aborted && !['generated', 'generated_without_approval'].includes(stopped?.reason)) {
+    if (createAnswerer && signal?.aborted && !FINISHED_REASONS.includes(stopped?.reason)) {
       stopped = { reason: 'interrupted', ...(stopped?.reason ? { detail: stopped.reason } : {}) };
     }
     userRole.setStatus?.({ phase: 'grading' });
+    // クリエイターが入れたもの（.cache/ms-playwright の Chromium など。1回で約 1GB）は、1・2段目を動かす前に消す。実行ごとにたまって、
+    // ディスクをあふれさせないため（testing.md 5章）。開発者が答えるときは、セッションの記録（.claude）と同じく残す（続きから始めたときに、
+    // クリエイターが入れたブラウザーがなくなって、入れ直しを開発者に聞くことがないように）
+    if (!keepHomes && !human) removeAgentCache(dirs.agentHome);
 
     // ---- 生成プラグインの採点 ----
     const plugins = generatedPlugins();
-    const pluginDir = plugins.length === 1 ? plugins[0] : null;
+    // 改善の模擬ユーザーでは、直したフォルダを採点する。材料（リポジトリと直したファイル）は、1・2段目の結果のファイルが混ざる前に集める
+    const changeRepo = change
+      ? collectChangeRepo({ workDir: dirs.work, persona, baseline, newPlugins: plugins.map((d) => path.relative(dirs.work, d).split(path.sep).join('/')) })
+      : null;
+    const changedDir = change ? changePaths(dirs.work, persona).targetDir : null;
+    // 直すフォルダのマニフェストは、直下のほかに .plugin/・.github/plugin/・.claude-plugin/ にあってもよい（エクステンションと同じ探し方）
+    const pluginDir = change ? (manifestOf(changedDir) ? changedDir : null) : plugins.length === 1 ? plugins[0] : null;
     let generatedFiles = null;
     let stages = null;
     let innerResult = null;
     let innerRecord = null;
     if (pluginDir) {
-      generatedFiles = collectGeneratedFiles(pluginDir);
+      if (!change) generatedFiles = collectGeneratedFiles(pluginDir);
       onProgress({ phase: 'stages' });
       try {
         stages = await runStages(pluginDir, {});
       } catch (error) {
-        stages = { skipped: true, reason: `1・2段目を動かせなかった：${error.message}` };
+        // Playwright の写しや一時フォルダを作れなかったときなど。理由がディスクの誤りなら印を付ける（採点しない。testing.md 6.5）
+        stages = { skipped: true, reason: `1・2段目を動かせなかった：${error.message}`, ...(DISK_ERROR.test(String(error?.message ?? error)) ? { diskError: true } : {}) };
       }
       if (inner && stages?.stage1?.ok) {
         onProgress({ phase: 'inner' });
@@ -538,7 +638,8 @@ export async function runOuterOnce(o) {
             if (innerRecord?.taskProblems?.length) innerResult.taskProblems = innerRecord.taskProblems;
           }
         } catch (error) {
-          innerResult = { withScore: null, error: error?.message ?? String(error) };
+          // code（disk_low など）も残す。ディスクの空きが足りずに始めなかったときは、環境で止まったとして採点しない（outer-grade.mjs の environmentNotGraded）
+          innerResult = { withScore: null, error: error?.message ?? String(error), ...(error?.code ? { code: error.code } : {}) };
         }
       }
     }
@@ -554,36 +655,54 @@ export async function runOuterOnce(o) {
     const notGraded = replay && !replay.reliable
       ? Object.fromEntries(CONVERSATION_GRADES.map((id) => [id, `続きから始めた実行で、前の会話を確かに読み直せなかったので採点しない（${replay.problems.slice(0, 3).join(' / ')}）`]))
       : {};
+    // 内側の EVAL の結果を点数に入れるのは、点数が出たとき。ディスクの空きが足りずに始めなかったとき（disk_low）も渡し、環境で止まったとして
+    // 採点しなかった観点に残す。開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
+    const innerForGrading = !human && innerResult && (innerResult.withScore !== null || innerResult.code === 'disk_low') ? innerResult : null;
     const modelUse = {
       requested: model,
       main: models.main ?? [],
       subagents: Object.entries(subagents).map(([id, s]) => ({ type: s.type, models: models[id] ?? [] })),
       lowCost: converted ? readConvertedAgentModel(converted, 'worker') : null,
     };
-    const grading = gradeOuter({
-      persona,
-      personaFiles,
-      items: recorder.items,
-      toolEvents,
-      state,
-      generatedCount: plugins.length,
-      generatedFiles,
-      stages,
-      // 開発者が答えるとき、内側の EVAL の結果は点数に入れない（クリエイターが作った基準でクリエイターを採点しない。testing.md 6.7）
-      inner: !human && innerResult && innerResult.withScore !== null ? innerResult : null,
-      userSignals: userRole.signals,
-      modelUse,
-      model,
-      arm,
-      answerer: answererKind,
-      notGraded,
-    });
+    const grading = change
+      ? gradeChange({
+          persona,
+          record: { skills: skills.filter(Boolean) },
+          state,
+          items: recorder.items,
+          toolEvents,
+          stages,
+          repo: changeRepo,
+          personaFiles: personaFileHashes(personaFiles),
+          modelUse,
+          model,
+          arm,
+          answerer: answererKind,
+          inner: innerForGrading,
+        })
+      : gradeOuter({
+          persona,
+          personaFiles,
+          items: recorder.items,
+          toolEvents,
+          state,
+          generatedCount: plugins.length,
+          generatedFiles,
+          stages,
+          inner: innerForGrading,
+          userSignals: userRole.signals,
+          modelUse,
+          model,
+          arm,
+          answerer: answererKind,
+          notGraded,
+        });
     if (human) grading.innerSeparate = innerResult;
 
     const finishedAt = new Date(clock.now()).toISOString();
     const record = {
       schema: 'outer-record/1',
-      persona: { id: persona.id, title: persona.title, experience: persona.experience },
+      persona: { id: persona.id, title: persona.title, experience: persona.experience, ...(change ? { kind: 'change' } : {}) },
       style: styleName,
       arm,
       answerer: human ? 'human' : 'user-role',
@@ -618,6 +737,7 @@ export async function runOuterOnce(o) {
       issues: toolkit ? toolkit.issues : [],
       userRole: { answers: userRole.answers, signals: userRole.signals },
       generated: { plugins: plugins.map((p) => path.relative(dirs.work, p)), files: (generatedFiles ?? []).map((f) => ({ rel: f.rel, size: f.size, sha256: f.sha256 })) },
+      ...(change ? { change: changeRecordOf(changeRepo, recorder.items) } : {}),
       stages,
       inner: innerResult,
       grading,
@@ -629,9 +749,7 @@ export async function runOuterOnce(o) {
 
     await toolkit?.shutdown();
     // 開発者が答えるときは、クリエイターのセッションの記録を消さない（止まったときに、続きから始められるように）
-    if (!keepHomes && !human) {
-      fs.rmSync(path.join(dirs.agentHome, '.claude'), { recursive: true, force: true });
-    }
+    if (!keepHomes && !human) removeSessionRecords(dirs.agentHome);
     finishInfo = {
       reason: stopped?.reason ?? null,
       ...(stopped?.message ? { message: stopped.message } : {}),
@@ -641,6 +759,8 @@ export async function runOuterOnce(o) {
       failed: grading.verdict.failed,
       // 採点しなかった観点（合否は残りの観点だけで決めた。続きから始めて、前の会話を確かに読み直せなかったときなど）
       ...(grading.notGraded?.length ? { notGraded: grading.notGraded.map((g) => g.id) } : {}),
+      // 環境（ディスクがいっぱい）の影響を受けた回（outer-grade.mjs の environmentOf）
+      ...(grading.environment ? { environment: grading.environment } : {}),
       inner: innerResult,
       recordFile: file,
     };

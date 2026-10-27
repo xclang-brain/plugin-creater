@@ -43,6 +43,7 @@ export const LEFT_WORDS = Object.freeze([
   'MCP',
   'エクステンション',
   '記録のツール',
+  'ひな形',
 ]);
 
 const ALL_NAMES = [STAGES, ITEMS, ITEM_STATUSES, KNOWLEDGE_KINDS, KNOWLEDGE_STATUSES, KNOWLEDGE_SOURCES, ASSET_STATUSES, OSS_KINDS, OSS_CHOICES]

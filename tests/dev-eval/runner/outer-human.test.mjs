@@ -4,7 +4,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +15,7 @@ import { decideSettings } from './inner-settings.mjs';
 import { buildHumanLoaded, main, readRequestFile } from './outer.mjs';
 import { fixedAnswerRole, runInnerForGenerated } from './outer-inner.mjs';
 import { HUMAN_ENV, runOuterOnce } from './outer-run.mjs';
+import { diskOk, tempDir } from './temp-dirs.mjs';
 import { loadPersona } from '../personas/validate.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -29,7 +29,7 @@ const PLUGIN_TASK = {
   settings: { maxIterations: 3, task: { week: '2026-W42' } },
   criteria: [{ id: 'C-01', text: '見出し「今週やったこと」がある', grading: 'program', check: { type: 'contains', file: 'out/*.md', text: '今週やったこと' } }],
 };
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `outer-human-${prefix}-`));
+const tmp = (prefix) => tempDir(`outer-human-${prefix}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const T = (name) => `mcp__plugin-creator__${name}`;
 const REQUEST = '週報を作るプラグインを作ってください。\n毎週金曜に、部長に出します。';
@@ -252,6 +252,31 @@ test('REQ-015 ユーザー役の AI で答える形は、これまでどおり�
   assert.ok(record.grading.trace.length > 0);
 });
 
+test('testing.md 6.5 ディスクがいっぱいで止まったもの（1・2段目を動かせなかった ENOSPC、内側の EVAL の disk_low）は、環境で止まったとして採点しない', async (t) => {
+  const root = tmp('env');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const loaded = await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true });
+  const run = (o) => runOuterOnce({
+    loaded, runRoot: path.join(root, 'runs'), sandbox: false, convert: fakeConvert, query: createFakeSdk({ userRole: () => '成果物は weekly_report.md です', agent: creatorScript() }).query,
+    model: 'claude-opus-5-5', maxExchanges: 5, ...o,
+  });
+  // Playwright の写しを作れなかった（1・2段目の入口を動かす前）
+  const stages = await run({ runStages: async () => { throw Object.assign(new Error("ENOSPC: no space left on device, copyfile 'a' -> 'b'"), { code: 'ENOSPC' }); } });
+  assert.equal(stages.stages.diskError, true);
+  assert.deepEqual(stages.grading.notGraded.filter((g) => g.environment).map((g) => g.id), ['stage1', 'stage2']);
+  assert.equal(stages.grading.verdict.partial, true);
+  // 内側の EVAL が、ディスクの空きが足りずに始めなかった（inner.mjs の InnerEvalError disk_low）
+  const inner = await run({ runStages: okStages, inner: async () => { throw Object.assign(new Error('ディスクの空きが足りないので始めません'), { code: 'disk_low' }); } });
+  assert.deepEqual([inner.inner.withScore, inner.inner.code], [null, 'disk_low']);
+  assert.ok(!inner.grading.grades.some((g) => g.id === 'inner-deliverable'));
+  assert.deepEqual(inner.grading.notGraded.map((g) => [g.id, g.environment]), [['inner-deliverable', true]]);
+  assert.deepEqual(inner.grading.environment.notGraded, ['inner-deliverable']);
+  // ほかの理由で内側の EVAL が落ちたときは、これまでどおり点数に入れない（採点しなかった観点にも残さない）
+  const other = await run({ runStages: okStages, inner: async () => { throw new Error('置き換えに失敗しました'); } });
+  assert.ok(!other.grading.grades.some((g) => g.id === 'inner-deliverable'));
+  assert.equal(other.grading.notGraded, undefined);
+});
+
 test('REQ-015 開発者が答える：中断されたら、答えを待つのをやめて interrupted で終わり、採点と記録の後に中継の状態を stopped にする', async (t) => {
   const root = tmp('abort');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -363,6 +388,7 @@ test('REQ-015 入口（outer.mjs --human）：始まりの 1 行と starting の
   });
   const code = await main(['--human', '--request-file', requestFile, '--file', `${memo}=資料/memo.txt`, '--no-sandbox', '--out', out, '--converted', converted, '--max-exchanges', '5'], {
     query: sdk.query,
+    diskCheck: diskOk,
     runOptions: { runStages: okStages, convert: fakeConvert },
   });
   for (let i = 0; i < 400 && !atEnd; i += 1) await sleep(5); // 偽の開発者が終わりの状態を見るまで

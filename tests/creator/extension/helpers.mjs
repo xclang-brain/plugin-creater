@@ -221,6 +221,101 @@ export async function readyToConfirm(run) {
   writeDraft(run.cwd);
 }
 
+// ---- 今のプラグインを直す（plugin-creator_change）ための道具 ---------------------------------------------
+
+/** 直すプラグインの決まりの一覧（組み立てのスクリプトが書く tests/knowledge.json の形。item は日本語の名前） */
+export const PLUGIN_KNOWLEDGE = Object.freeze([
+  { id: 'K-01', kind: 'other', item: '進め方', text: 'ビルドの前にソースのフォルダで git pull する' },
+  { id: 'K-02', kind: 'criterion', item: '合否の決め方', text: '機器のログに AVG=25 と出れば合格' },
+  { id: 'K-03', kind: 'other', item: '決まった書き方やルール', text: 'ログは logs/device.log に保存する' },
+  { id: 'K-04', kind: 'criterion', item: '合否の決め方', text: 'dbg_log.h を変えていなければ合格' },
+  { id: 'K-05', kind: 'other', item: 'いつもと違うとき', text: 'デプロイできないときは、機器を1回 reboot してやり直す' },
+]);
+
+/** 直すプラグインの作業の定義（合否の基準の番号の対応だけを使う） */
+export const PLUGIN_TASK = Object.freeze({
+  name: '組み込みのデバッグ',
+  maxIterationsDefault: 3,
+  criteria: [
+    { id: 'C-01', text: '機器のログに AVG=25 と出れば合格', knowledge: 'K-02' },
+    { id: 'C-02', text: 'dbg_log.h を変えていなければ合格', knowledge: 'K-04' },
+  ],
+  workers: [{ agent: 'worker', label: 'デバッグする係' }],
+  settings: [],
+  displays: [],
+});
+
+/** 直すプラグインの EVAL の課題（tests/eval/<番号>/eval.json） */
+export const PLUGIN_EVALS = Object.freeze([{ id: 'T-01', prompt: 'inputs/src のプログラムの平均値の誤りを直してください。', criteria: [{ id: 'C-01' }, { id: 'C-02' }], inputs: ['inputs/src/main.c'] }]);
+
+/**
+ * 直すプラグインのフォルダを、作業フォルダの下に作り、その絶対パスを返す。
+ * knowledge・task を null にすると、そのファイルを置かない（クリエイターが作っていないプラグイン）。
+ * @param {string} cwd 作業フォルダ
+ * @param {object} [options]
+ */
+export function writePluginFolder(
+  cwd,
+  { name = 'edl-sample', dir = name, knowledge = PLUGIN_KNOWLEDGE, removed = null, version = '0.1.0', manifestAt = 'plugin.json', task = PLUGIN_TASK, evals = PLUGIN_EVALS, extraFiles = {} } = {},
+) {
+  const folder = path.join(cwd, dir);
+  const put = (rel, value) => {
+    const file = path.join(folder, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  };
+  put(manifestAt, { name, ...(version === null ? {} : { version }), description: '直すための見本のプラグイン' });
+  if (knowledge !== null) put('tests/knowledge.json', knowledge);
+  if (removed !== null) put('tests/knowledge-removed.json', removed);
+  if (task !== null) put(`com.github.copilot/extensions/${name}/task.json`, task);
+  for (const e of evals ?? []) {
+    put(`tests/eval/${e.id}/eval.json`, { prompt: e.prompt, inputs: e.inputs ?? [], criteria: e.criteria ?? [] });
+    for (const input of e.inputs ?? []) put(`tests/eval/${e.id}/${input}`, 'int main(void) { return 0; }\n');
+  }
+  for (const [rel, value] of Object.entries(extraFiles)) put(rel, value);
+  return folder;
+}
+
+/**
+ * plugin-creator_change を呼ぶ（直すプラグインのフォルダがなければ作る）。{ folder, text } を返す。
+ * overrides.plugin は writePluginFolder の options、overrides.args は change の引数に足すもの。
+ */
+export async function startChange(run, { plugin = {}, args = {} } = {}) {
+  const folder = writePluginFolder(run.cwd, plugin);
+  const text = await run.call('change', { folder: path.relative(run.cwd, folder), wants: ['KX-200 のクロスコンパイルとデプロイの手順を組み込みたい'], ...args });
+  return { folder, text };
+}
+
+/** 直すときの、変えるところに関わらない聞くこと（「変えないので聞かない」にするもの） */
+export const UNCHANGED_ITEMS = ['作業の目的', '頼む場面と言い方', '受け取るもの', '成果物', '守らないと困ること', '開始前に設定したいこと', '実行中に見たいこと', '終わった後に見たい結果と見せ方'];
+
+/**
+ * 直す前の確認の手前まで進める：引き継いだ決まりをすべて「決まった」にし、変えるところに関わらない聞くことを「変えないので聞かない」に、
+ * ほかを「聞いた」にする。足した決まり（合否の決め方）を1件記録し、作業の定義の案を書く。足した決まりの番号を返す。
+ */
+export async function readyToConfirmChange(run, { carried = PLUGIN_KNOWLEDGE.map((k) => k.id) } = {}) {
+  if (carried.length) await run.call('record', { knowledge: carried.map((id) => ({ id, status: '決まった', quote: '一覧のとおりです' })) });
+  await run.call('progress', answers(UNCHANGED_ITEMS, '変えないので聞かない'));
+  await run.call('progress', answers(SETTABLE_ITEMS.filter((n) => !UNCHANGED_ITEMS.includes(n))));
+  const added = await run.call('record', { knowledge: [knowledge({ kind: '合否の決め方', item: '合否の決め方', text: 'kxtool で 192.168.7.2 に送っていれば合格', quote: '送り先は 192.168.7.2 です' })] });
+  writeDraft(run.cwd);
+  return /K-\d+/.exec(added)[0];
+}
+
+/** 直す前の確認の引数（引き継いだ課題と、変えたところを試す課題、引き継ぐことと変わること、版） */
+export function changeConfirmArgs(ids, overrides = {}) {
+  return confirmArgs({
+    knowledgeIds: ids,
+    evalTasks: [
+      { prompt: PLUGIN_EVALS[0].prompt, inputs: [{ path: 'tests/eval/T-01/inputs/src/main.c', provisional: true }], criteria: ['K-02', 'K-04'], settings: { task: { week: 'W42' } } },
+      { prompt: 'KX-200 にデプロイして、機器のログを保存してください。', criteria: [ids[ids.length - 1]], settings: { task: { week: 'W42' } } },
+    ],
+    rebuild: { keep: ['ログを入れて原因を探す流れ', '引き継いだ決まり K-01〜K-05'], change: ['クロスコンパイルとデプロイのルールのスキルを足す', '土台を今の版に上げる（上書きされるファイル：tests/run.py）'] },
+    version: '0.2.0',
+    ...overrides,
+  });
+}
+
 /** 始めて、fn を動かし、終わったら（失敗しても）片付ける */
 export async function withRun(fn, options) {
   const run = await startForTest(options);
@@ -253,6 +348,9 @@ export const INTERNAL_SYMBOLS = [
   'generate',
   'pending',
   'asked',
+  'unchanged',
+  'carried',
+  'replaces',
 ];
 
 export function internalSymbolsIn(text) {

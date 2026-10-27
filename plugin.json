@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "plugin-creator",
-  "version": "0.1.0",
-  "description": "仕事のやり方と決まりを対話で聞き取り、それを組み込んだ Copilot CLI のプラグインを作って試験する。",
+  "version": "0.2.0",
+  "description": "仕事のやり方と決まりを対話で聞き取り、それを組み込んだ Copilot CLI のプラグインを作って試験する。今あるプラグインを直して、機能を足したり設計を変えたりもする。",
   "repository": "https://github.com/xclang-brain/plugin-creator"
 }

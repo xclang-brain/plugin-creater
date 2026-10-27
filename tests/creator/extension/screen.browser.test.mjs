@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { after, describe, test } from 'node:test';
 
-import { answerEverything, confirmArgs, knowledge, readyToConfirm, tempDir, withRun, writeDraft, writeRealInput } from './helpers.mjs';
+import { answerEverything, changeConfirmArgs, confirmArgs, knowledge, readyToConfirm, readyToConfirmChange, startChange, tempDir, withRun, writeDraft, writeRealInput } from './helpers.mjs';
 import { leftWordsIn } from './words.mjs';
 
 // ---- Playwright を見つける（見つからなければ、この試験を飛ばす） ------------------------------------
@@ -289,6 +289,96 @@ describe('クリエイターの画面（ブラウザー）', { skip: skipReason 
         assert.match(text, /変わること.*画面を足す/);
       } finally {
         await view.close();
+      }
+    });
+  });
+
+  test('REQ-056 今のプラグインを直すとき、「変えないので聞かないこと」の欄が、まだ聞いていないこと・聞いたことの欄と別に出る。直すプラグインも見出しの下に出る', async () => {
+    await withRun(async (run) => {
+      const url = await openScreenUrl(run);
+      const view = await openPage(url);
+      try {
+        await startChange(run);
+        await run.call('progress', { items: [{ item: '作業の目的', status: '変えないので聞かない', quote: '目的は今のまま' }, { item: '実行中に見たいこと', status: '変えないので聞かない', quote: '画面も今のまま' }, { item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
+        await view.page.locator('#skipped li').first().waitFor(WAIT);
+        assert.match(await view.page.locator('#skipped h3').textContent(), /変えないので聞かないこと（2）/);
+        assert.deepEqual((await view.page.locator('#skipped li').allTextContents()).map((t) => t.trim()), ['作業の目的変えないので聞かない', '実行中に見たいこと変えないので聞かない']);
+        const notAsked = (await view.page.locator('#not-asked li').allTextContents()).join('、');
+        assert.ok(!notAsked.includes('作業の目的'), 'まだ聞いていないことに出ている');
+        assert.deepEqual((await view.page.locator('#asked li').allTextContents()).map((t) => t.trim()), ['進め方聞いた']);
+        assert.ok(!(await view.page.locator('#other-items').textContent()).includes('実行中に見たいこと'), 'そのほかの聞くことに出ている');
+        const head = await view.page.locator('#change-target').textContent();
+        assert.match(head, /直すプラグイン：edl-sample（今の版 0\.1\.0）/);
+        assert.match(head, /変えたいこと：KX-200 のクロスコンパイルとデプロイの手順を組み込みたい/);
+        assert.deepEqual(view.problems, []);
+        await shot(view.page, 'creator-change-items');
+      } finally {
+        await view.close();
+      }
+    });
+  });
+
+  test('REQ-056 plugin-creator が作っていないプラグインを直すときは、すべて聞くので、「変えないので聞かないこと」の欄を出さない', async () => {
+    await withRun(async (run) => {
+      const url = await openScreenUrl(run);
+      const view = await openPage(url);
+      try {
+        await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+        await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
+        await view.page.locator('#asked li').first().waitFor(WAIT);
+        assert.match(await view.page.locator('#change-target').textContent(), /直すプラグイン：edl-sample（今の版 0\.1\.0）/);
+        assert.equal(await view.page.locator('#skipped').count(), 0);
+        assert.deepEqual(view.problems, []);
+      } finally {
+        await view.close();
+      }
+    });
+  });
+
+  test('REQ-057 REQ-044 直す前の確認で、直すフォルダ、版（今 → 直した後）、引き継ぐことと変わること（下見の結果を含む）、決まりの足す・直す・外すが見られる', async () => {
+    await withRun(async (run) => {
+      const url = await openScreenUrl(run);
+      const view = await openPage(url);
+      try {
+        await startChange(run);
+        await run.call('record', { knowledge: [{ id: 'K-05', text: '機器を1回 reboot し、だめなら人に伝える', quote: '今はこう' }] }); // K-06
+        await run.call('record', { knowledge: [{ id: 'K-03', status: '外した', quote: 'もう要らない' }] });
+        const added = await readyToConfirmChange(run, { carried: ['K-01', 'K-02', 'K-04'] }); // K-07
+        const change = [
+          'クロスコンパイルとデプロイのやり方を足す',
+          '共通の土台を今の版に上げます。上書きされるファイル：tests/run.py',
+          '形式を移したために読まれなくなり消すファイル：.github/plugin/plugin.json',
+          '土台と重なる機能（エージェントごとの思考の深さの設定）は、消さずに残します',
+          '本物の機器に送る手順そのものは試せません。試験では、手元の擬似の機器に送ります',
+        ];
+        await run.call('confirm', changeConfirmArgs(['K-01', 'K-02', 'K-04', 'K-06', added], { rebuild: { keep: ['ログを入れて原因を探す流れ'], change } }));
+        await view.page.locator('#confirm-change').waitFor(WAIT);
+        assert.equal(await view.page.locator('#s-confirm h2').textContent(), '直す前の確認で示すもの');
+        const block = await view.page.locator('#confirm-change').textContent();
+        assert.match(block, /直すフォルダ：.*edl-sample/);
+        assert.match(await view.page.locator('#confirm-version').textContent(), /版：今 0\.1\.0 → 直した後 0\.2\.0/);
+        assert.deepEqual(await view.page.locator('#confirm-knowledge-changes li').allTextContents(), [`足す：${added}`, '直す（新しい番号に付け直す）：K-05 → K-06', '外す：K-03']);
+        const rebuild = await view.page.locator('#confirm-rebuild').textContent();
+        assert.match(rebuild, /引き継ぐこと.*ログを入れて原因を探す流れ/);
+        for (const text of change) assert.ok(rebuild.includes(text), `変わることに出ていない：${text}`);
+        assert.match(await view.page.locator('#s-confirm').textContent(), /直すときに、引き継ぐことと変わること/);
+        const criteriaRows = await view.page.locator('#s-confirm table').nth(1).evaluateAll((tables) => [...tables[0].querySelectorAll('tbody tr')].map((r) => r.cells[0].textContent));
+        assert.deepEqual(criteriaRows, ['C-01', 'C-02', 'C-03']);
+        const words = await screenWords(view.page);
+        assert.deepEqual(leftWordsIn(words), [], words);
+        assert.deepEqual(view.problems, []);
+        await shot(view.page, 'creator-change-confirm');
+      } finally {
+        await view.close();
+      }
+      // スマートフォンの幅でも、長いフォルダの場所で横にはみ出さない
+      const phone = await openPage(url, { width: 375, height: 800 });
+      try {
+        await phone.page.locator('#confirm-change').waitFor(WAIT);
+        const overflow = await phone.page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+        assert.ok(overflow <= 0, `横に ${overflow}px はみ出している`);
+      } finally {
+        await phone.close();
       }
     });
   });

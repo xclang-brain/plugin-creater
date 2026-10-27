@@ -181,8 +181,23 @@ const parameters = {
           ),
           description: describe('confirm', 'rebuild'),
         },
+        version: str('confirm', 'version', { minLength: 1 }),
       },
       ['knowledgeIds', 'behavior', 'taskPath', 'evalTasks'],
+    ),
+
+  change: () =>
+    object(
+      {
+        folder: str('change', 'folder', { minLength: 1 }),
+        wants: {
+          type: 'array',
+          minItems: 1,
+          description: describe('change', 'wants'),
+          items: { type: 'string', minLength: 1 },
+        },
+      },
+      ['folder', 'wants'],
     ),
 
   results: () =>
@@ -222,6 +237,8 @@ const DEFS = [
   { name: 'results', caller: 'main', skipPermission: true },
   { name: 'doc_text', caller: 'reader', skipPermission: true },
   { name: 'issue', caller: 'main', skipPermission: false },
+  // 今のプラグインを直す記録を作る（BLUEPRINT 5 C1）。今までのツールの並びを変えないよう、最後に足す
+  { name: 'change', caller: 'main', skipPermission: true },
 ];
 
 export const TOOL_DEFS = Object.freeze(

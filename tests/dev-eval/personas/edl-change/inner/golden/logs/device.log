@@ -1,0 +1,25 @@
+kxinstall /tmp/sensor.kximg
+kxinstall: verified /tmp/sensor.kximg (KX2I v1, 423864 bytes, crc32=0x0e445d18)
+kxinstall: staged sensor; it becomes active after reboot
+kx200# reboot
+The system is going down NOW!
+Requesting system reboot
+
+U-Boot 2019.07-kx200 (Jan 01 2019 - 00:00:00 +0000)
+DRAM:  256 MiB
+Starting kernel ...
+
+[    0.000000] Booting Linux on physical CPU 0x0
+[    0.001000] Linux version 4.14.98-kx200 (builder@kx200) #1 PREEMPT
+[    1.201000] kx200: rootfs mounted (ro), /opt/app (rw), /tmp (tmpfs, cleared)
+[    1.501000] kx200: eth0 192.168.7.2/24 up, tftpd on udp/69, console on ttyS0 115200 8N1
+[    1.511000] kxapp: activated sensor
+
+KX-200 Linux 1.4.2 kx200 ttyS0
+
+kx200 login: root (auto login)
+kx200# kxapp run sensor
+[DBG] sensor module start
+[DBG] AVG=25
+[kxapp] sensor exited (status=0)
+kx200# 

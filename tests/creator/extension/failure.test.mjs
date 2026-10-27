@@ -32,6 +32,8 @@ describe('ツールの断り方（例外ではなく、理由の文を結果と�
       assertFailure(await run.callRaw('progress', { stage: '違う段階' }), /^段階の名前が違います：「違う段階」/, 'progress 段階');
       assertFailure(await run.callRaw('record', { knowledge: [{ quote: 'x' }] }), /^新しい仕事のやり方や決まりに足りない欄：/, 'record');
       assertFailure(await run.callRaw('confirm', confirmArgs()), /^まだ聞いていないことがあるので、作る前の確認はできません：/, 'confirm');
+      assertFailure(await run.callRaw('change', { folder: 'ないフォルダ', wants: ['足したい'] }), /^直すプラグインのフォルダ .*ないフォルダ が見つかりません。/, 'change');
+      assertFailure(await run.callRaw('change', { folder: '.', wants: ['足したい'] }), /^.* に plugin\.json がありません（探した場所：plugin\.json、/, 'change plugin.json なし');
       // 状態取得ツール、結果の知らせ、文書、起票
       assertFailure(await run.callRaw('state', { include: '違う値' }), /^include の値が違います：「違う値」/, 'state');
       assertFailure(await run.callRaw('results', {}), /^結果のファイルの場所の一覧（paths）を渡してください。/, 'results');
@@ -74,13 +76,13 @@ describe('ツールの断り方（例外ではなく、理由の文を結果と�
 
   test('REQ-043 画面を起動できないときの open と、見本を作れないときの confirm の断りも、failure の結果で返る', async () => {
     const loadUi = async () => {
-      throw new Error('画面の部品（ひな形の ui/server.mjs）を読み込めません：見つかりません');
+      throw new Error('画面の部品（plugin-creator が用意した共通の形の ui/server.mjs）を読み込めません：見つかりません');
     };
     await withRun(
       async (run) => {
         assertFailure(await run.callRaw('open', {}), /^plugin-creator の画面を起動できません：画面の部品/, 'open');
         await readyToConfirm(run);
-        assertFailure(await run.callRaw('confirm', confirmArgs()), /^画面の部品（ひな形の ui\/server\.mjs）を読み込めません：見つかりません/, 'confirm');
+        assertFailure(await run.callRaw('confirm', confirmArgs()), /^画面の部品（plugin-creator が用意した共通の形の ui\/server\.mjs）を読み込めません：見つかりません/, 'confirm');
         assert.equal(run.readState().confirmation, null, '見本を作れなかったときは、確認を受け付けない');
       },
       { extra: { loadUi } },
@@ -193,7 +195,7 @@ describe('どんな引数でも、例外を投げない', () => {
     const weird = [undefined, null, [], 'text', 42, true, {}, { items: 'x' }, { items: [null] }, { items: [{}] }, { knowledge: 5 }, { knowledge: [null, 3] }, { assets: {} }, { oss: [[]] }, { paths: 'x' }, { paths: [5] }, { path: 5 }, { title: 5, body: [] }, { knowledgeIds: 'K-01', evalTasks: 'x' }, { stage: 7 }, { include: {} }];
     await withRun(async (run) => {
       let calls = 0;
-      for (const tool of ['open', 'state', 'progress', 'record', 'confirm', 'results', 'doc_text', 'issue']) {
+      for (const tool of ['open', 'state', 'progress', 'record', 'confirm', 'change', 'results', 'doc_text', 'issue']) {
         for (const args of weird) {
           // 例外が出れば、ここで試験が落ちる（callRaw は例外をそのまま投げる）
           const result = await run.callRaw(tool, args);
@@ -205,7 +207,7 @@ describe('どんな引数でも、例外を投げない', () => {
           }
         }
       }
-      assert.equal(calls, 8 * weird.length);
+      assert.equal(calls, 9 * weird.length);
     });
   });
 });

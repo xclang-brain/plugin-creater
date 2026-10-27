@@ -6,7 +6,27 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { describe, test } from 'node:test';
 
-import { MAIN_ITEM_NAMES, SETTABLE_ITEMS, answerEverything, answers, confirmArgs, internalSymbolsIn, knowledge, readyToConfirm, startForTest, tempDir, withRun, writeDraft } from './helpers.mjs';
+import {
+  MAIN_ITEM_NAMES,
+  PLUGIN_EVALS,
+  PLUGIN_KNOWLEDGE,
+  SETTABLE_ITEMS,
+  UNCHANGED_ITEMS,
+  answerEverything,
+  answers,
+  changeConfirmArgs,
+  confirmArgs,
+  internalSymbolsIn,
+  knowledge,
+  readyToConfirm,
+  readyToConfirmChange,
+  startChange,
+  startForTest,
+  tempDir,
+  withRun,
+  writeDraft,
+  writePluginFolder,
+} from './helpers.mjs';
 import { leftWordsIn } from './words.mjs';
 
 const ALL_ITEM_NAMES_JA = '作業の目的、頼む場面と言い方、受け取るもの';
@@ -388,6 +408,35 @@ describe('決まったこと（plugin-creator_record）', () => {
       assert.ok(!text.includes('\n'));
       assert.deepEqual(internalSymbolsIn(text), []);
       assert.equal(text, '記録しました（仕事のやり方や決まり K-01、K-02 を追加）。確かめたいこと：1件');
+    });
+  });
+
+  test('REQ-017 例外のある決まりを、種類か例外を渡して「合否の決め方」にすると、文に例外のときの合格を書くよう返り値で促す（合格の条件には文だけが渡るため）', async () => {
+    await withRun(async (run) => {
+      const nudge = (ids) => `${ids} は、例外のある合否の決め方です。合格の条件には文だけが渡るので、文に、例外のときに何なら合格かが書かれていなければ、文を直して記録し直してください。`;
+      // 決まりの確かめで例外を書いた「それ以外」の決まりには促さない
+      await run.call('record', { knowledge: [knowledge({ text: '最適化は -O2 にする', status: '候補', source: 'ファイルから読んで確かめた', quote: 'build.md の3行目' })] });
+      const other = await run.call('record', { knowledge: [{ id: 'K-01', status: '決まった', exception: '調べるときは -O0 でよい', quote: '調べるときは -O0 です' }] });
+      assert.equal(other, '記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。');
+      // 後で種類だけを「合否の決め方」に変える（生成前の確認の基準の案）と促す。1行のまま
+      const changed = await run.call('record', { knowledge: [{ id: 'K-01', kind: '合否の決め方', quote: '基準の案にする' }] });
+      assert.equal(changed, `記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。${nudge('K-01')}`);
+      assert.ok(!changed.includes('\n'));
+      assert.deepEqual(internalSymbolsIn(changed), []);
+      // 文だけを直したときは促さない
+      const fixed = await run.call('record', { knowledge: [{ id: 'K-01', text: '最適化は -O2 にする。ただし調べるときは -O0 でよい', quote: '調べるときは -O0 です' }] });
+      assert.equal(fixed, '記録しました（仕事のやり方や決まり K-01 を更新）。確かめたいことはありません。');
+      assert.equal(run.readState().knowledge[0].exception, '調べるときは -O0 でよい', '例外の欄は残る');
+      // 新しい合否の決め方に例外があるときと、合否の決め方に例外を足したときも促す。例外のない合否の決め方には促さない
+      const added = await run.call('record', {
+        knowledge: [
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: '表が2つあれば合格', status: '候補', exception: '月初めは1つでよい' }),
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: '題があれば合格' }),
+        ],
+      });
+      assert.equal(added, `記録しました（仕事のやり方や決まり K-02、K-03 を追加）。確かめたいこと：1件。${nudge('K-02')}`);
+      const withException = await run.call('record', { knowledge: [{ id: 'K-03', exception: '下書きは題がなくてよい', quote: '下書きは要りません' }] });
+      assert.equal(withException, `記録しました（仕事のやり方や決まり K-03 を更新）。確かめたいこと：1件。${nudge('K-03')}`);
     });
   });
 });
@@ -1060,3 +1109,614 @@ describe('抜き書きは、ユーザーの言葉の中にある（plugin-creato
     });
   });
 });
+
+describe('今のプラグインを直す（plugin-creator_change と、直すときの記録・確認。BLUEPRINT 5 C1）', () => {
+  // 新しく記録を作ったときの返り値の初め：1行目にこれからの流れの文そのもの、2行目にそれだけをそのまま書く指示（画面を開くツールと同じ並び。hearing.md 3.4・7.5）。
+  // 記録の知らせは3行目から。「スキル」と言わず「今使っているファイル」と書く（ユーザーの言い方は分からず、words.md は「スキル」を話さないため）
+  const FLOW_ASK = '\n上の1行（これから、次の順に…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n';
+  const FLOW_GENERATED =
+    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 今の決まりの一覧を確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具（作業の画面を変えるときは、画面で見たいことも） → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+  const FLOW_NOT_GENERATED =
+    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 作業の最初から最後まで、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具 → 作業の画面で見たいこと → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+  const CHANGE_KEYS = ['folder', 'manifest', 'name', 'version', 'generated', 'carried', 'removed', 'maxId', 'criteriaIds', 'evalPrompts', 'wants', 'startedAt'];
+  const ALL_IDS = PLUGIN_KNOWLEDGE.map((k) => k.id);
+
+  test('REQ-052 フォルダと変えたいことを渡すと、直す記録ができる（直すフォルダの実パス、名前、今の版、変えたいことなど）。返り値は平易な日本語で、内部の記号を出さない', async () => {
+    await withRun(async (run) => {
+      assert.equal(fs.existsSync(run.statePath()), false);
+      const { folder, text } = await startChange(run);
+      assert.equal(
+        text,
+        `${FLOW_GENERATED}${FLOW_ASK}直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。仕事のやり方や決まり K-01〜K-05 の5件を、確かめたいこととして取り込みました。新しい決まりは K-06 から付きます。`,
+      );
+      assert.deepEqual(internalSymbolsIn(text), []);
+      assert.deepEqual(leftWordsIn(text), []);
+      const state = run.readState();
+      assert.equal(state.stage, 'start');
+      assert.equal(state.rebuild, false);
+      assert.deepEqual(Object.keys(state.change), CHANGE_KEYS, '記録の形（BLUEPRINT 4.1。取り決め I1）');
+      assert.deepEqual(state.change, {
+        folder: fs.realpathSync(folder),
+        manifest: 'plugin.json',
+        name: 'edl-sample',
+        version: '0.1.0',
+        generated: true,
+        carried: ALL_IDS,
+        removed: [],
+        maxId: 5,
+        criteriaIds: { 'K-02': 'C-01', 'K-04': 'C-02' },
+        evalPrompts: [PLUGIN_EVALS[0].prompt],
+        wants: ['KX-200 のクロスコンパイルとデプロイの手順を組み込みたい'],
+        startedAt: '2026-10-22T09:00:00.000Z',
+      });
+      assert.equal(state.knowledgeCounter, 5);
+      // 絶対パスでも渡せる
+      const again = await run.callSafe('change', { folder, wants: ['別の言い方'] });
+      assert.equal(again.ok, true, again.error);
+    });
+  });
+
+  test('REQ-052 plugin.json は、直下・.plugin/・.github/plugin/・.claude-plugin/ の順に探す。見つけた場所を記録する', async () => {
+    for (const manifestAt of ['plugin.json', '.plugin/plugin.json', '.github/plugin/plugin.json', '.claude-plugin/plugin.json']) {
+      await withRun(async (run) => {
+        await startChange(run, { plugin: { manifestAt } });
+        assert.equal(run.readState().change.manifest, manifestAt);
+      });
+    }
+    // 直下と .github/plugin/ の両方にあれば、直下を使う
+    await withRun(async (run) => {
+      const folder = writePluginFolder(run.cwd, { manifestAt: '.github/plugin/plugin.json', extraFiles: { 'plugin.json': { name: 'edl-sample', version: '0.3.0' } } });
+      await run.call('change', { folder, wants: ['足したい'] });
+      assert.deepEqual([run.readState().change.manifest, run.readState().change.version], ['plugin.json', '0.3.0']);
+    });
+  });
+
+  test('REQ-052 フォルダがない・フォルダでない・plugin.json がない・引数が足りないときは、理由を返して断り、記録を作らない', async () => {
+    await withRun(async (run) => {
+      fs.writeFileSync(path.join(run.cwd, 'memo.txt'), 'x');
+      fs.mkdirSync(path.join(run.cwd, 'empty'));
+      const cases = [
+        [{ wants: ['足したい'] }, /^直すプラグインのフォルダ（folder）を渡してください。/],
+        [{ folder: ' ', wants: ['足したい'] }, /^直すプラグインのフォルダ（folder）を渡してください。/],
+        [{ folder: 'empty' }, /^変えたいこと（wants）を、1件以上の文の一覧で渡してください。/],
+        [{ folder: 'empty', wants: [' '] }, /^変えたいこと（wants）を、1件以上の文の一覧で渡してください。/],
+        [{ folder: 'empty', wants: [1] }, /^変えたいこと（wants）は、文の一覧で渡してください。/],
+        [{ folder: 'ない', wants: ['足したい'] }, /^直すプラグインのフォルダ .*ない が見つかりません。/],
+        [{ folder: 'memo.txt', wants: ['足したい'] }, /memo\.txt はフォルダではありません。/],
+        [{ folder: 'empty', wants: ['足したい'] }, /empty に plugin\.json がありません（探した場所：plugin\.json、\.plugin\/plugin\.json、\.github\/plugin\/plugin\.json、\.claude-plugin\/plugin\.json）。/],
+      ];
+      for (const [args, pattern] of cases) {
+        const r = await run.callSafe('change', args);
+        assert.equal(r.ok, false, JSON.stringify(args));
+        assert.match(r.error, pattern);
+        assert.deepEqual(internalSymbolsIn(r.error), []);
+      }
+      assert.equal(fs.existsSync(run.statePath()), false, '断ったときは記録を作らない');
+    });
+  });
+
+  test('REQ-052 作るお話の記録があるセッションでは断る（/clear の案内）。同じフォルダで呼び直すと変えたいことだけが変わり、取り込み直さない。違うフォルダは断る', async () => {
+    await withRun(async (run) => {
+      await run.call('progress', { stage: '始まり' });
+      writePluginFolder(run.cwd);
+      const made = await run.callSafe('change', { folder: 'edl-sample', wants: ['足したい'] });
+      assert.equal(made.ok, false);
+      assert.equal(made.error, 'このセッションでは、新しく作るか作り直すお話を聞いています。今のプラグインを直すときは、/clear してから頼み直してください。');
+      assert.equal(run.readState().change, null);
+    });
+    await withRun(async (run) => {
+      const { folder } = await startChange(run);
+      await run.call('record', { knowledge: [{ id: 'K-01', status: '決まった', quote: 'そのとおり' }] });
+      // 決まりの一覧を書き換えても、呼び直しでは取り込み直さない
+      fs.writeFileSync(path.join(folder, 'tests', 'knowledge.json'), JSON.stringify([{ id: 'K-01', kind: 'other', item: '進め方', text: '書き換えた' }]));
+      const again = await run.call('change', { folder: 'edl-sample', wants: ['デプロイのやり方を足したい', '画面は変えない'] });
+      assert.equal(again, '直すプラグインの記録は、もうあります（edl-sample、今の版 0.1.0）。変えたいことを置き換えました。決まりは取り込み直していません。');
+      const state = run.readState();
+      assert.deepEqual(state.change.wants, ['デプロイのやり方を足したい', '画面は変えない']);
+      assert.deepEqual(state.knowledge.map((k) => [k.id, k.status]), [['K-01', 'decided'], ['K-02', 'candidate'], ['K-03', 'candidate'], ['K-04', 'candidate'], ['K-05', 'candidate']]);
+      assert.equal(state.knowledge[0].text, PLUGIN_KNOWLEDGE[0].text);
+
+      writePluginFolder(run.cwd, { dir: 'other' });
+      const other = await run.callSafe('change', { folder: 'other', wants: ['足したい'] });
+      assert.equal(other.ok, false);
+      assert.match(other.error, /^このセッションでは、別のプラグイン（.*edl-sample）を直すお話を聞いています。ほかのプラグインを直すときは、\/clear してから頼み直してください。$/);
+    });
+  });
+
+  test('REQ-049 記録を作る前の発言は、直す記録を作ったときに、頼みの文として追記される', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: 'このプラグインにデプロイを足したい' });
+      await startChange(run);
+      assert.deepEqual(run.readQa().map((e) => [e.type, e.text]), [['request', 'このプラグインにデプロイを足したい']]);
+    });
+  });
+
+  test('REQ-054 REQ-058 決まりの一覧の決まりが、元の番号・種類・聞くこと・文のまま、確かめたいこと（出どころ「既存のプラグインから読んで確かめた」）として入る。「候補の確かめ」が未着手になる', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const rows = run.readState().knowledge;
+      assert.deepEqual(
+        rows.map((k) => [k.id, k.kind, k.item, k.itemName, k.text]),
+        [
+          ['K-01', 'other', 'procedure', '進め方', PLUGIN_KNOWLEDGE[0].text],
+          ['K-02', 'criterion', 'criteria', '合否の決め方', PLUGIN_KNOWLEDGE[1].text],
+          ['K-03', 'other', 'rules', '決まった書き方やルール', PLUGIN_KNOWLEDGE[2].text],
+          ['K-04', 'criterion', 'criteria', '合否の決め方', PLUGIN_KNOWLEDGE[3].text],
+          ['K-05', 'other', 'exceptions', 'いつもと違うとき', PLUGIN_KNOWLEDGE[4].text],
+        ],
+      );
+      for (const k of rows) {
+        assert.deepEqual(
+          { source: k.source, status: k.status, carried: k.carried, quote: k.quote, example: k.example, exception: k.exception, itemTouchedAtRecord: k.itemTouchedAtRecord },
+          { source: 'existing_plugin', status: 'candidate', carried: true, quote: `tests/knowledge.json の ${k.id}`, example: null, exception: null, itemTouchedAtRecord: false },
+        );
+      }
+      assert.match(await run.call('state'), /候補の確かめ：未着手（確かめたいこと 5件）/);
+      await answerEverything(run);
+      const refused = await run.callSafe('confirm', changeConfirmArgs(ALL_IDS));
+      assert.match(refused.error, /^まだ聞いていないことがあるので、直す前の確認はできません：候補の確かめ。/);
+      // 1回の問いの答えで、まとめて「決まった」にできる
+      const checked = await run.call('record', { knowledge: ALL_IDS.map((id) => ({ id, status: '決まった', quote: '一覧のとおりです' })) });
+      assert.match(checked, /K-01、K-02、K-03、K-04、K-05 を更新）。確かめたいことはありません。/);
+    });
+  });
+
+  test('REQ-058 新しい決まりの番号は、決まりの一覧と外した決まりの一覧（tests/knowledge-removed.json）の番号の最大の次から付く。本文にだけある番号は数えない（D15）', async () => {
+    await withRun(async (run) => {
+      const removed = [{ id: 'K-08', kind: 'other', item: '進め方', text: '前に外した決まり', replacedBy: 'K-05' }, { id: 'K-09', kind: 'other', item: '進め方', text: 'もう1つ前に外した決まり' }];
+      const { text } = await startChange(run, { plugin: { removed, extraFiles: { 'skills/demo/SKILL.md': '例：K-30 の決まりに従う\n' } } });
+      assert.match(text, /新しい決まりは K-10 から付きます。/);
+      const state = run.readState();
+      assert.deepEqual([state.change.removed, state.change.maxId, state.knowledgeCounter], [['K-08', 'K-09'], 9, 9]);
+      const added = await run.call('record', { knowledge: [knowledge({ text: '新しい決まり' })] });
+      assert.match(added, /K-10 を追加/);
+    });
+  });
+
+  test('REQ-058 引き継いだ合否の決め方に例外を足すと、新しい番号で、文に例外のときの合格を書くよう返り値で促す', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const text = await run.call('record', { knowledge: [{ id: 'K-02', status: '決まった', exception: '機器がないときは AVG の行がなくてよい', quote: '機器がないときは別です' }] });
+      assert.equal(
+        text,
+        '記録しました（仕事のやり方や決まり K-02 の中身を直したので、K-02 を外して K-06 にしました）。確かめたいこと：4件。K-06 は、例外のある合否の決め方です。合格の条件には文だけが渡るので、文に、例外のときに何なら合格かが書かれていなければ、文を直して記録し直してください。',
+      );
+    });
+  });
+
+  test('REQ-058 引き継いだ決まりの文・種類・聞くこと・例・例外のどれかを直すと、元の番号を外し、新しい番号（replaces＝元の番号）にする。状態だけの直しと、この会話で足した決まりの直しは番号を変えない', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      // 文を直す
+      const text = await run.call('record', { knowledge: [{ id: 'K-05', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', status: '決まった', quote: '今はこうです' }] });
+      assert.equal(text, '記録しました（仕事のやり方や決まり K-05 の中身を直したので、K-05 を外して K-06 にしました）。確かめたいこと：4件');
+      assert.deepEqual(internalSymbolsIn(text), []);
+      let state = run.readState();
+      const old = state.knowledge.find((k) => k.id === 'K-05');
+      const neu = state.knowledge.find((k) => k.id === 'K-06');
+      assert.deepEqual([old.status, old.text, old.quote], ['dropped', PLUGIN_KNOWLEDGE[4].text, '今はこうです']);
+      assert.deepEqual(
+        { id: neu.id, kind: neu.kind, item: neu.item, itemName: neu.itemName, text: neu.text, source: neu.source, status: neu.status, replaces: neu.replaces, carried: neu.carried },
+        { id: 'K-06', kind: 'other', item: 'exceptions', itemName: 'いつもと違うとき', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', source: 'answer', status: 'decided', replaces: 'K-05', carried: undefined },
+      );
+      // 例だけ・例外だけの直しも、中身の直し（REQ-058、決定17）
+      await run.call('record', { knowledge: [{ id: 'K-03', example: 'logs/device.log', quote: '例です' }] });
+      await run.call('record', { knowledge: [{ id: 'K-01', exception: '急ぐときは省く', quote: '例外があります' }] });
+      // 種類・聞くことの直し
+      await run.call('record', { knowledge: [{ id: 'K-02', kind: 'それ以外', quote: '合否ではない' }] });
+      state = run.readState();
+      assert.deepEqual(
+        state.knowledge.filter((k) => k.replaces).map((k) => [k.id, k.replaces, k.kind, k.example, k.exception, k.status]),
+        [['K-06', 'K-05', 'other', null, null, 'decided'], ['K-07', 'K-03', 'other', 'logs/device.log', null, 'decided'], ['K-08', 'K-01', 'other', null, '急ぐときは省く', 'decided'], ['K-09', 'K-02', 'other', null, null, 'decided']],
+      );
+      // 状態だけの直しは番号を変えない。同じ文を渡しても変えない
+      const same = await run.call('record', { knowledge: [{ id: 'K-04', status: '決まった', text: PLUGIN_KNOWLEDGE[3].text, quote: 'そのとおり' }] });
+      assert.match(same, /K-04 を更新/);
+      // この会話で足した決まりの直しは、番号を変えない（まだプラグインに入っていない）
+      await run.call('record', { knowledge: [{ id: 'K-06', text: '直した後の文をもう一度直す', quote: 'こう直します' }] });
+      state = run.readState();
+      assert.equal(state.knowledge.find((k) => k.id === 'K-06').text, '直した後の文をもう一度直す');
+      assert.equal(state.knowledge.length, 9);
+      assert.equal(state.knowledgeCounter, 9);
+    });
+  });
+
+  test('REQ-058 付け直した元の決まりは、直すことも「決まった」に戻すこともできない。付け直した決まりを外せば、元の決まりをまた扱える', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      await run.call('record', { knowledge: [{ id: 'K-05', text: '新しい文', quote: '今はこう' }] }); // K-06
+      for (const change of [{ status: '決まった' }, { text: 'さらに直す' }, { status: '外した' }]) {
+        const r = await run.callSafe('record', { knowledge: [{ id: 'K-05', quote: '戻したい', ...change }] });
+        assert.equal(r.ok, false, JSON.stringify(change));
+        assert.equal(r.error, '仕事のやり方や決まり K-05 は、中身を直して K-06 にしました。直すときは K-06 を渡してください。');
+      }
+      await run.call('record', { knowledge: [{ id: 'K-06', status: '外した', quote: 'やっぱり元のまま' }] });
+      await run.call('record', { knowledge: [{ id: 'K-05', status: '決まった', quote: '元のままでいい' }] });
+      assert.equal(run.readState().knowledge.find((k) => k.id === 'K-05').status, 'decided');
+    });
+  });
+
+  test('REQ-058 引き継いだ決まりの中身を直すときの状態は「決まった」だけ。「候補」「外した」と一緒に中身を直すと断り、何も変えない（直した決まりが、外した決まりに見えないように）', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      for (const status of ['候補', '外した']) {
+        const r = await run.callSafe('record', { knowledge: [{ id: 'K-05', text: '新しい', status, quote: '今はこう' }] });
+        assert.equal(r.ok, false, status);
+        assert.equal(
+          r.error,
+          '仕事のやり方や決まり K-05 は引き継いだ決まりなので、中身（種類・聞くこと・文・例・例外）を直すのは、ユーザーが今の中身を答えたときだけです。状態は「決まった」で渡してください。決まりでなくなったときは、中身を変えずに、状態を「外した」にしてください。',
+        );
+        assert.deepEqual(internalSymbolsIn(r.error), []);
+        assert.deepEqual(leftWordsIn(r.error), []);
+      }
+      const state = run.readState();
+      assert.deepEqual([state.knowledge.length, state.knowledgeCounter, state.knowledge[4].status], [5, 5, 'candidate'], '断ったときは何も変えない');
+      // 状態を省くか「決まった」なら付け直し、決まりの変わり方には「直した」と出る
+      await run.call('record', { knowledge: [{ id: 'K-05', text: '新しい', quote: '今はこう' }] });
+      await run.call('record', { knowledge: [{ id: 'K-04', text: '新しい合否の決め方', status: '決まった', quote: '今はこう' }] });
+      assert.deepEqual(run.readState().knowledge.filter((k) => k.replaces).map((k) => [k.id, k.replaces, k.status]), [['K-06', 'K-05', 'decided'], ['K-07', 'K-04', 'decided']]);
+      assert.match(await run.call('state'), /^足した決まり：なし／直した決まり：K-05→K-06、K-04→K-07／外した決まり：なし$/m);
+    });
+  });
+
+  test('REQ-058 中身を変えない記録（同じ種類・聞くこと・文を添えて「決まった」にする）の後も、引き継いだ決まりの種類・聞くこと・文は、決まりの一覧のファイルと同じ文字のまま（組み立てのスクリプトは、そのまま比べる）', async () => {
+    await withRun(async (run) => {
+      const { folder } = await startChange(run);
+      const file = JSON.parse(fs.readFileSync(path.join(folder, 'tests', 'knowledge.json'), 'utf8'));
+      await run.call('record', { knowledge: file.map((k) => ({ id: k.id, kind: k.kind === 'criterion' ? '合否の決め方' : 'それ以外', item: k.item, text: k.text, status: '決まった', quote: '一覧のとおりです' })) });
+      const state = run.readState();
+      assert.equal(state.knowledge.length, file.length, '付け直していない');
+      const decided = state.knowledge.filter((k) => k.status === 'decided');
+      assert.deepEqual(decided.map((k) => [k.id, k.kind, k.itemName, k.text]), file.map((k) => [k.id, k.kind, k.item, k.text]));
+    });
+  });
+
+  test('REQ-054 生成プラグインを直すとき、引き継いだ決まりを中身を変えずに「決まった」にできるのは、その番号を示した問いへの答えの抜き書きでだけ。ほかは断り、何も変えない。中身の直し・外す記録・足した決まりは、この確かめをしない', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      // 範囲の確かめ（決まりの一覧を示していない問い）の答えで、ユーザーが番号を話した
+      const scopeAnswer = '止まる条件が古いです。決まりの一覧（K-01〜K-05）で古くなったのは K-05 だけで、ほかは今もそのとおりです。';
+      await run.fake.askUser({ message: '今のプラグインは、次のことができます。1. 不具合を調べて直す。今回は、デプロイのやり方を足します。違うところと足りないところを書いてください。', answer: `User responded: ${scopeAnswer}` });
+      const refused = await run.callSafe('record', { knowledge: ['K-01', 'K-02'].map((id) => ({ id, status: '決まった', quote: 'ほかは今もそのとおりです' })) });
+      assert.equal(refused.ok, false);
+      assert.equal(
+        refused.error,
+        '仕事のやり方や決まり K-01 は引き継いだ決まりです。中身を変えずに「決まった」にできるのは、その番号と文を示した問いへの答えの中に、抜き書き（quote）があるときだけです。引き継いだ決まりのすべての番号と文を1つの問いの文に入れて聞き、その答えの言葉を、そのまま写してください。',
+      );
+      assert.deepEqual(internalSymbolsIn(refused.error), []);
+      assert.deepEqual(leftWordsIn(refused.error), []);
+      assert.deepEqual(run.readState().knowledge.map((k) => k.status), ['candidate', 'candidate', 'candidate', 'candidate', 'candidate'], '断ったときは何も変えない');
+      // 中身の直し（付け直し）は、ユーザーが今の中身を答えたときなので、この確かめをしない
+      const renumbered = await run.callSafe('record', { knowledge: [{ id: 'K-05', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', quote: '止まる条件が古いです' }] });
+      assert.equal(renumbered.ok, true, renumbered.error);
+      // 決まりの一覧（番号と文）を示した問いの答えなら受け付ける
+      const list = PLUGIN_KNOWLEDGE.map((k) => `${k.id} ${k.text}`).join('\n');
+      await run.fake.askUser({ message: `今のプラグインの決まりは次のとおりです。\n${list}\nこの中で、今と違うものと、古くなったものの番号を書いてください。`, answer: 'User responded: K-05 だけです' });
+      const ok = await run.callSafe('record', { knowledge: ['K-01', 'K-02', 'K-03'].map((id) => ({ id, status: '決まった', quote: 'K-05 だけです' })) });
+      assert.equal(ok.ok, true, ok.error);
+      // 外す記録と、この会話で足した決まりは、この確かめをしない
+      assert.equal((await run.callSafe('record', { knowledge: [{ id: 'K-04', status: '外した', quote: 'もう使っていない' }] })).ok, true);
+      assert.equal((await run.callSafe('record', { knowledge: [knowledge({ quote: '止まる条件が古いです' })] })).ok, true);
+      assert.deepEqual(
+        run.readState().knowledge.map((k) => [k.id, k.status]),
+        [['K-01', 'decided'], ['K-02', 'decided'], ['K-03', 'decided'], ['K-04', 'dropped'], ['K-05', 'dropped'], ['K-06', 'decided'], ['K-07', 'decided']],
+      );
+      // もう「決まった」の引き継いだ決まりを記録し直すときは確かめない（一覧の問いをもう一度させないため）
+      const again = await run.callSafe('record', { knowledge: [{ id: 'K-01', status: '決まった', quote: '止まる条件が古いです' }] });
+      assert.equal(again.ok, true, again.error);
+    });
+  });
+
+  test('REQ-054 決まりの一覧を示した問いが取り消され、そのすぐ次にユーザーがチャットに答えを打ったときは、その答えの抜き書きで引き継いだ決まりを「決まった」にできる', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const list = PLUGIN_KNOWLEDGE.map((k) => `${k.id} ${k.text}`).join('\n');
+      await run.fake.askUser({ message: `今のプラグインの決まりは次のとおりです。\n${list}\nこの中で、今と違うものと、古くなったものの番号を書いてください。`, answer: 'User cancelled the request.' });
+      await run.hook('onUserPromptSubmitted', { prompt: '古いのは K-05 だけです' });
+      const ok = await run.callSafe('record', { knowledge: ['K-01', 'K-02'].map((id) => ({ id, status: '決まった', quote: '古いのは K-05 だけです' })) });
+      assert.equal(ok.ok, true, ok.error);
+      assert.deepEqual(run.readState().knowledge.slice(0, 2).map((k) => k.status), ['decided', 'decided']);
+    });
+  });
+
+  test('REQ-054 D29 決まりの一覧・作業の定義・外した決まりの一覧・課題・plugin.json が壊れているときは、理由を返して断り、記録を作らない', async () => {
+    const cases = [
+      [{ knowledge: '[ 壊れた' }, /^直すプラグインの tests\/knowledge\.json を、JSON として読めません（/],
+      [{ knowledge: { id: 'K-01' } }, /^直すプラグインの tests\/knowledge\.json の形が違います：決まりの一覧（\[ \]）ではありません。/],
+      [{ knowledge: [{ id: 'X-01', kind: 'other', item: '進め方', text: 'x' }] }, /tests\/knowledge\.json の形が違います：1件目の番号（id）が K-数字 の形ではありません/],
+      [{ knowledge: [{ id: 'K-01', kind: 'rule', item: '進め方', text: 'x' }] }, /K-01 の種類（kind）が、合否の決め方（criterion）かそれ以外（other）のどちらでもありません/],
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: '前回の1回', text: 'x' }] }, /K-01 の聞くこと（item）が、10の聞くことの名前（作業の目的、頼む場面と言い方、.*、いつもと違うとき）のどれでもありません/],
+      // 組み立てのスクリプトは、元の聞くこと・文と、記録のものを、そのまま比べる。前後の空白や記号の名前は、取り込まずに断る（直す段で初めて断られないため）
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: 'procedure', text: 'x' }] }, /K-01 の聞くこと（item）が、10の聞くことの名前（.*）のどれでもありません/],
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: ' 合否の決め方', text: 'x' }] }, /K-01 の聞くこと（item）の初めか終わりに、空白か改行があります/],
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: '進め方', text: ' ' }] }, /K-01 の文（text）が空です/],
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: '進め方', text: 'ビルドの前に git pull する\n' }] }, /K-01 の文（text）の初めか終わりに、空白か改行があります/],
+      [{ knowledge: [{ id: 'K-01', kind: 'other', item: '進め方', text: 'a' }, { id: 'K-01', kind: 'other', item: '進め方', text: 'b' }] }, /番号 K-01 が重なっています/],
+      [{ task: '{' }, /^直すプラグインの com\.github\.copilot\/extensions\/edl-sample\/task\.json を、JSON として読めません/],
+      [{ task: { name: 'x' } }, /task\.json の形が違います：合格の条件の一覧（criteria）がありません/],
+      [{ task: { criteria: [{ id: '1', knowledge: 'K-02' }] } }, /合格の条件（criteria）の 1件目の番号/],
+      [{ removed: '{' }, /^直すプラグインの tests\/knowledge-removed\.json を、JSON として読めません/],
+      [{ removed: [{ id: 'X-1' }] }, /tests\/knowledge-removed\.json の形が違います：1件目の番号（id）が K-数字 の形ではありません/],
+      [{ evals: [{ id: 'T-01', prompt: ' ' }] }, /tests\/eval\/T-01\/eval\.json の形が違います：頼むときの言葉（prompt）がありません/],
+    ];
+    for (const [plugin, pattern] of cases) {
+      await withRun(async (run) => {
+        writePluginFolder(run.cwd, plugin);
+        const r = await run.callSafe('change', { folder: 'edl-sample', wants: ['足したい'] });
+        assert.equal(r.ok, false, JSON.stringify(plugin));
+        assert.match(r.error, pattern, JSON.stringify(plugin));
+        assert.match(r.error, /ファイルを(確かめて|直すか、git で前の中身に戻して)から、もう一度頼んでください。$/);
+        assert.deepEqual(leftWordsIn(r.error), [], r.error);
+        // 内部の記号は出さない。ただし、種類のファイルに書く値は、ファイルを直すのに要るので、日本語の名前と並べた形でだけ見逃す
+        assert.deepEqual(internalSymbolsIn(r.error.replaceAll('合否の決め方（criterion）', '')), [], r.error);
+        assert.equal(fs.existsSync(run.statePath()), false);
+      });
+    }
+    await withRun(async (run) => {
+      writePluginFolder(run.cwd, { extraFiles: { 'plugin.json': '{ "name": "../x" }' } });
+      const r = await run.callSafe('change', { folder: 'edl-sample', wants: ['足したい'] });
+      assert.match(r.error, /plugin\.json の形が違います：プラグインの名前（name）がないか、フォルダの区切りを含んでいます/);
+    });
+  });
+
+  test('REQ-054 D29 生成プラグインかは、決まりの一覧と作業の定義（task.json）の両方があるかで見分ける。片方だけなら作っていないプラグインとして扱い、決まりを取り込まない', async () => {
+    const generatedOf = async (plugin) =>
+      withRun(async (run) => {
+        const { text } = await startChange(run, { plugin });
+        const state = run.readState();
+        return { text, generated: state.change.generated, carried: state.change.carried, rows: state.knowledge.length, criteriaIds: state.change.criteriaIds, evalPrompts: state.change.evalPrompts, maxId: state.change.maxId };
+      });
+    const both = await generatedOf({});
+    assert.deepEqual([both.generated, both.rows], [true, 5]);
+
+    for (const plugin of [{ task: null }, { knowledge: null }, { task: null, knowledge: null }]) {
+      const r = await generatedOf(plugin);
+      assert.deepEqual([r.generated, r.carried, r.rows, r.criteriaIds, r.evalPrompts], [false, [], 0, {}, []], JSON.stringify(plugin));
+      assert.equal(
+        r.text,
+        `${FLOW_NOT_GENERATED}${FLOW_ASK}直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）と com.github.copilot/extensions/edl-sample/task.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-${String(r.maxId + 1).padStart(2, '0')} から付きます。`,
+        JSON.stringify(plugin),
+      );
+      assert.deepEqual(leftWordsIn(r.text), [], JSON.stringify(plugin));
+    }
+    // 決まりの一覧だけがあるとき：取り込まないが、その番号とは重ならないように付ける
+    assert.equal((await generatedOf({ task: null })).maxId, 5);
+    assert.equal((await generatedOf({ knowledge: null })).maxId, 0);
+    // 生成プラグインでないときは、組み立てのスクリプト（plugin_kind）と同じく、全体の形だけを見る：一覧の中身の形や、外した決まりの一覧は見ない
+    const loose = await generatedOf({ task: null, knowledge: [{ id: 'K-12', kind: '何か' }, 'メモ'], removed: '{ 壊れた' });
+    assert.deepEqual([loose.generated, loose.maxId], [false, 12]);
+    // 決まりの一覧が空の生成プラグイン
+    const empty = await generatedOf({ knowledge: [], removed: [{ id: 'K-03', kind: 'other', item: '進め方', text: 'x' }] });
+    assert.equal(
+      empty.text,
+      `${FLOW_GENERATED}${FLOW_ASK}直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。新しい決まりは K-04 から付きます。`,
+    );
+  });
+
+  test('REQ-054 直すときは、段階と聞くこと「できていたことの確認」を断る（できていたことは、すべて引き継ぐ）', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      for (const args of [{ stage: 'できていたことの確認' }, { items: [{ item: 'できていたことの確認', status: '聞いた', quote: '全部' }] }]) {
+        const r = await run.callSafe('progress', args);
+        assert.equal(r.ok, false);
+        assert.equal(r.error, '今のプラグインを直すときは、できていたことは聞かずに、すべて引き継ぎます。段階と聞くこと「できていたことの確認」は使いません。');
+      }
+      const state = run.readState();
+      assert.equal(state.rebuild, false);
+      assert.equal(state.stage, 'start');
+    });
+  });
+
+  test('REQ-056 「変えないので聞かない」は、直すときだけ、未着手からだけ使える。「前回の1回」には使えない', async () => {
+    await withRun(async (run) => {
+      const notChange = await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: 'x' }] });
+      assert.equal(notChange.ok, false);
+      assert.equal(notChange.error, '「変えないので聞かない」は、今のプラグインを直すときだけ使えます。「成果物」は、聞いてから記録してください。');
+      assert.equal(fs.existsSync(run.statePath()), false);
+    });
+    await withRun(async (run) => {
+      await startChange(run);
+      const ok = await run.call('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '成果物は今のまま' }] });
+      assert.match(ok, /^記録しました。まだ聞いていないこと：/);
+      assert.ok(!ok.includes('成果物'), '変えないので聞かないものは、まだ聞いていないことに入らない');
+      assert.equal(run.readState().items.output.status, 'unchanged');
+      // 同じ状態にし直すのはよい。聞いたなどの後からは、できない
+      assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '今のまま' }] })).ok, true);
+      await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
+      const fromAsked = await run.callSafe('progress', { items: [{ item: '進め方', status: '変えないので聞かない', quote: 'x' }] });
+      assert.equal(fromAsked.error, '「進め方」は、もう聞いているので（今の状態：聞いた）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、状態が「未着手」のものだけです。');
+      const lastCase = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '変えないので聞かない', quote: 'x' }] });
+      assert.equal(lastCase.error, '「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
+      // 変えないので聞かない → 聞いた、には変えられる（聞くことになったとき）
+      assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '成果物も変える' }] })).ok, true);
+      assert.equal(run.readState().items.output.status, 'asked');
+    });
+  });
+
+  test('REQ-056 「変えないので聞かない」に変えるときも、そこから変えるときも、抜き書きがユーザーの答えの中にあることを確かめる', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      await run.fake.askUser({ message: '変えるのはデプロイのところです。ほかは今のまま引き継ぎます。違うところはありますか？', answer: 'User responded: ない。画面と成果物は今のままでいい' });
+      const bad = await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '成果物は変えない' }] });
+      assert.equal(bad.ok, false);
+      assert.match(bad.error, /^「成果物」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。/);
+      assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '画面と成果物は今のままでいい' }] })).ok, true);
+      // 変えないので聞かない → 聞いた：答えの中にない抜き書きは断る（変えないので聞かないを経由して、確かめをすり抜けない）
+      const skipped = await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '聞いていない言葉' }] });
+      assert.equal(skipped.ok, false);
+      assert.match(skipped.error, /^「成果物」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。/);
+    });
+  });
+
+  test('REQ-056 plugin-creator が作っていないプラグインを直すときは、どの聞くことも「変えないので聞かない」にできない', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+      for (const item of ['作業の目的', '成果物', '開始前に設定したいこと', '実行中に見たいこと', '終わった後に見たい結果と見せ方', '資産']) {
+        const r = await run.callSafe('progress', { items: [{ item, status: '変えないので聞かない', quote: 'x' }] });
+        assert.equal(r.ok, false, item);
+        assert.equal(r.error, 'plugin-creator が作っていないプラグインを直すときは、プラグインの形を変えること自体が変えるところなので、「変えないので聞かない」は使えません。聞くことは、すべて聞いてください。');
+      }
+      assert.deepEqual(run.readState().items, {});
+    });
+  });
+
+  test('REQ-056 REQ-049 「変えないので聞かない」の聞くことは未着手に数えず、確認を受け付ける。その聞くことに自分から話した決まりは、質問の改善案の対象にならない', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const added = await readyToConfirmChange(run);
+      const r = await run.callSafe('confirm', changeConfirmArgs([...ALL_IDS, added]));
+      assert.equal(r.ok, true, r.error);
+      assert.match(r.text, /^直す前の確認で示すものを受け付けました。画面で見られます。作業の画面の見本：http:\/\/127\.0\.0\.1:\d+\/\?k=/);
+
+      await run.call('record', { knowledge: [knowledge({ item: '成果物', source: 'ユーザーが自分から話した', text: '変えないので聞かなかった聞くことに話した決まり' })] });
+      await run.call('record', { knowledge: [knowledge({ item: '進め方', source: 'ユーザーが自分から話した', text: '聞いた後に話した決まり' })] });
+      const rows = run.readState().knowledge;
+      assert.equal(rows.find((k) => k.text === '変えないので聞かなかった聞くことに話した決まり').itemTouchedAtRecord, false);
+      assert.equal(rows.find((k) => k.text === '聞いた後に話した決まり').itemTouchedAtRecord, true);
+      const material = await run.call('state', { include: '振り返りの材料' });
+      const targets = material.split('問答の記録のすべて')[0];
+      assert.match(targets, /K-08（聞くこと：進め方）：そのことを聞いた後に、ユーザーが自分から話した/);
+      assert.ok(!/K-07（聞くこと/.test(targets), '変えないので聞かなかった聞くことに話したものは、対象にならない');
+    });
+  });
+
+  test('REQ-057 直すときの確認：引き継ぐことと変わること（変わることは1件以上）と、新しい版の案が要る。版は形が合い、今の版より大きいこと。受け付けると、版と合格の条件の番号を記録に残す', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const added = await readyToConfirmChange(run);
+      const ids = [...ALL_IDS, added];
+      const cases = [
+        [{ rebuild: undefined }, '直すときは、引き継ぐことと変わること（rebuild）も知らせてください。変わること（rebuild.change）は1件以上にしてください。'],
+        [{ rebuild: { keep: ['流れ'], change: [' '] } }, '直すときは、引き継ぐことと変わること（rebuild）も知らせてください。変わること（rebuild.change）は1件以上にしてください。'],
+        [{ version: undefined }, '直すときは、新しい版の案（version。例：0.2.0）も知らせてください。ユーザーがよいと答えた版にします。'],
+        [{ version: 'v0.2.0' }, '新しい版の案（version）は、0.2.0 のように、数を「.」で3つつないだ形で渡してください（今：「v0.2.0」）。'],
+        [{ version: '0.2' }, '新しい版の案（version）は、0.2.0 のように、数を「.」で3つつないだ形で渡してください（今：「0.2」）。'],
+        [{ version: '0.1.0' }, '新しい版の案 0.1.0 は、今の版 0.1.0 より大きくしてください。'],
+        [{ version: '0.0.9' }, '新しい版の案 0.0.9 は、今の版 0.1.0 より大きくしてください。'],
+        [{ version: 2 }, '新しい版の案（version）は、0.2.0 のような文字で渡してください。'],
+      ];
+      for (const [override, message] of cases) {
+        const r = await run.callSafe('confirm', changeConfirmArgs(ids, override));
+        assert.equal(r.ok, false, JSON.stringify(override));
+        assert.equal(r.error, message);
+        assert.equal(run.readState().confirmation, null);
+      }
+      // 数ごとに比べる（0.10.0 は 0.9.0 より大きい）
+      assert.equal((await run.callSafe('confirm', changeConfirmArgs(ids, { version: '0.10.0' }))).ok, true);
+      await run.call('confirm', changeConfirmArgs(ids));
+      const c = run.readState().confirmation;
+      assert.equal(c.version, '0.2.0');
+      assert.deepEqual(c.rebuild.change, ['クロスコンパイルとデプロイのルールのスキルを足す', '土台を今の版に上げる（上書きされるファイル：tests/run.py）']);
+      assert.deepEqual(c.criteria, [{ id: 'C-01', knowledge: 'K-02' }, { id: 'C-02', knowledge: 'K-04' }, { id: 'C-03', knowledge: added }]);
+    });
+  });
+
+  test('REQ-057 D16 今の版が plugin.json にないときは、版の形だけを見る。作るときに版を渡すと断る', async () => {
+    await withRun(async (run) => {
+      const { text } = await startChange(run, { plugin: { version: null } });
+      assert.match(text, /（edl-sample、今の版 なし）/);
+      const added = await readyToConfirmChange(run);
+      assert.equal((await run.callSafe('confirm', changeConfirmArgs([...ALL_IDS, added], { version: '0.0.1' }))).ok, true);
+    });
+    await withRun(async (run) => {
+      await readyToConfirm(run);
+      const r = await run.callSafe('confirm', confirmArgs({ version: '0.2.0' }));
+      assert.equal(r.error, '新しい版の案（version）は、今のプラグインを直すときだけ渡してください。');
+      await run.call('confirm', confirmArgs());
+      const c = run.readState().confirmation;
+      assert.equal('version' in c, false, '作るときは版を記録しない');
+      assert.deepEqual(c.criteria, [{ id: 'C-01', knowledge: 'K-02' }], '合格の条件の番号は、作るときも記録する（組み立ては読まない）');
+    });
+  });
+
+  test('REQ-061 D17 直すときは、引き継いだ課題と頼むときの言葉が違う課題（変えたところを試す課題）が1つ以上ないと断る。合格の条件は引き継いだ決まりでもよい', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const added = await readyToConfirmChange(run);
+      const ids = [...ALL_IDS, added];
+      const carriedOnly = changeConfirmArgs(ids).evalTasks.slice(0, 1);
+      for (const evalTasks of [carriedOnly, [{ ...carriedOnly[0], prompt: `  ${PLUGIN_EVALS[0].prompt.replace('。', '。 ')} ` }]]) {
+        const r = await run.callSafe('confirm', changeConfirmArgs(ids, { evalTasks }));
+        assert.equal(r.ok, false);
+        assert.equal(r.error, '直すときは、変えたところを試す、試しに動かして採点する試験の課題を1つ以上足してください。今のプラグインから引き継いだ課題と、頼むときの言葉（prompt）が同じ課題しかありません。');
+      }
+      // 足した課題の合格の条件が、引き継いだ合否の決め方の決まり（K-02）でも受け付ける
+      const reused = [...carriedOnly, { prompt: 'KX-200 で動かして、平均値を確かめてください。', criteria: ['K-02'], settings: { task: { week: 'W42' } } }];
+      const ok = await run.callSafe('confirm', changeConfirmArgs(ids, { evalTasks: reused }));
+      assert.equal(ok.ok, true, ok.error);
+      // 引き継ぐ課題の入力は、プラグインの中の場所（仮のファイル）で渡せる
+      assert.deepEqual(run.readState().confirmation.evalTasks[0].inputs, [{ path: 'tests/eval/T-01/inputs/src/main.c', provisional: true }]);
+    });
+  });
+
+  test('REQ-061 D32 課題のない、plugin-creator が作っていないプラグインでは、作業全体を試す課題と変えたところを試す課題の2つで、確認を受け付ける', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+      await answerEverything(run);
+      const r1 = await run.call('record', {
+        knowledge: [
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: '機器のログに AVG=25 と出れば合格', source: 'ファイルから読んで確かめた', quote: 'skills/debug/SKILL.md の「合格」の節', status: '決まった' }),
+          knowledge({ kind: '合否の決め方', item: '合否の決め方', text: 'kxtool で送っていれば合格', quote: 'kxtool で送ります' }),
+        ],
+      });
+      assert.match(r1, /K-01、K-02 を追加/);
+      writeDraft(run.cwd);
+      const r = await run.callSafe('confirm', confirmArgs({
+        knowledgeIds: ['K-01', 'K-02'],
+        evalTasks: [
+          { prompt: 'センサーの平均値の誤りを、最初から最後まで直してください。', criteria: ['K-01'], settings: { task: { week: 'W42' } } },
+          { prompt: 'KX-200 にデプロイして、機器のログを保存してください。', criteria: ['K-02'], settings: { task: { week: 'W42' } } },
+        ],
+        rebuild: { keep: ['デバッグの流れ'], change: ['生成プラグインの形にする（統括・作業・検証の役に分かれる）', 'デプロイの決まりを足す'] },
+        version: '1.0.0',
+      }));
+      assert.equal(r.ok, true, r.error);
+      assert.deepEqual(run.readState().confirmation.criteria, [{ id: 'C-01', knowledge: 'K-01' }, { id: 'C-02', knowledge: 'K-02' }]);
+    });
+  });
+
+  test('REQ-058 D14 合格の条件の番号：引き継いだ合否の決め方は元の task.json の番号のまま。直した・足した合否の決め方は、元の番号の最大の続き。見本にも同じ番号が出る', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { task: { ...PLUGIN_TASKLIKE, criteria: [{ id: 'C-03', text: 'x', knowledge: 'K-02' }, { id: 'C-07', text: 'y', knowledge: 'K-04' }] } } });
+      await run.call('record', { knowledge: [{ id: 'K-04', text: 'dbg_log.h も dbg_log.c も変えていなければ合格', status: '決まった', quote: '今は c も' }] }); // K-06
+      const added = await readyToConfirmChange(run, { carried: ['K-01', 'K-02', 'K-03', 'K-05'] }); // K-07
+      const ids = ['K-01', 'K-02', 'K-03', 'K-05', 'K-06', added];
+      const evalTasks = [
+        { prompt: PLUGIN_EVALS[0].prompt, criteria: ['K-02', 'K-06'], settings: { task: { week: 'W42' } } },
+        { prompt: 'KX-200 にデプロイしてください。', criteria: [added], settings: { task: { week: 'W42' } } },
+      ];
+      const text = await run.call('confirm', changeConfirmArgs(ids, { evalTasks }));
+      assert.deepEqual(run.readState().confirmation.criteria, [{ id: 'C-03', knowledge: 'K-02' }, { id: 'C-08', knowledge: 'K-06' }, { id: 'C-09', knowledge: added }]);
+
+      const sampleUrl = new URL(/見本：(\S+)/.exec(text)[1]);
+      const api = (pathname, method = 'GET') => fetch(`${sampleUrl.origin}${pathname}?k=${sampleUrl.searchParams.get('k')}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
+      await api('/api/start', 'POST');
+      const state = await (await api('/api/state')).json();
+      assert.deepEqual(state.run.iterations[0].criteria.map((c) => c.id), ['C-03', 'C-08', 'C-09']);
+    });
+  });
+
+  test('REQ-020 REQ-059 直すときも、確認の後に決まりが変われば（付け直しを含む）、示し直すまで「生成」に進めない', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      const added = await readyToConfirmChange(run);
+      await run.call('confirm', changeConfirmArgs([...ALL_IDS, added]));
+      await run.call('record', { knowledge: [{ id: 'K-03', text: 'ログは logs/kx200.log に保存する', quote: '場所が変わった' }] }); // K-07
+      const r = await run.callSafe('progress', { stage: '生成', approvalQuote: 'はい、直してください' });
+      assert.equal(r.ok, false);
+      assert.equal(r.error, '直す前の確認で示した仕事のやり方や決まりの一覧と、今の「決まった」ものが違います（示していない：K-07。決まったものでなくなった：K-03）。plugin-creator_confirm で示し直して、ユーザーによいと答えてもらってください。');
+      await run.call('confirm', changeConfirmArgs(['K-01', 'K-02', 'K-04', 'K-05', 'K-07', added]));
+      const done = await run.callSafe('progress', { stage: '生成', approvalQuote: 'はい、直してください' });
+      assert.equal(done.ok, true, done.error);
+      const state = run.readState();
+      assert.equal(state.stage, 'generate');
+      // 組み立てのスクリプトが読むもの（取り決め I1・I4）
+      assert.deepEqual(state.confirmation.criteria, [{ id: 'C-01', knowledge: 'K-02' }, { id: 'C-02', knowledge: 'K-04' }, { id: 'C-03', knowledge: added }]);
+      assert.equal(state.confirmation.version, '0.2.0');
+      assert.deepEqual(state.knowledge.filter((k) => k.status === 'decided').map((k) => [k.id, k.itemName]), [['K-01', '進め方'], ['K-02', '合否の決め方'], ['K-04', '合否の決め方'], ['K-05', 'いつもと違うとき'], [added, '合否の決め方'], ['K-07', '決まった書き方やルール']]);
+      assert.deepEqual(state.knowledge.find((k) => k.id === 'K-07').replaces, 'K-03');
+    });
+  });
+});
+
+const PLUGIN_TASKLIKE = { name: '組み込みのデバッグ', maxIterationsDefault: 3, workers: [{ agent: 'worker', label: 'デバッグする係' }], settings: [], displays: [] };

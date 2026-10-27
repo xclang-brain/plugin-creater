@@ -102,18 +102,19 @@ describe('作業の定義の決まりの確かめ（schema-check）', () => {
     assert.ok(expected.some(Boolean) && expected.some((v) => !v), '合格と不合格の両方を含めた');
   });
 
-  test('REQ-027 合否の基準は、ナレッジの文のまま、番号 C-01 から書き込む（作業の定義の案は変えない）', () => {
+  test('REQ-027 合否の基準は、番号つきで受けた基準（ナレッジの文のまま）を、番号を付け直さずに書き込む（作業の定義の案は変えない）', () => {
     const draft = clone(GOOD_TASK);
     delete draft.criteria;
     const before = clone(draft);
-    const rows = [
-      { id: 'K-02', text: '見出しが「今週の実績」「来週の予定」の順に並んでいれば合格' },
-      { id: 'K-05', text: '数値は  半角で  書く' },
+    // 番号は change.mjs の criteriaRows が付ける（直すときは元の番号を引き継ぐので、C-01 から始まらないこともある。BLUEPRINT 4.4）
+    const criteria = [
+      { id: 'C-02', text: '見出しが「今週の実績」「来週の予定」の順に並んでいれば合格', knowledge: 'K-02', extra: '使わない欄' },
+      { id: 'C-04', text: '数値は  半角で  書く', knowledge: 'K-05' },
     ];
-    const task = injectCriteria(draft, rows);
+    const task = injectCriteria(draft, criteria);
     assert.deepEqual(task.criteria, [
-      { id: 'C-01', text: '見出しが「今週の実績」「来週の予定」の順に並んでいれば合格', knowledge: 'K-02' },
-      { id: 'C-02', text: '数値は  半角で  書く', knowledge: 'K-05' },
+      { id: 'C-02', text: '見出しが「今週の実績」「来週の予定」の順に並んでいれば合格', knowledge: 'K-02' },
+      { id: 'C-04', text: '数値は  半角で  書く', knowledge: 'K-05' },
     ]);
     assert.deepEqual(draft, before, '案を書き換えない');
     assert.deepEqual(checkSchema(task, schema), []);

@@ -45,7 +45,8 @@ export async function runInnerForGenerated(o) {
   convert(pluginDir, convertedRoot);
   const evalDir = path.join(loaded.dir, 'inner');
   const json = JSON.parse(fs.readFileSync(path.join(evalDir, 'eval.json'), 'utf8'));
-  const task = { id: json.id, dir: evalDir, json, personaId: loaded.persona.id };
+  // 模擬ユーザーに擬似の機器（device）があれば、内側の EVAL が腕ごとに起動して使う（testing.md 7章）
+  const task = { id: json.id, dir: evalDir, json, personaId: loaded.persona.id, device: loaded.persona.device ?? null };
   const userRoleFor = (_task, arm, n) => {
     const home = fs.mkdtempSync(path.join(outDir, `user-${arm}-${n}-`));
     const role = createUserRole({ persona: loaded.persona, styleName, query: userRoleQuery, home, envExtra });

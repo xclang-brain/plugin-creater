@@ -3,7 +3,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,9 +12,10 @@ import { loadPersona } from '../personas/validate.mjs';
 import { CREATOR_SERVER_NAME, createCreatorToolkit, createFakeGh, toMcpResult } from './creator-tools.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
 import { placePersonaFiles } from './outer-run.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `creator-tools-${prefix}-`));
+const tmp = (prefix) => tempDir(`creator-tools-${prefix}`);
 const SETTABLE = ITEMS.filter((i) => !i.computed && !i.rebuildOnly).map((i) => i.name);
 
 async function withToolkit(fn) {
@@ -32,10 +32,10 @@ async function withToolkit(fn) {
   }
 }
 
-test('REQ-015 エクステンションのツール 8 つを、サーバー名 plugin-creator の MCP のツールとして出す', async () => {
+test('REQ-015 REQ-052 エクステンションのツール 9 つ（直すときの change を含む）を、サーバー名 plugin-creator の MCP のツールとして出す', async () => {
   await withToolkit(async ({ toolkit }) => {
     assert.equal(CREATOR_SERVER_NAME, 'plugin-creator');
-    assert.deepEqual(toolkit.tools.map((t) => t.name), ['open', 'state', 'progress', 'record', 'confirm', 'results', 'doc_text', 'issue']);
+    assert.deepEqual(toolkit.tools.map((t) => t.name), ['open', 'state', 'progress', 'record', 'confirm', 'results', 'doc_text', 'issue', 'change']);
     assert.deepEqual(toolkit.mcpTools, toolkit.tools.map((t) => `mcp__plugin-creator__${t.name}`));
     for (const t of toolkit.tools) {
       assert.equal(typeof t.description, 'string');

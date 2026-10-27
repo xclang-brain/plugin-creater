@@ -1497,14 +1497,25 @@ class RealTemplate(Base):
 
 
 
+def test_sources():
+    """このフォルダの試験のファイル（test_*.py）すべての中身。"""
+    texts = []
+    for name in sorted(os.listdir(HERE)):
+        if name.startswith("test_") and name.endswith(".py"):
+            with open(os.path.join(HERE, name), encoding="utf-8") as f:
+                texts.append(f.read())
+    return texts
+
+
 class Naming(unittest.TestCase):
-    """試験の名前は、確かめる要件の番号（REQ-nnn）か、要件でない設計の決まりなら設計書の節の印を持つ（X2-10、憲章 第6条3項）。"""
+    """試験の名前は、確かめる要件の番号（REQ-nnn）か、要件でない設計の決まりなら設計書の節の印を持つ（X2-10、憲章 第6条3項）。
+    このフォルダのすべての試験のファイル（test_change.py なども）を見る。"""
 
     MARK = re.compile(r"^test_(REQ_(\d{3})|BLUEPRINT_\d+|creator_structure_\d+(?:_\d+)?|generated_plugin_structure_\d+(?:_\d+)?)_\w+$")
 
     def test_creator_structure_2_every_test_name_has_a_requirement_number_or_a_design_marker(self):
-        with open(os.path.abspath(__file__), encoding="utf-8") as f:
-            names = re.findall(r"^    def (test_\w+)\(self", f.read(), re.M)
+        names = [n for text in test_sources() for n in re.findall(r"^    def (test_\w+)\(self", text, re.M)]
+        self.assertGreater(len(test_sources()), 1)
         self.assertGreater(len(names), 100)
         self.assertEqual([n for n in names if not self.MARK.match(n)], [])
 
@@ -1513,8 +1524,7 @@ class Naming(unittest.TestCase):
         for name in os.listdir(os.path.join(REPO, "docs", "specs")):
             with open(os.path.join(REPO, "docs", "specs", name), encoding="utf-8") as f:
                 known.update(re.findall(r"^### REQ-(\d{3}) ", f.read(), re.M))
-        with open(os.path.abspath(__file__), encoding="utf-8") as f:
-            used = set(re.findall(r"^    def test_REQ_(\d{3})_", f.read(), re.M))
+        used = {n for text in test_sources() for n in re.findall(r"^    def test_REQ_(\d{3})_", text, re.M)}
         self.assertGreater(len(used), 5)
         self.assertEqual(sorted(used - known), [])
 

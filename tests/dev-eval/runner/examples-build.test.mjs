@@ -4,18 +4,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { loadPersona } from '../personas/validate.mjs';
 import { GENERATED_MARK, ExamplesError, buildExamples, describeGrade, excerptOfQuestion, findLeaks, hasVersionInHead, markedAnswers, markedQuestions, parseArgs, prepareQuoteBody, readRecords, redact, renderExample, selectRecords } from './examples-build.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
 const PERSONAS = path.join(here, '..', 'personas');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `examples-${prefix}-`));
+const tmp = (prefix) => tempDir(`examples-${prefix}`);
 const weekly = (await loadPersona(path.join(PERSONAS, 'weekly-report'), { allStyles: true })).persona;
 
 /** 外側の EVAL の記録（outer-record/1）の見本 */

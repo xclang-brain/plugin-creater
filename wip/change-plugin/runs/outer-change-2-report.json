@@ -1,0 +1,295 @@
+{
+  "kind": "dev-outer-eval",
+  "status": "completed",
+  "stopped": null,
+  "startedAt": "2026-10-26T22:46:55.375Z",
+  "finishedAt": "2026-10-26T23:25:42.791Z",
+  "plan": [
+    {
+      "persona": "edl-change",
+      "kind": "change",
+      "heldout": false,
+      "style": "normal",
+      "arm": "with",
+      "model": "claude-opus-5-5",
+      "n": 1,
+      "inner": false
+    }
+  ],
+  "summaries": [
+    {
+      "persona": "edl-change",
+      "heldout": false,
+      "style": "normal",
+      "arm": "with",
+      "model": "claude-opus-5-5",
+      "stopped": "changed",
+      "score": 0.9736842105263158,
+      "verdictOk": false,
+      "failed": [
+        "last-time-asked"
+      ],
+      "exampleCandidate": false,
+      "faults": [
+        {
+          "kind": "leaked",
+          "knowledge": "cc-toolchain"
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "cc-static"
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "dp-image"
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "dp-steps"
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "dp-console"
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "log-dbg"
+        }
+      ],
+      "costUsd": 10.9451,
+      "counts": {
+        "questions": {
+          "total": 38,
+          "askTool": 38,
+          "text": 0
+        },
+        "askToolCalls": {
+          "calls": 38,
+          "maxQuestionsPerCall": 1,
+          "callsWithMultiple": 0
+        },
+        "pending": {
+          "count": 0,
+          "items": []
+        },
+        "aiDecisions": {
+          "count": 1
+        },
+        "recordRefusals": {
+          "total": 0,
+          "fixed": 0,
+          "unfixed": 0,
+          "byTool": {
+            "progress": {
+              "calls": 15,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            },
+            "record": {
+              "calls": 28,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            },
+            "confirm": {
+              "calls": 1,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            }
+          },
+          "samples": []
+        },
+        "nonJapaneseTexts": {
+          "count": 4,
+          "samples": [
+            {
+              "seq": 57,
+              "text": "Now dispatching the two readers in parallel."
+            },
+            {
+              "seq": 165,
+              "text": "Now the list of current rules."
+            },
+            {
+              "seq": 524,
+              "text": "## 直す前の確認（2/3）：試しに動かして採点する試験\n\n### 引き継ぐ課題：T-01（直す案なし）\n- **頼みの言葉：** 「inputs/src にあ"
+            },
+            {
+              "seq": 544,
+              "text": "Now writing T-02's provisional source files as shown in the confirmation."
+            }
+          ]
+        }
+      },
+      "trace": [
+        {
+          "id": "cc-toolchain",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-static",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-debug",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-git-pull",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": false,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-image",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-steps",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-console",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-marker",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-ip",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": false,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-uname",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": false,
+          "verdict": "ok"
+        },
+        {
+          "id": "log-dbg",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "k15-now",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "screen-same",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": null,
+          "verdict": "not-written"
+        },
+        {
+          "id": "script-usage",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": null,
+          "verdict": "not-written"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "scores": {
+      "with:claude-opus-5-5": {
+        "runs": 1,
+        "score": 0.9736842105263158,
+        "verdictOk": 0,
+        "userRoleFailed": 0
+      }
+    },
+    "counts": {
+      "with:claude-opus-5-5": {
+        "runs": 1,
+        "questions": {
+          "total": 38,
+          "askTool": 38,
+          "text": 0
+        },
+        "askToolCalls": {
+          "calls": 38,
+          "maxQuestionsPerCall": 1,
+          "callsWithMultiple": 0
+        },
+        "pending": 0,
+        "aiDecisions": 1,
+        "recordRefusals": {
+          "total": 0,
+          "fixed": 0,
+          "unfixed": 0
+        },
+        "nonJapaneseTexts": 4
+      }
+    },
+    "delta": null,
+    "control": null,
+    "costUsd": 10.9451
+  },
+  "warnings": [],
+  "reportFile": "/tmp/claude-0/-home-user/64a230fb-e6a2-510f-9e7e-9e6600fd34a8/scratchpad/runs/outer-change-2/outer-report.json",
+  "heldoutRecordsDir": null
+}

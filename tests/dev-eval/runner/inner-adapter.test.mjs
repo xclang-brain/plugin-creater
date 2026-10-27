@@ -10,6 +10,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { ANSWER_FAILED, addTools, createInnerAdapter, describeOpened, OPEN_FAILED, ORCHESTRATOR_BUILTIN_TOOLS, RECORD_FAILED, rewriteField, rewriteModel } from './inner-adapter.mjs';
 import { buildSamplePlugin, pythonHasModules, tmpDir } from './inner-test-support.mjs';
+import { deviceEnv } from './inner-run.mjs';
 
 const SKIP = !pythonHasModules() ? 'Python に PyYAML と jsonschema がありません' : false;
 
@@ -96,6 +97,42 @@ test('REQ-007 統括の起動：統括の定義の本文を効かせ、画面で
   assert.equal(started.model, 'claude-opus-5.5');
   assert.equal(started.executionMode, 'background');
   assert.equal(started.parentAgentId, undefined);
+});
+
+test('REQ-061 擬似の機器：統括の query にも、メインと同じ機器の道具（PATH の先頭）と環境変数、サンドボックスの通信と見えない場所を渡し、外への通信の求めを断ってメインと同じ配列に残す', { skip: SKIP }, async (t) => {
+  const stateDir = tmpDir('device-state');
+  const device = {
+    binDir: '/dev-eval/device/bin', env: { KXEMU_GATEWAY: 'http://localhost:4242', KXEMU_ADDRS: '192.168.7.2' },
+    sandboxNetwork: { allowedDomains: ['localhost:4242'], strictAllowlist: true }, sandboxFilesystem: { denyRead: [stateDir], denyWrite: [stateDir] },
+  };
+  const refused = [{ toolName: 'SandboxNetworkAccess', host: 'main.example.com' }]; // メインが先に断ったもの
+  const { adapter, queries } = await setup(t, {
+    sandbox: true, sandboxNetwork: device.sandboxNetwork, sandboxFilesystem: device.sandboxFilesystem, denyNetwork: true, refused,
+    envExtra: deviceEnv({ A: '1' }, device, { PATH: '/usr/bin' }),
+  });
+  await startRun(adapter);
+  assert.equal(queries.length, 1);
+  const { options } = queries[0];
+  assert.equal(options.agent, 'weekly-report:orchestrator');
+  assert.equal(options.env.PATH, `/dev-eval/device/bin${path.delimiter}/usr/bin`);
+  assert.equal(options.env.KXEMU_GATEWAY, 'http://localhost:4242');
+  assert.equal(options.env.KXEMU_ADDRS, '192.168.7.2');
+  assert.equal(options.env.A, '1');
+  assert.equal(options.sandbox.enabled, true);
+  assert.deepEqual(options.sandbox.network, { allowedDomains: ['localhost:4242'], strictAllowlist: true });
+  assert.deepEqual(options.sandbox.filesystem, { denyRead: [stateDir], denyWrite: [stateDir] });
+  const decision = await options.canUseTool('SandboxNetworkAccess', { host: 'example.com' }, {});
+  assert.equal(decision.behavior, 'deny');
+  assert.deepEqual(refused, [{ toolName: 'SandboxNetworkAccess', host: 'main.example.com' }, { toolName: 'SandboxNetworkAccess', host: 'example.com' }]);
+});
+
+test('REQ-061 擬似の機器を使わない統括の query は、今までどおり（サンドボックスの通信の設定を足さず、通信の求めも断らない）', { skip: SKIP }, async (t) => {
+  const { adapter, queries } = await setup(t, { sandbox: true });
+  await startRun(adapter);
+  const { options } = queries[0];
+  assert.equal(options.sandbox.network, undefined);
+  assert.equal(options.sandbox.filesystem, undefined);
+  assert.equal((await options.canUseTool('SandboxNetworkAccess', { host: 'example.com' }, {})).behavior, 'allow');
 });
 
 test('REQ-007 エージェントごとの思考の深さ：置き換えた版のコピーの定義の effort に書き、統括は query() の effort にも渡す。選ばないエージェントは変えない', { skip: SKIP }, async (t) => {

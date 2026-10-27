@@ -131,6 +131,34 @@ class SkillSize(Creator):
         self.assertFailsWith("skill-size", "5001 トークン", "o200k_base")
 
     @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_every_skill_is_measured_and_named_in_the_reason(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "行\n" * 501)
+        problems = self.problems("skill-size")
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("change-plugin の SKILL.md", problems[0])
+        self.assertIn("501 行", problems[0])
+        one_line_of = lambda n: "hello" + " hello" * (n - 1)
+        self.write("skills/test-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "test-plugin") + one_line_of(5001))
+        self.assertFailsWith("skill-size", "test-plugin の SKILL.md", "5001 トークン")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_other_skills_within_the_limits_pass(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "行\n" * 500)
+        self.assertEqual([], self.problems("skill-size"))
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_make_plugin_is_still_required_when_other_skills_exist(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "本文\n")
+        os.remove(self.path("skills/make-plugin/SKILL.md"))
+        self.assertFailsWith("skill-size", "skills/make-plugin/SKILL.md がない")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_the_skills_of_this_repository_fit(self):
+        report = cc.run_creator_checks(cc.REPO)
+        size = {c.id: c for c in report.checks}["skill-size"]
+        self.assertEqual([], size.errors)
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
     def test_text_that_looks_like_a_special_token_can_be_counted(self):
         self.skill("<|endoftext|> を書いても数えられる\n")
         self.assertEqual([], self.problems("skill-size"))

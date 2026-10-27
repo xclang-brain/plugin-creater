@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""kxtool: KX-200 の「メーカーの道具」の役をする、擬似の機器の利用側（開発の試験用）。
+
+  kxtool [-d HOST] send FILE [NAME]        機器の /tmp/NAME に送る（TFTP）
+  kxtool [-d HOST] console [-c CMD]...     シリアルコンソールでコマンドを打ち、出た文字を表示する（-c なしなら標準入力の各行）
+  kxtool [-d HOST] log [--from N]          コンソールに出た文字の記録を表示する
+
+HOST は -d か環境変数 KX_DEVICE（既定 192.168.7.2）。
+つなぎ方:
+  - 本物の形（既定）：TFTP（HOST:$KX_TFTP_PORT、既定 69）と、コンソールの TCP（HOST:$KX_CONSOLE_PORT、既定 2323）
+  - 試験の形：環境変数 KXEMU_GATEWAY（例 http://localhost:41234）があれば、擬似の機器の HTTP のつなぎ口に送る。
+    HTTP_PROXY があれば、NO_PROXY を見ずにそのプロキシを通す（Claude Code のサンドボックスの中から届くのはこれだけ）。
+    KXEMU_ADDRS（カンマ区切り）があれば、そこにない HOST には「No route to host」で失敗する。
+"""
+
+import argparse
+import base64
+import http.client
+import os
+import re
+import socket
+import struct
+import sys
+import time
+import urllib.parse
+
+PROMPT = b'kx200# '
+
+
+def fail(msg, code=2):
+    print(f'kxtool: {msg}', file=sys.stderr)
+    sys.exit(code)
+
+
+# ---- 試験の形（HTTP のつなぎ口） -------------------------------------------------------------------
+
+def gateway_request(method, path, body=b'', timeout=60, device=None):
+    gw = urllib.parse.urlsplit(os.environ['KXEMU_GATEWAY'])
+    proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+    headers = {'Content-Length': str(len(body))}
+    if device:
+        headers['X-KX-Device'] = device  # 機器の記録に、エージェントが使ったアドレスを残す
+    if proxy:
+        pu = urllib.parse.urlsplit(proxy if '://' in proxy else 'http://' + proxy)
+        conn = http.client.HTTPConnection(pu.hostname, pu.port or 80, timeout=timeout)
+        target = f'http://{gw.hostname}:{gw.port}{path}'
+        if pu.username is not None:
+            cred = f'{urllib.parse.unquote(pu.username)}:{urllib.parse.unquote(pu.password or "")}'
+            headers['Proxy-Authorization'] = 'Basic ' + base64.b64encode(cred.encode()).decode()
+    else:
+        conn = http.client.HTTPConnection(gw.hostname, gw.port, timeout=timeout)
+        target = path
+    try:
+        conn.request(method, target, body=body, headers=headers)
+        res = conn.getresponse()
+        return res.status, res.read(), dict(res.getheaders())
+    except OSError as e:
+        fail(f'cannot reach device: {e}')
+    finally:
+        conn.close()
+
+
+def check_route(host):
+    addrs = [a.strip() for a in os.environ.get('KXEMU_ADDRS', '').split(',') if a.strip()]
+    if addrs and host not in addrs:
+        fail(f'{host}: No route to host')
+
+
+# ---- 本物の形（TFTP と TCP のコンソール） ------------------------------------------------------------
+
+def tftp_put(host, port, path, name, timeout=3.0):
+    data = open(path, 'rb').read()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    sock.sendto(struct.pack('!H', 2) + name.encode() + b'\0octet\0', (host, port))
+    try:
+        pkt, server = sock.recvfrom(1500)  # 機器は別のポート（TID）から ACK 0 を返す
+    except (socket.timeout, OSError) as e:
+        fail(f'{host}: tftp: no response ({e})')
+    op, num = struct.unpack('!HH', pkt[:4])
+    if op == 5:
+        fail(f'tftp: error {num}: {pkt[4:-1].decode(errors="replace")}')
+    if op != 4 or num != 0:
+        fail('tftp: unexpected reply')
+    block = 1
+    while True:
+        chunk = data[(block - 1) * 512:block * 512]
+        packet = struct.pack('!HH', 3, block & 0xFFFF) + chunk
+        for _ in range(5):
+            sock.sendto(packet, server)
+            try:
+                pkt, _ = sock.recvfrom(1500)
+            except socket.timeout:
+                continue
+            op, num = struct.unpack('!HH', pkt[:4])
+            if op == 5:
+                fail(f'tftp: error {num}: {pkt[4:-1].decode(errors="replace")}')
+            if op == 4 and num == block & 0xFFFF:
+                break
+        else:
+            fail('tftp: timeout')
+        if len(chunk) < 512:
+            return len(data)
+        block += 1
+
+
+def tcp_console(host, port, lines, timeout):
+    try:
+        s = socket.create_connection((host, port), timeout=timeout)
+    except OSError as e:
+        fail(f'{host}:{port}: {e}')
+    s.settimeout(timeout)
+
+    def read_until_prompt():
+        buf = b''
+        while not buf.endswith(PROMPT):
+            chunk = s.recv(4096)
+            if not chunk:
+                return buf, True
+            buf += chunk
+        return buf, False
+
+    first, closed = read_until_prompt()
+    if b'busy' in first:
+        fail(first.decode(errors='replace').strip())
+    out = b''
+    for line in lines:
+        s.sendall(line.encode() + b'\n')
+        try:
+            chunk, closed = read_until_prompt()
+        except socket.timeout:
+            fail(f'console: no prompt within {timeout}s after {line!r}')
+        out += chunk
+        if closed:
+            break
+    s.close()
+    return out
+
+
+# ---- 入口 --------------------------------------------------------------------------------------------
+
+def main():
+    p = argparse.ArgumentParser(prog='kxtool')
+    p.add_argument('-d', '--device', default=os.environ.get('KX_DEVICE', '192.168.7.2'))
+    sub = p.add_subparsers(dest='cmd', required=True)
+    ps = sub.add_parser('send')
+    ps.add_argument('file')
+    ps.add_argument('name', nargs='?')
+    pc = sub.add_parser('console')
+    pc.add_argument('-c', dest='commands', action='append')
+    pc.add_argument('-t', '--timeout', type=float, default=30.0)
+    pl = sub.add_parser('log')
+    pl.add_argument('--from', dest='start', type=int, default=0)
+    a = p.parse_args()
+    gateway = 'KXEMU_GATEWAY' in os.environ
+    if gateway:
+        check_route(a.device)
+
+    if a.cmd == 'send':
+        name = a.name or os.path.basename(a.file)
+        if not os.path.isfile(a.file):
+            fail(f'{a.file}: No such file')
+        if gateway:
+            status, body, _ = gateway_request('PUT', '/files/' + urllib.parse.quote(name), open(a.file, 'rb').read(), device=a.device)
+            if status != 200:
+                fail(f'send failed: {body.decode(errors="replace").strip()}')
+            size = os.path.getsize(a.file)
+        else:
+            size = tftp_put(a.device, int(os.environ.get('KX_TFTP_PORT', '69')), a.file, name)
+        print(f'sent {a.file} -> {a.device}:/tmp/{name} ({size} bytes)')
+    elif a.cmd == 'console':
+        lines = a.commands if a.commands else sys.stdin.read().splitlines()
+        if gateway:
+            status, body, _ = gateway_request('POST', '/console', '\n'.join(lines).encode() + b'\n', timeout=a.timeout + 30, device=a.device)
+            if status != 200:
+                fail(body.decode(errors='replace').strip())
+            out = body
+        else:
+            out = tcp_console(a.device, int(os.environ.get('KX_CONSOLE_PORT', '2323')), lines, a.timeout)
+        sys.stdout.write(out.decode('utf-8', 'replace').replace('\r\n', '\n'))
+        if not out.endswith(b'\n'):
+            sys.stdout.write('\n')
+    elif a.cmd == 'log':
+        if not gateway:
+            fail('log: only available through the console server')
+        status, body, _ = gateway_request('GET', f'/console.log?from={a.start}')
+        sys.stdout.write(body.decode('utf-8', 'replace').replace('\r\n', '\n'))
+
+
+if __name__ == '__main__':
+    main()

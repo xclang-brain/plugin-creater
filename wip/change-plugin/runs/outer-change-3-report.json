@@ -1,0 +1,306 @@
+{
+  "kind": "dev-outer-eval",
+  "status": "completed",
+  "stopped": null,
+  "startedAt": "2026-10-27T01:12:27.931Z",
+  "finishedAt": "2026-10-27T01:48:43.102Z",
+  "plan": [
+    {
+      "persona": "edl-change",
+      "kind": "change",
+      "heldout": false,
+      "style": "normal",
+      "arm": "with",
+      "model": "claude-opus-5-5",
+      "n": 1,
+      "inner": false
+    }
+  ],
+  "summaries": [
+    {
+      "persona": "edl-change",
+      "heldout": false,
+      "style": "normal",
+      "arm": "with",
+      "model": "claude-opus-5-5",
+      "stopped": "changed",
+      "score": 0.9210526315789473,
+      "verdictOk": false,
+      "failed": [
+        "screen-url-shown",
+        "not-embedded:dp-ip",
+        "stage2"
+      ],
+      "exampleCandidate": false,
+      "faults": [
+        {
+          "kind": "leaked",
+          "knowledge": "dp-image",
+          "answerIndex": 0
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "dp-marker",
+          "answerIndex": 3
+        },
+        {
+          "kind": "leaked",
+          "knowledge": "log-dbg",
+          "answerIndex": 3
+        }
+      ],
+      "costUsd": 9.7233,
+      "counts": {
+        "questions": {
+          "total": 23,
+          "askTool": 23,
+          "text": 0
+        },
+        "askToolCalls": {
+          "calls": 23,
+          "maxQuestionsPerCall": 1,
+          "callsWithMultiple": 0
+        },
+        "pending": {
+          "count": 0,
+          "items": []
+        },
+        "aiDecisions": {
+          "count": 1
+        },
+        "recordRefusals": {
+          "total": 0,
+          "fixed": 0,
+          "unfixed": 0,
+          "byTool": {
+            "progress": {
+              "calls": 12,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            },
+            "record": {
+              "calls": 17,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            },
+            "confirm": {
+              "calls": 1,
+              "refused": 0,
+              "fixed": 0,
+              "unfixed": 0
+            }
+          },
+          "samples": []
+        },
+        "nonJapaneseTexts": {
+          "count": 12,
+          "samples": [
+            {
+              "seq": 58,
+              "text": "I'll have the reader look at the current plugin and the two skills in parallel."
+            },
+            {
+              "seq": 152,
+              "text": "Now the scope confirmation."
+            },
+            {
+              "seq": 162,
+              "text": "Next, I'll confirm the current list of rules."
+            },
+            {
+              "seq": 371,
+              "text": "Thanks. Now I'll build the draft of the changes inside the work folder (the plug"
+            },
+            {
+              "seq": 391,
+              "text": "Next, part 2/2: the trial-run tests."
+            }
+          ]
+        },
+        "flowShown": {
+          "shown": false,
+          "seq": null
+        }
+      },
+      "trace": [
+        {
+          "id": "cc-toolchain",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-static",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-debug",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "cc-git-pull",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": false,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-image",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-steps",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-console",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-marker",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "dp-ip",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": true,
+          "verdict": "wrongly-embedded"
+        },
+        {
+          "id": "dp-uname",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": false,
+          "verdict": "ok"
+        },
+        {
+          "id": "log-dbg",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "k15-now",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": true,
+          "excludedHit": null,
+          "verdict": "ok"
+        },
+        {
+          "id": "screen-same",
+          "volunteer": true,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": null,
+          "verdict": "not-written"
+        },
+        {
+          "id": "script-usage",
+          "volunteer": false,
+          "asked": true,
+          "answered": true,
+          "embedded": null,
+          "excludedHit": null,
+          "verdict": "not-written"
+        },
+        {
+          "id": "skill-rest",
+          "volunteer": false,
+          "asked": true,
+          "answered": false,
+          "embedded": null,
+          "excludedHit": null,
+          "verdict": "not-answered"
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "scores": {
+      "with:claude-opus-5-5": {
+        "runs": 1,
+        "score": 0.9210526315789473,
+        "verdictOk": 0,
+        "userRoleFailed": 0
+      }
+    },
+    "counts": {
+      "with:claude-opus-5-5": {
+        "runs": 1,
+        "questions": {
+          "total": 23,
+          "askTool": 23,
+          "text": 0
+        },
+        "askToolCalls": {
+          "calls": 23,
+          "maxQuestionsPerCall": 1,
+          "callsWithMultiple": 0
+        },
+        "pending": 0,
+        "aiDecisions": 1,
+        "recordRefusals": {
+          "total": 0,
+          "fixed": 0,
+          "unfixed": 0
+        },
+        "nonJapaneseTexts": 12,
+        "flowShown": 0
+      }
+    },
+    "delta": null,
+    "control": null,
+    "costUsd": 9.7233
+  },
+  "warnings": [],
+  "reportFile": "/tmp/claude-0/-home-user/64a230fb-e6a2-510f-9e7e-9e6600fd34a8/scratchpad/runs/outer-change-3/outer-report.json",
+  "heldoutRecordsDir": null
+}

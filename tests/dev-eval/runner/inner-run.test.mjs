@@ -2,7 +2,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { asksForReply, buildChecks, modelFields, runInnerArm } from './inner-run.mjs';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+
+import { asksForReply, buildChecks, DEVICE_UNFENCED_WARNING, deviceEnv, entrySkillsOf, modelFields, runInnerArm, standaloneChecks } from './inner-run.mjs';
 import { buildSamplePlugin, pythonHasModules, tmpDir } from './inner-test-support.mjs';
 
 const SKIP = !pythonHasModules() ? 'Python に PyYAML と jsonschema がありません' : false;
@@ -83,6 +91,26 @@ test('REQ-041 なしの実行：モデルの利用枠の上限に達したら st
   assert.match(run.reason, /利用枠の上限/);
   assert.equal(run.grading, null);
   assert.equal(run.limitHit.where, 'main');
+});
+
+test('testing.md 5章 実行の後に、試すエージェントと統括・作業・検証のエージェントのホームの .cache（Playwright の Chromium など）を消す', async () => {
+  const fixture = buildSamplePlugin();
+  const runDir = tmpDir('cache');
+  const put = (home) => {
+    fs.mkdirSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cache', 'ms-playwright', 'chromium-1200', 'chrome'), 'x');
+  };
+  put(path.join(runDir, 'home-orchestrator-1')); // inner-adapter.mjs の home-<id> の代わり
+  const sdk = fakeSdk([[init(), say('週報を作りました。'), done('週報を作りました。')]]);
+  const query = sdk.query;
+  sdk.query = (params) => { put(params.options.env.HOME); return query(params); };
+  const run = await runInnerArm({ arm: 'without', task: fixture.task, runDir, sdk, userRole: async () => '', judge });
+  assert.equal(run.status, 'completed', run.reason);
+  assert.equal(path.dirname(sdk.calls[0].options.env.HOME), runDir);
+  for (const home of ['home-main', 'home-orchestrator-1']) {
+    assert.equal(fs.existsSync(path.join(runDir, home)), true, home);
+    assert.equal(fs.existsSync(path.join(runDir, home, '.cache')), false, home);
+  }
 });
 
 test('REQ-041 なしの実行：エージェントが誤りで終わったら incomplete にして、できていた分を採点する', async () => {
@@ -425,4 +453,307 @@ test('REQ-007 サブエージェントの文や、空の文は、ユーザー役
     arm: 'without', task: fixture.task, runDir: tmpDir('notes-sub'), sdk, userRole: async (request) => { requests.push(request); return '今週です'; }, judge,
   });
   assert.deepEqual(requests.map((r) => r.notes), [['確認です。']]);
+});
+
+// ---- 擬似の機器（testing.md 7章）と単体の腕（REQ-062） ----------------------------------------------------------
+
+/** 擬似の機器の代わり（tests/dev-eval/device/kxdevice.mjs の startDevice の返す形。I10）。起動・写し・止めた回数を数える */
+function fakeDevice({ failStart = false, console = 'kx200# kxapp run sensor\nAVG=25\n[kxapp] sensor exited (status=0)\n' } = {}) {
+  const calls = { started: [], copied: [], stopped: 0 };
+  const startDevice = async ({ stateDir }) => {
+    calls.started.push(stateDir);
+    if (failStart) throw new Error('qemu-arm がありません');
+    fs.mkdirSync(stateDir, { recursive: true });
+    return {
+      env: { KXEMU_GATEWAY: 'http://localhost:4242', KXEMU_ADDRS: '192.168.7.2' },
+      binDir: '/dev-eval/device/bin',
+      sandboxNetwork: { allowedDomains: ['localhost:4242'], strictAllowlist: true },
+      sandboxFilesystem: { denyRead: [stateDir], denyWrite: [stateDir] },
+      ready: { isolate: 'bwrap' },
+      copyRecordsTo(workDir) {
+        calls.copied.push(workDir);
+        const dir = path.join(workDir, '.device');
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'console.log'), console);
+        fs.writeFileSync(path.join(dir, 'history.jsonl'), '{"seq": 1, "ev": "boot"}\n');
+        return { consoleLog: path.join(dir, 'console.log'), history: path.join(dir, 'history.jsonl') };
+      },
+      async stop() {
+        calls.stopped += 1;
+      },
+    };
+  };
+  return { startDevice, calls };
+}
+
+/** 機器のログだけを見る課題（入力なし） */
+function deviceTask() {
+  const dir = tmpDir('device-task');
+  const json = {
+    id: 'D-01', prompt: 'センサーの平均値を直してください。', inputs: [],
+    criteria: [{ id: 'C-01', text: '機器のログに AVG=25 と出る', grading: 'program', check: { type: 'contains', file: '.device/console.log', text: 'AVG=25' } }],
+  };
+  fs.writeFileSync(path.join(dir, 'eval.json'), JSON.stringify(json));
+  return { id: json.id, dir, json };
+}
+
+test('REQ-061 擬似の機器：PATH の先頭に機器の道具のフォルダを足し、機器の環境変数を足す（試験の仕組みの PATH は後ろに残す）', () => {
+  const device = { binDir: '/d/bin', env: { KXEMU_GATEWAY: 'http://localhost:1', KXEMU_ADDRS: '192.168.7.2' } };
+  assert.deepEqual(deviceEnv({ A: '1' }, device, { PATH: '/usr/bin' }), { A: '1', KXEMU_GATEWAY: 'http://localhost:1', KXEMU_ADDRS: '192.168.7.2', PATH: `/d/bin${path.delimiter}/usr/bin` });
+  assert.equal(deviceEnv({ PATH: '/x' }, device, { PATH: '/usr/bin' }).PATH, `/d/bin${path.delimiter}/x`, '足す変数に PATH があれば、その前に置く');
+  assert.equal(deviceEnv({}, device, {}).PATH, '/d/bin');
+  assert.deepEqual(deviceEnv({ A: '1' }, null), { A: '1' }, '機器がなければ変えない');
+});
+
+test('REQ-061 擬似の機器：実行ごとに起動し、試すエージェントに道具と口だけを渡す。外への通信の求めは断って残す。採点の前に機器の記録を作業フォルダに写し、終わったら止める', async () => {
+  const task = deviceTask();
+  const runDir = tmpDir('device-run');
+  const { startDevice, calls } = fakeDevice();
+  const decisions = [];
+  const sdk = {
+    calls: [],
+    query: ({ prompt, options }) => {
+      sdk.calls.push({ prompt, options });
+      return (async function* generate() {
+        yield { type: 'system', subtype: 'init', session_id: 's', model: 'x', plugins: [], mcp_servers: [] };
+        decisions.push(await options.canUseTool('SandboxNetworkAccess', { host: 'example.com' }, {}));
+        // エージェントが機器の記録と同じ名前のファイルを作っても、試験の仕組みが写す機器の記録で採点する
+        fs.mkdirSync(path.join(options.cwd, '.device'), { recursive: true });
+        fs.writeFileSync(path.join(options.cwd, '.device', 'console.log'), 'エージェントが書いた AVG=99\n');
+        yield { type: 'result', subtype: 'success', is_error: false, result: '直しました。', total_cost_usd: 0, num_turns: 1, session_id: 's' };
+      })();
+    },
+  };
+  const run = await runInnerArm({ arm: 'without', task, runDir, sdk, userRole: async () => '', judge, sandbox: true, startDevice });
+  assert.equal(run.status, 'completed', run.reason);
+  // 機器は作業フォルダの外（実行のフォルダの device）に、1回だけ起動し、終わったら止めた
+  assert.deepEqual(calls.started, [path.join(runDir, 'device')]);
+  assert.equal(calls.stopped, 1);
+  assert.deepEqual(calls.copied, [run.workDir]);
+  // 試すエージェントに渡したもの：PATH の先頭の道具、機器の環境変数、サンドボックスの通信と見えない場所
+  const { options } = sdk.calls[0];
+  assert.ok(options.env.PATH.startsWith(`/dev-eval/device/bin${path.delimiter}`), options.env.PATH);
+  assert.equal(options.env.KXEMU_GATEWAY, 'http://localhost:4242');
+  assert.equal(options.env.KXEMU_ADDRS, '192.168.7.2');
+  assert.deepEqual(options.sandbox.network, { allowedDomains: ['localhost:4242'], strictAllowlist: true });
+  assert.deepEqual(options.sandbox.filesystem, { denyRead: [path.join(runDir, 'device')], denyWrite: [path.join(runDir, 'device')] });
+  // 外への通信の求めは断り、記録に残す
+  assert.equal(decisions[0].behavior, 'deny');
+  assert.deepEqual(run.networkRefused, [{ toolName: 'SandboxNetworkAccess', host: 'example.com' }]);
+  // 採点は、写した機器の記録で行った（エージェントが書いたファイルではない）
+  assert.equal(run.grading.passed, 1);
+  assert.match(fs.readFileSync(path.join(run.workDir, '.device', 'console.log'), 'utf8'), /AVG=25/);
+  assert.equal(run.device.isolate, 'bwrap');
+  assert.equal(run.device.records.consoleLog, path.join(run.workDir, '.device', 'console.log'));
+  const saved = JSON.parse(fs.readFileSync(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal(saved.device.binDir, '/dev-eval/device/bin');
+  assert.deepEqual(saved.networkRefused, run.networkRefused);
+  assert.equal(saved.device.fenced, true);
+  assert.deepEqual(saved.warnings, []);
+});
+
+test('REQ-061 擬似の機器：サンドボックスなしで動かすと、通信と中身の制限が効いていないことを、機器の記録と result.json の警告に残す', async () => {
+  const task = deviceTask();
+  const runDir = tmpDir('device-unfenced');
+  const { startDevice } = fakeDevice();
+  const sdk = fakeSdk([[init(), done('直しました。')]]);
+  const run = await runInnerArm({ arm: 'without', task, runDir, sdk, userRole: async () => '', judge, sandbox: false, startDevice });
+  assert.equal(run.status, 'completed', run.reason);
+  assert.equal(sdk.calls[0].options.sandbox, undefined, 'サンドボックスなしでは、機器の口だけを許す設定も入らない');
+  const saved = JSON.parse(fs.readFileSync(path.join(runDir, 'result.json'), 'utf8'));
+  assert.equal(saved.device.fenced, false);
+  assert.deepEqual(saved.warnings, [DEVICE_UNFENCED_WARNING]);
+  assert.match(DEVICE_UNFENCED_WARNING, /擬似の機器の通信と中身の制限が効いていない/);
+  // 機器を使わない実行には、この警告を出さない
+  const plain = await runInnerArm({ arm: 'without', task, runDir: tmpDir('plain-unfenced'), sdk: fakeSdk([[init(), done('x')]]), userRole: async () => '', judge, sandbox: false });
+  assert.deepEqual(plain.warnings, []);
+});
+
+test('REQ-061 擬似の機器：機器のない実行は今までどおり（サンドボックスの通信の設定を足さず、通信の求めも断らない）', async () => {
+  const task = deviceTask();
+  const decisions = [];
+  const sdk = {
+    calls: [],
+    query: ({ options }) => {
+      sdk.calls.push(options);
+      return (async function* generate() {
+        decisions.push(await options.canUseTool('SandboxNetworkAccess', { host: 'example.com' }, {}));
+        yield { type: 'result', subtype: 'success', is_error: false, result: '終わり', total_cost_usd: 0, num_turns: 1, session_id: 's' };
+      })();
+    },
+  };
+  const run = await runInnerArm({ arm: 'without', task, runDir: tmpDir('no-device'), sdk, userRole: async () => '', judge, sandbox: true });
+  assert.equal(sdk.calls[0].sandbox.network, undefined);
+  assert.equal(decisions[0].behavior, 'allow');
+  assert.deepEqual(run.networkRefused, []);
+  assert.equal(run.device, undefined);
+  assert.equal(run.grading.passed, 0, '機器の記録がないので不合格');
+});
+
+test('REQ-061 擬似の機器：起動できなければ、エージェントを動かさずに error にして理由を残す。途中で失敗しても、機器は止める', async () => {
+  const failing = fakeDevice({ failStart: true });
+  const run = await runInnerArm({ arm: 'without', task: deviceTask(), runDir: tmpDir('device-fail'), sdk: neverSdkFor(), userRole: async () => '', judge, startDevice: failing.startDevice });
+  assert.equal(run.status, 'error');
+  assert.match(run.reason, /擬似の機器を起動できませんでした：qemu-arm がありません/);
+  assert.equal(run.grading, null);
+  assert.ok(fs.existsSync(path.join(run.runDir, 'result.json')));
+  // メインの実行が投げても、機器は止める
+  const broken = fakeDevice();
+  const thrown = await runInnerArm({
+    arm: 'without', task: deviceTask(), runDir: tmpDir('device-throw'), userRole: async () => '', judge, startDevice: broken.startDevice,
+    sdk: { query: () => { throw new Error('API に届きません'); } },
+  });
+  assert.equal(thrown.status, 'error');
+  assert.equal(broken.calls.stopped, 1);
+});
+
+test('REQ-061 擬似の機器（腕 with）：画面から始めた統括の query にも、機器の道具（PATH の先頭）と環境変数、機器の口だけの通信と見えない場所を渡し、外への通信の求めを断って残す', { skip: SKIP }, async () => {
+  const fixture = buildSamplePlugin();
+  const runDir = tmpDir('device-with');
+  const { startDevice, calls: deviceCalls } = fakeDevice();
+  const decisions = [];
+  const sdk = {
+    calls: [],
+    query: ({ prompt, options }) => {
+      sdk.calls.push({ prompt, options });
+      if (options.agent) {
+        // 統括：外への通信を求めてから終える
+        return (async function* generate() {
+          yield { type: 'system', subtype: 'init', session_id: 'orch', model: 'claude-sonnet-5-5', plugins: [], mcp_servers: [] };
+          decisions.push(await options.canUseTool('SandboxNetworkAccess', { host: 'orch.example.com' }, {}));
+          yield { type: 'result', subtype: 'success', is_error: false, result: '終わりました。', total_cost_usd: 0, num_turns: 1, session_id: 'orch' };
+        })();
+      }
+      // メイン：つなぎ口の画面を開くツールを本物の MCP で呼び、URL をチャットに出す
+      return (async function* generate() {
+        yield { ...init(['weekly-report'], [{ name: 'weekly-report', status: 'connected' }]), session_id: 'main' };
+        const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+        await options.mcpServers['weekly-report'].instance.connect(serverSide);
+        const client = new Client({ name: 'test', version: '1' });
+        await client.connect(clientSide);
+        const opened = await client.callTool({ name: 'open', arguments: { requestText: prompt } });
+        await client.close();
+        const url = /http:\/\/127\.0\.0\.1:\d+\/\?k=[\w-]+/.exec(opened.content[0].text)[0];
+        yield { ...say(`画面を開きました：${url}`), session_id: 'main' };
+        yield { ...done(`画面を開きました：${url}`), session_id: 'main' };
+      })();
+    },
+  };
+  // 画面の代わり：人と同じく、画面の開始の窓口に設定を送って始める
+  const screen = {
+    operate: async ({ url, settings }) => {
+      const u = new URL(url);
+      const r = await fetch(`${u.origin}/api/start?k=${u.searchParams.get('k')}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) });
+      assert.equal(r.status, 200, await r.text());
+      return { finished: true, timedOut: false, endReason: { kind: 'all_passed' }, endReasonText: 'ok', summary: null, snapshots: [] };
+    },
+  };
+  const run = await runInnerArm({
+    arm: 'with', task: fixture.task, runDir, sdk, userRole: async () => '', judge, screen, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot,
+    sandbox: true, startDevice, taskSettings: { week: '2026-W42' },
+  });
+  assert.equal(run.status, 'completed', run.reason);
+  const main = sdk.calls.find((c) => !c.options.agent).options;
+  const orchestrator = sdk.calls.find((c) => c.options.agent)?.options;
+  assert.ok(orchestrator, '画面から統括が始まった');
+  assert.equal(orchestrator.agent, 'weekly-report:orchestrator');
+  for (const options of [main, orchestrator]) {
+    assert.ok(options.env.PATH.startsWith(`/dev-eval/device/bin${path.delimiter}`), options.env.PATH);
+    assert.equal(options.env.KXEMU_GATEWAY, 'http://localhost:4242');
+    assert.deepEqual(options.sandbox.network, { allowedDomains: ['localhost:4242'], strictAllowlist: true });
+    assert.deepEqual(options.sandbox.filesystem, { denyRead: [path.join(runDir, 'device')], denyWrite: [path.join(runDir, 'device')] });
+  }
+  assert.equal(decisions[0].behavior, 'deny');
+  assert.deepEqual(run.networkRefused, [{ toolName: 'SandboxNetworkAccess', host: 'orch.example.com' }], '統括が断られた通信の求めも、同じ記録に残る');
+  assert.equal(deviceCalls.stopped, 1);
+});
+
+function neverSdkFor() {
+  return { query: () => { throw new Error('機器を起動できないときは、エージェントを動かさないはずです'); } };
+}
+
+test('REQ-062 単体の腕の確かめ：入口のスキルを使わず、画面を開くツールを呼ばず、統括を始めなかったか', () => {
+  const clean = standaloneChecks({ pluginName: 'edl', serverName: 'edl', mainTools: ['Skill', 'Bash', 'Write'], agentTypes: [], skillsUsed: ['edl:cross-compile-rules'], entrySkills: ['embedded-debug-loop'] });
+  assert.equal(clean.openCalled, false);
+  assert.equal(clean.orchestratorStarted, false);
+  assert.equal(clean.entrySkillUsed, false);
+  assert.ok(clean.checks.every((c) => c.ok));
+  const opened = standaloneChecks({ pluginName: 'edl', serverName: 'edl', mainTools: ['mcp__edl__open'], agentTypes: ['edl:orchestrator'], skillsUsed: ['edl:embedded-debug-loop'], entrySkills: ['embedded-debug-loop'] });
+  assert.deepEqual(opened.checks.map((c) => [c.id, c.ok]), [['entry-skill-not-used', false], ['open-not-called', false], ['orchestrator-not-started', false]]);
+  // 入口のスキルを渡さないときは、プラグインの名前のスキルを入口とみなす
+  assert.equal(standaloneChecks({ pluginName: 'edl', serverName: null, mainTools: [], agentTypes: [], skillsUsed: ['edl:edl'] }).entrySkillUsed, true);
+  assert.equal(standaloneChecks({ pluginName: 'edl', serverName: null, mainTools: ['edl_open'], agentTypes: ['general-purpose', 'edl:worker'] }).openCalled, true);
+  assert.equal(standaloneChecks({ pluginName: 'edl', serverName: null, mainTools: [], agentTypes: ['edl:worker'] }).orchestratorStarted, false);
+});
+
+test('REQ-062 単体の腕：プラグインを読み込み、つなぎ口と画面を使わずに、メインの手番が終わったら採点する。統括を始めたかを記録に残す', { skip: SKIP }, async () => {
+  const fixture = buildSamplePlugin();
+  fs.writeFileSync(path.join(fixture.convertedRoot, '.eval', 'rules.md'), '返事は日本語で書く。\n');
+  const toolUse = (name, input) => ({ type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [{ type: 'tool_use', id: `t-${name}`, name, input }] }, parent_tool_use_id: null });
+  const sdk = fakeSdk([[
+    init(['weekly-report'], []),
+    toolUse('Skill', { skill: 'weekly-report:weekly-report' }),
+    toolUse('Agent', { subagent_type: 'weekly-report:orchestrator', description: '統括', prompt: '週報' }),
+    say('作業を頼みました。'),
+    done('作業を頼みました。'),
+  ]]);
+  const { startDevice, calls } = fakeDevice();
+  const run = await runInnerArm({ arm: 'standalone', task: fixture.task, runDir: tmpDir('standalone'), sdk, userRole: async () => '', judge, convertedRoot: fixture.convertedRoot, startDevice });
+  assert.equal(run.status, 'completed', run.reason);
+  const options = sdk.calls[0].options;
+  assert.deepEqual(options.plugins, [{ type: 'local', path: fixture.convertedRoot }], 'プラグインは読み込む');
+  assert.equal(options.mcpServers, undefined, 'つなぎ口（画面と記録のツール）は使わない');
+  assert.equal(options.systemPrompt.append, '返事は日本語で書く。', 'プラグインのインストラクションは入る');
+  assert.deepEqual(run.skillsUsed, ['weekly-report:weekly-report']);
+  // 入口のスキル（変換レポートで画面を開くツールを使う skills/weekly-report/SKILL.md）から始めたことが分かる。画面を開くツールは出していないので呼べない
+  assert.deepEqual(run.standalone, { openCalled: false, orchestratorStarted: true, entrySkillUsed: true });
+  assert.deepEqual(run.checks.map((c) => [c.id, c.ok]), [['entry-skill-not-used', false], ['open-not-called', true], ['orchestrator-not-started', false]]);
+  assert.equal(run.screen, null);
+  assert.equal(run.grading.total, 2);
+  assert.equal(calls.stopped, 1, '単体の腕でも機器を起動して止める');
+  // 統括を始めずに終えた実行は、確かめに合格する
+  const plain = fakeSdk([[init(['weekly-report'], []), say('週報を書きました。'), done('週報を書きました。')]]);
+  const ok = await runInnerArm({ arm: 'standalone', task: fixture.task, runDir: tmpDir('standalone-ok'), sdk: plain, userRole: async () => '', judge, convertedRoot: fixture.convertedRoot });
+  assert.ok(ok.checks.every((c) => c.ok), JSON.stringify(ok.checks));
+  // プラグインが読み込まれなかったら error（なしと同じ結果を、単体の結果にしない）
+  const missing = await runInnerArm({ arm: 'standalone', task: fixture.task, runDir: tmpDir('standalone-missing'), sdk: fakeSdk([[init([], []), done('x')]]), userRole: async () => '', judge, convertedRoot: fixture.convertedRoot });
+  assert.equal(missing.status, 'error');
+  assert.match(missing.reason, /weekly-report が読み込まれませんでした/);
+  await assert.rejects(runInnerArm({ arm: 'standalone', task: fixture.task, runDir: tmpDir('standalone-noconv'), sdk: plain, userRole: async () => '', judge }), /convertedRoot/);
+  await assert.rejects(runInnerArm({ arm: 'both', task: fixture.task, runDir: tmpDir('bad-arm'), sdk: plain, userRole: async () => '', judge }), /with・without・standalone/);
+});
+
+test('REQ-062 入口のスキル：変換レポートで、画面を開くツールを使う skills/<名前>/SKILL.md のフォルダの名前。見つからなければプラグインの名前', () => {
+  const tool = (name, where) => ({ from: `p_${name}`, to: `mcp__p__${name}`, server: 'p', tool: name, where });
+  assert.deepEqual(entrySkillsOf({ plugin: 'p', extension_tools: [tool('open', ['skills/start/SKILL.md', 'agents/orchestrator.agent.md']), tool('record', ['skills/rules/SKILL.md'])] }), ['start']);
+  assert.deepEqual(entrySkillsOf({ plugin: 'p', extension_tools: [tool('open', 'skills/start/SKILL.md')] }), ['start'], 'where が文字でもよい');
+  assert.deepEqual(entrySkillsOf({ plugin: 'p', extension_tools: [] }), ['p']);
+  const fixture = SKIP ? null : buildSamplePlugin();
+  if (fixture) assert.deepEqual(entrySkillsOf(JSON.parse(fs.readFileSync(path.join(fixture.convertedRoot, '.eval', 'conversion-report.json'), 'utf8'))), ['weekly-report']);
+});
+
+const KXDEVICE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'device', 'kxdevice.mjs');
+const NO_DEVICE = !fs.existsSync(KXDEVICE) ? '擬似の機器（tests/dev-eval/device/kxdevice.mjs）がない' : spawnSync('python3', ['--version']).status !== 0 ? 'python3 がない' : false;
+
+test('REQ-061 本物の擬似の機器（startDevice の形 I10）：試すエージェントの PATH の kxtool が、渡した環境変数で機器に届き、その記録が作業フォルダに写る', { skip: NO_DEVICE, timeout: 60_000 }, async () => {
+  const { startDevice } = await import(KXDEVICE);
+  const task = deviceTask();
+  task.json.criteria[0].check = { type: 'contains', file: '.device/console.log', text: 'armv7l GNU/Linux' };
+  let tool = null;
+  const sdk = {
+    query: ({ options }) => (async function* generate() {
+      // 試すエージェントのコマンドの代わりに、渡された PATH と環境変数のまま kxtool を動かす（サンドボックスの外。偽の SDK）
+      tool = spawnSync('kxtool', ['console', '-c', 'uname -a'], { cwd: options.cwd, env: options.env, encoding: 'utf8', timeout: 30_000 });
+      yield { type: 'result', subtype: 'success', is_error: false, result: '見ました。', total_cost_usd: 0, num_turns: 1, session_id: 's' };
+    })(),
+  };
+  const run = await runInnerArm({ arm: 'without', task, runDir: tmpDir('real-device'), sdk, userRole: async () => '', judge, startDevice: (o) => startDevice({ ...o, isolate: 'none' }) });
+  assert.equal(tool.status, 0, `${tool.stderr}${tool.error?.message ?? ''}`);
+  assert.match(tool.stdout, /Linux kx200 .*armv7l/);
+  assert.equal(run.status, 'completed', run.reason);
+  assert.equal(run.grading.passed, 1, JSON.stringify(run.grading.results));
+  assert.match(fs.readFileSync(path.join(run.workDir, '.device', 'history.jsonl'), 'utf8'), /uname -a/);
+  assert.equal(run.device.network.strictAllowlist, true);
+  assert.match(run.device.network.allowedDomains[0], /^localhost:\d+$/);
 });

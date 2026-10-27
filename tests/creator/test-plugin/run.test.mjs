@@ -198,6 +198,45 @@ describe('実行の流れ', () => {
     await assert.rejects(runEval({ pluginDir: noPlugin, runs: 1, sdk: bad.sdk, screen: bad.screen }), /plugin\.json が見つかりません/);
   });
 
+  test('REQ-061 課題に bin があれば、あり・なしの両方で、作業フォルダに写した bin を PATH の先頭に足す', async () => {
+    const task = sampleTask({ inputs: ['inputs/bin'], bin: 'inputs/bin' });
+    const world = createWorld({ tasks: [task], files: { 'tests/eval/T-01/inputs/bin/kxtool': '#!/bin/sh\necho ok\n' }, outputs: GOOD });
+    const result = await run(world);
+    assert.deepEqual(statuses(result), ['completed', 'completed']);
+    for (const [i, client] of world.sdk.clients.entries()) {
+      const binDir = path.join(client.options.workingDirectory, 'inputs', 'bin');
+      assert.equal(client.options.connection.env.PATH, `${binDir}${path.delimiter}/usr/bin`);
+      assert.equal(result.runs[i].binDir, binDir);
+      if (process.platform !== 'win32') assert.notEqual(fs.statSync(path.join(binDir, 'kxtool')).mode & 0o111, 0);
+    }
+    assert.equal('binDir' in (await run(createWorld({ outputs: GOOD }))).runs[0], false, 'bin のない課題には付けない');
+  });
+
+  test('REQ-061 agent_ran の基準は、その実行の記録で動いたエージェント（<プラグイン>:<名前> の形も）で採点する', async () => {
+    const task = sampleTask({ criteria: [{ id: 'C-01', text: '作業役が動いた', grading: 'program', check: { type: 'agent_ran', agent: 'worker' } }] });
+    const world = createWorld({
+      tasks: [task],
+      files: { 'com.github.copilot/agents/worker.agent.md': '---\ndescription: "x"\n---\n' },
+      outputs: GOOD,
+      behavior: {
+        onSend: async (session) => {
+          if (session.variant === 'without') return world.defaultOnSend(session);
+          session.emit('subagent.started', { agentName: 'weekly-report:worker', agentType: 'weekly-report:worker', model: 'gpt-6-luna', executionMode: 'sync' }, 'ag-1');
+          return world.defaultOnSend(session);
+        },
+      },
+    });
+    const result = await run(world);
+    assert.deepEqual(result.runs.map((r) => [r.variant, r.criteria[0].pass]), [['with', true], ['without', false]]);
+    assert.match(result.runs[0].criteria[0].reason, /weekly-report:worker」が動いた/);
+  });
+
+  test('REQ-061 ランタイムに渡す環境の PATH の先頭に、bin の場所を足せる', () => {
+    assert.equal(runtimeEnv(ENV, { binDir: '/w/inputs/bin' }).PATH, `/w/inputs/bin${path.delimiter}/usr/bin`);
+    assert.equal(runtimeEnv({ HOME: '/h' }, { binDir: '/w/inputs/bin' }).PATH, '/w/inputs/bin');
+    assert.equal(runtimeEnv(ENV).PATH, '/usr/bin');
+  });
+
   test('REQ-041 plugin.json から名前と版を読む。ランタイムに渡す環境は、文字の値だけにする', () => {
     const world = createWorld({ pluginName: 'abc' });
     assert.deepEqual(readPluginInfo(world.pluginDir), { name: 'abc', version: '1.2.3', path: world.pluginDir });

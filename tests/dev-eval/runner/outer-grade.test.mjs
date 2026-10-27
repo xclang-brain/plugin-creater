@@ -3,7 +3,6 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -13,19 +12,25 @@ import {
   HAIKU_REQUIRED,
   collectGeneratedFiles,
   countRecorded,
+  environmentNotGraded,
+  exchangesOf,
   gradeAllItemsHeard,
   gradeFirstRun,
   gradeHurryOptions,
   gradeModels,
   gradeNoGenerationBeforeApproval,
   gradeOuter,
+  gradeScreenUrlShown,
+  isTestCode,
   knowledgeTrace,
   normalizeModelId,
   normalizeQuote,
   quoteFound,
   scopes,
   sha256OfBuffer,
+  userRoleFaults,
 } from './outer-grade.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.join(here, '..', 'personas');
@@ -59,8 +64,17 @@ function script() {
       toolEvents.push({ seq: (seq += 1), type: 'tool.call', callId, tool: 'progress', args });
       toolEvents.push({ seq: (seq += 1), type: 'tool.result', callId, tool: 'progress', isError, result: isError ? '断った' : '記録しました' });
     },
+    /** 画面を開くツール（open）の成功した呼び出しと、返り値の URL をチャットに書いた文（REQ-043） */
+    open(url = SCREEN_URL) {
+      callId += 1;
+      toolEvents.push({ seq: (seq += 1), type: 'tool.call', callId, tool: 'open', args: {} });
+      toolEvents.push({ seq: (seq += 1), type: 'tool.result', callId, tool: 'open', isError: false, result: `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${url}` });
+      items.push({ seq: (seq += 1), kind: 'creator.text', text: `決まったことは plugin-creator の画面で見られます：${url}` });
+    },
   };
 }
+
+const SCREEN_URL = 'http://127.0.0.1:41234/?k=abcDEF123_-xyz';
 
 const allItemsState = (overrides = {}) => ({ stage: 'confirm', rebuild: false, items: Object.fromEntries(ITEM_KEYS.map((k) => [k, { status: 'asked' }])), ...overrides });
 
@@ -261,6 +275,119 @@ test('REQ-015 ナレッジごとの記録：聞いた・答えた・組み込ま
   assert.equal(by['man-yen'].verdict, 'not-asked');
 });
 
+// 外側の EVAL（改善）2回目の問いと答え（記録の seq。文は抜き書き）。ナレッジの言葉は、そのときの edl-change の模擬ユーザーのもの
+const RUN2_KNOWLEDGE = [
+  { id: 'cc-toolchain', volunteer: false, markers: { asked: 'コンパイラ|ツールチェーン|arm-linux|gcc|ビルドのやり方|ビルドの仕方|ビルドの決まり', answered: 'arm-linux-gnueabihf' } },
+  { id: 'dp-console', volunteer: false, markers: { asked: 'console|コマンドを打|打ち方|打つ方法|入り方|どうやって入|kxtool', answered: 'console' } },
+  { id: 'log-dbg', volunteer: false, markers: { asked: 'DBG_LOG|dbg_log|ログ関数|ログの出し方|ログをどう出|printf|書き足|ログ追加', answered: 'DBG_LOG' } },
+];
+const RUN2 = {
+  194: { header: 'つまずき', question: '初めての人がつまずくところは、AI もつまずきやすいところです。KX-200 でクロスコンパイルしてボードにデプロイし、ログを取るとき、初めての人がやると、どこで間違えそうですか？', choices: [{ label: '書く', description: 'Other 欄に書く' }, { label: '特にない', description: '思い当たるところはない' }], answer: '書く\n\n1. 開発機の gcc でビルドしてしまう。KX-200 は arm-linux-gnueabihf-gcc でビルドしないと動きません。' },
+  228: { header: 'DBG_LOG', question: '「KX-200 では、dbg_log.h の DBG_LOG でログを出し、printf を直接使わない」という決まりですか？', choices: [{ label: 'このとおり', description: 'この決まりで合っている' }], answer: 'このとおり\n\nKX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出す決まりで、printf は直接使いません。' },
+  397: { header: '進め方', question: '次の順で進めると理解しました。\n1. ソースにログを足す（dbg_log.h の DBG_LOG）\n4. kxtool -d <アドレス> send でボードに送る\n違うところと足りないところを書いてください。', choices: [{ label: 'ない', description: 'このとおり' }, { label: '書く', description: 'Other 欄に書く' }], answer: '書く\n\n2. 手順5で、ボードでコマンドを打つときは `kxtool -d <アドレス> console -c "<コマンド>"` で打ちます。' },
+  411: { header: '守ること', question: 'KX-200 で守らないと困ることは、次のとおりと理解しました。\n- arm-linux-gnueabihf-gcc でビルドする\n\nKX-200 で、ほかに守らないと困ることはありますか？', choices: [{ label: 'ない', description: 'このとおり' }, { label: '書く', description: 'Other 欄に書く' }], answer: '書く\n\n2. ボードでコマンドを打つときは、kxtool -d <アドレス> console -c "<コマンド>" で打ちます。\n\nほかに、KX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出し、printf は直接使わない決まりです。' },
+};
+const run2Exchanges = (seqs) => seqs.map((seq, index) => ({ seq: seq + 1, index, via: 'AskUserQuestion', signal: false, ...RUN2[seq] }));
+const leakedOf = (exchanges) => knowledgeTrace({ persona: { knowledge: RUN2_KNOWLEDGE }, exchanges, scope: { embedded: '', excluded: '', task: '' } }).filter((t) => t.leaked);
+// answered の言葉（arm-linux-gnueabihf）が asked に当たらないナレッジ。問いに示しただけで聞いてはいない、を作るため（RUN2_KNOWLEDGE の3つは、answered の言葉が asked にも当たる）
+const NARROW = { id: 'cc-name', volunteer: false, markers: { asked: 'コンパイラ|ツールチェーン', answered: 'arm-linux-gnueabihf' } };
+const traceNarrow = (exchanges) => knowledgeTrace({ persona: { knowledge: [NARROW] }, exchanges, scope: { embedded: '', excluded: '', task: '' } });
+
+test('REQ-015 聞かれずに話した：前に答えた・クリエイターが示したナレッジを、後の答えでくり返しただけなら、漏れにしない（外側の EVAL〔改善〕2回目の [412]）', () => {
+  // [412] は、確かめで答えた DBG_LOG（[229]）と、進め方の問いへの答えで足した console（[398]）をくり返した。
+  // [195] の arm-linux-gnueabihf は、まだ会話に出ていないナレッジを、つまずきの問い（asked に当たらない）に答えて話した
+  const exchanges = run2Exchanges([194, 228, 397, 411]);
+  const trace = leakedOf(exchanges);
+  assert.deepEqual(trace.map((t) => [t.id, t.leakedAt]), [['cc-toolchain', 0]]);
+  assert.deepEqual(userRoleFaults({ exchanges, trace }), [{ kind: 'leaked', knowledge: 'cc-toolchain', answerIndex: 0 }]);
+  // 前のやり取りがなければ、[412] の DBG_LOG と console は、守ることの問い（どちらの asked にも当たらない）に答えて話したことになる
+  assert.deepEqual(leakedOf(run2Exchanges([411])).map((t) => t.id), ['dp-console', 'log-dbg']);
+  // [411] の問いは arm-linux-gnueabihf-gcc を示している（クリエイターが示した）ので、[412] でくり返しても漏れにしない。
+  // asked が [411] の問いに当たらないナレッジで見る（cc-toolchain の asked は gcc で [411] に当たり、示した経路を確かめられないため）
+  const repeated = run2Exchanges([411]).map((e) => ({ ...e, answer: `${e.answer}\narm-linux-gnueabihf-gcc でビルドします。` }));
+  assert.equal(traceNarrow(repeated)[0].leaked, false);
+  // 問いが示していなければ、同じ答えは漏れ
+  assert.deepEqual(traceNarrow(repeated.map((e) => ({ ...e, question: 'KX-200 で、ほかに守らないと困ることはありますか？' }))).map((t) => [t.leaked, t.leakedAt]), [[true, 0]]);
+});
+
+/** 質問のツールの問いと答えの組（exchangesOf の形） */
+const ask = (index, header, question, choices, answer, shown = '') => ({ seq: index * 2 + 2, index, via: 'AskUserQuestion', signal: false, header, question, choices, answer, shown });
+
+test('REQ-015 聞かれずに話した：前の答えで話した（聞かれて答えた）ナレッジは、問いに示されていなくても、後でくり返して漏れにしない', () => {
+  // 問い0は log-dbg の asked（ログの出し方）に当たり、DBG_LOG（answered）を示していない。答え0で初めて話した
+  const exchanges = [
+    ask(0, 'ログ', 'ログの出し方に決まりはありますか？', [], 'ログは DBG_LOG で出します。'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'printf ではなく DBG_LOG を使います。'),
+  ];
+  assert.deepEqual(leakedOf(exchanges).map((t) => t.id), []);
+  // 答え0が、聞かれていない問いへの漏れなら、漏れは答え0の1つだけ（答え1は、出たナレッジのくり返し）
+  const leakedTwice = [
+    ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ログは DBG_LOG で出します。'),
+    ask(1, 'まとめ', 'ほかにありますか？', [], 'DBG_LOG の決まりだけです。'),
+  ];
+  assert.deepEqual(leakedOf(leakedTwice).map((t) => [t.id, t.leakedAt]), [['log-dbg', 0]]);
+});
+
+test('REQ-015 聞かれずに話した：クリエイターが問い・選択肢・チャットの文・同じ呼び出しのほかの問いに示したナレッジは、出たものとして扱う', () => {
+  // この問いの選択肢の説明に DBG_LOG がある（クリエイターが示した）
+  const shownInChoice = [ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [{ label: 'ない', description: 'DBG_LOG で出す決まりのほかはない' }], '書く\n\nログは DBG_LOG で出します。')];
+  assert.deepEqual(leakedOf(shownInChoice).map((t) => t.id), []);
+  // 前の問いが arm-linux-gnueabihf を示した（asked には当たらない）。答え0では話さず、後のほかの話題の答えで話しても漏れにしない
+  const shownEarlier = [
+    ask(0, '進め方', '次の順で進めると理解しました。1. arm-linux-gnueabihf-gcc でビルドする 2. ボードに送る。よいですか？', [], 'はい'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'arm-linux-gnueabihf-gcc でビルドしないと動きません。'),
+  ];
+  assert.deepEqual(traceNarrow(shownEarlier).map((t) => [t.asked, t.leaked]), [[false, false]]);
+  // 選択肢に示したときも同じ
+  const shownInEarlierChoice = [ask(0, '進め方', 'ビルドはどうしますか？', [{ label: '今のまま', description: 'arm-linux-gnueabihf-gcc でビルドする' }], '今のまま'), shownEarlier[1]];
+  assert.deepEqual(traceNarrow(shownInEarlierChoice).map((t) => t.leaked), [false]);
+  // 前の問いが示していなければ、答え1は漏れ
+  assert.deepEqual(traceNarrow([{ ...shownEarlier[0], question: '次の順で進めると理解しました。よいですか？' }, shownEarlier[1]]).map((t) => [t.leaked, t.leakedAt]), [[true, 1]]);
+  // 前の答えの後のチャットの文（shown）に示した
+  assert.deepEqual(leakedOf([ask(0, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ログは DBG_LOG で出します。', '読み取った決まり：ログは DBG_LOG で出す。')]).map((t) => t.id), []);
+  // 前の問いの選択肢が console の asked（打ち方）に当たった（聞いた）だけでは、出たにしない。後のほかの話題の答えで話したら漏れ
+  const choice = [{ label: '打ち方を書く', description: 'Other 欄に書く' }, { label: 'ない', description: 'このとおり' }];
+  const askedInChoice = [
+    ask(0, '進め方', 'ボードでの手順は、次のとおりでよいですか？', choice, 'ない'),
+    ask(1, '守ること', 'ほかに守らないと困ることはありますか？', [], 'ボードでは console -c で打ちます。'),
+  ];
+  assert.deepEqual(leakedOf(askedInChoice).map((t) => [t.id, t.leakedAt]), [['dp-console', 1]]);
+  // 見出しと問いが asked に当たらず、選択肢だけに当たる問いへの答えで話したら、漏れにする（その問いが聞いたかは、見出しと問いで見る）
+  const answeredInChoiceQuestion = [ask(0, '進め方', 'ボードでの手順は、次のとおりでよいですか？', choice, 'ボードでは console -c で打ちます。')];
+  assert.deepEqual(leakedOf(answeredInChoiceQuestion).map((t) => [t.id, t.leakedAt]), [['dp-console', 0]]);
+});
+
+test('REQ-015 会話の記録から：答えの shown は、前の答えの後のチャットの文と、同じ質問のツールの呼び出しのほかの問い', () => {
+  const items = [
+    { seq: 1, kind: 'user.request', text: '直したい' },
+    { seq: 2, kind: 'creator.text', text: '画面：http://127.0.0.1:1/?k=x' },
+    { seq: 3, kind: 'creator.question', header: 'ファイル', question: 'どこにありますか？', options: [], group: 1, groupSize: 1 },
+    { seq: 4, kind: 'user.answer', index: 0, via: 'AskUserQuestion', header: 'ファイル', question: 'どこにありますか？', choices: [], answer: 'ここです' },
+    { seq: 5, kind: 'creator.text', text: '読み取った決まり：ログは DBG_LOG で出す。' },
+    { seq: 6, kind: 'tool.use', owner: 'main', id: 't6', name: 'Read', input: {} },
+    // 1 回の呼び出しに問いが 2 つ（group 2）。答えは問いごとに記録される
+    { seq: 7, kind: 'creator.question', header: '守ること', question: 'ほかに守らないと困ることは？', options: [], group: 2, groupSize: 2 },
+    { seq: 8, kind: 'user.answer', index: 1, via: 'AskUserQuestion', header: '守ること', question: 'ほかに守らないと困ることは？', choices: [], answer: 'ボードでは console -c で打ちます。' },
+    { seq: 9, kind: 'creator.question', header: '打ち方', question: 'ボードでは kxtool console -c で打ちますか？', options: [{ label: 'はい', description: 'console -c で打つ' }], group: 2, groupSize: 2 },
+    { seq: 10, kind: 'user.answer', index: 2, via: 'AskUserQuestion', header: '打ち方', question: 'ボードでは kxtool console -c で打ちますか？', choices: [{ label: 'はい', description: 'console -c で打つ' }], answer: 'はい' },
+    // 続きから始めた後の記録で、group の番号が前と同じでも、チャットの文を挟めば別の呼び出し
+    { seq: 11, kind: 'creator.text', text: '続けます。' },
+    { seq: 12, kind: 'creator.question', header: '次', question: 'ほかには？', options: [], group: 2, groupSize: 1 },
+    { seq: 13, kind: 'user.answer', index: 3, via: 'AskUserQuestion', header: '次', question: 'ほかには？', choices: [], answer: 'ない' },
+  ];
+  const ex = exchangesOf(items);
+  assert.deepEqual(ex.map((e) => e.shown), [
+    '画面：http://127.0.0.1:1/?k=x',
+    '読み取った決まり：ログは DBG_LOG で出す。\n打ち方 ボードでは kxtool console -c で打ちますか？ はい console -c で打つ',
+    '守ること ほかに守らないと困ることは？',
+    '続けます。',
+  ]);
+  // 答え1の console は、同じ呼び出しの後の問い（同時に見えている）が示しているので、漏れにしない
+  assert.deepEqual(leakedOf(ex).map((t) => t.id), []);
+  // 後の問いがなければ、答え1の console は漏れ
+  assert.deepEqual(leakedOf(exchangesOf(items.filter((i) => i.seq < 9))).map((t) => [t.id, t.leakedAt]), [['dp-console', 1]]);
+});
+
 test('REQ-017 たまたまの書き方が入っていない：入っていなければ ok。入力の写しにある手がかりの文字は、組み込みに数えない', () => {
   const { persona } = weekly;
   const inputCopy = file('tests/eval/T-01/inputs/先週の売上.csv', '10/5〜10/9 の売上', { text: '10/5〜10/9 の売上' });
@@ -288,8 +415,22 @@ test('REQ-038 見る範囲：課題と基準のファイルは、tests/eval の 
   assert.ok(!s.embedded.includes('weekly_report.md') || files.some((f) => f.rel === 'com.github.copilot/extensions/w/task.json'), '課題と基準のファイルの文字は、組み込みの範囲にも入る（knowledge.json だけが外れる）');
 });
 
+test('REQ-017 入ってはいけない書き方は、生成プラグインの1・2段目の試験のコード（tests/stage1/・tests/stage2/）では見ない。スキル・スクリプト・エージェント・課題と基準・一覧では見る', () => {
+  // 外側の EVAL〔改善〕3回目：作業エージェントが書いた否定の試験（古いアドレスには応答しない）が、古いアドレスの文字を持っていた
+  const run3 = 'done = self.tool("kxtool", "-d", "192.168.7.20", "send", str(image))\nself.assertIn("no response from 192.168.7.20", done.stderr)';
+  const seen = { 'skills/deploy-rules/SKILL.md': 'W-SKILL', 'skills/deploy-rules/scripts/deploy.sh': 'W-SCRIPT', 'com.github.copilot/agents/worker.agent.md': 'W-AGENT', 'tests/eval/T-01/eval.json': 'W-EVAL', 'com.github.copilot/extensions/w/task.json': 'W-TASK', 'tests/knowledge.json': 'W-LIST', 'tests/run.py': 'W-RUN', 'tests/stage3/x.py': 'W-STAGE3', 'skills/x/tests/stage2/y.py': 'W-NESTED' };
+  const s = scopes([file('tests/stage2/task/test_req107_t02_fake_kx200.py', run3), file('tests/stage1/check_extra.py', 'T-STAGE1'), ...Object.entries(seen).map(([rel, text]) => file(rel, text))], []);
+  assert.doesNotMatch(s.excluded, /192\.168\.7\.20|T-STAGE1/);
+  for (const [rel, text] of Object.entries(seen)) assert.ok(s.excluded.includes(text), rel);
+  // 組み込まれたかを見る範囲は変えない
+  assert.match(s.embedded, /192\.168\.7\.20/);
+  assert.equal(isTestCode('tests/stage2/task/test_req107_t02_fake_kx200.py'), true);
+  assert.equal(isTestCode('tests/stage1/check_structure.py'), true);
+  for (const rel of Object.keys(seen)) assert.equal(isTestCode(rel), false, rel);
+});
+
 test('REQ-039 生成プラグインのファイルを読む：.git・tests/results・node_modules は読まない。バイナリは文字なし', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grade-files-'));
+  const dir = tempDir('grade-files');
   const put = (rel, content) => {
     const full = path.join(dir, rel);
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -312,6 +453,7 @@ test('REQ-039 生成プラグインのファイルを読む：.git・tests/resul
 /** 全部の観点に合格する会話と生成物 */
 function passingRun() {
   const s = script();
+  s.open();
   s.use('Write', { file_path: '/w/.plugin-creator-work/draft/task.json', content: '{}' });
   s.answer('成果物は？ ファイルの名前を教えてください', '成果物は weekly_report.md です', { via: 'text' });
   s.progress({ items: ITEM_NAMES.map((item) => ({ item, status: '聞いた', quote: 'weekly_report.md' })) });
@@ -349,6 +491,84 @@ test('REQ-015 全体の採点：すべての観点に合格する会話と生成
   assert.deepEqual(h.verdict.required, HAIKU_REQUIRED);
   assert.equal(h.verdict.ok, true, '1・2段目を動かしていなくても、Haiku は 2 点だけを見る');
   assert.equal(h.exampleCandidate, false, 'Haiku の会話は会話例にしない');
+});
+
+test('REQ-039 全体の採点：2段目の不合格がすべてディスクの誤り（diskErrorsOnly）なら、環境で止まったとして stage2 を採点しない（点数と合否に入れず、理由を残す）', () => {
+  const s = passingRun();
+  const files = goodFiles();
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const grade = (stage2) => gradeOuter({ persona, personaFiles, items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages: { stage1: { ok: true }, stage2 }, inner: { withScore: 1 }, userSignals: [], model: 'claude-opus-5-5' });
+  const env = grade({ ok: false, status: 'failed', counts: { total: 486, passed: 408, failed: 78 }, diskErrorsOnly: true });
+  assert.equal(env.grades.some((g) => g.id === 'stage2'), false);
+  assert.equal(env.notGraded.length, 1);
+  assert.equal(env.notGraded[0].id, 'stage2');
+  assert.equal(env.notGraded[0].environment, true);
+  assert.match(env.notGraded[0].reason, /環境で止まった（ディスクがいっぱい）.*78 件.*ENOSPC か EIO/);
+  assert.equal(env.verdict.ok, true);
+  assert.equal(env.verdict.partial, true);
+  assert.deepEqual(env.verdict.notGraded, ['stage2']);
+  assert.equal(env.score, 1);
+  assert.equal(env.exampleCandidate, false, '採点しなかった観点のある会話は、会話例にしない');
+  // ほかの理由の不合格が混ざれば（印がなければ）、これまでどおり落ちる
+  const real = grade({ ok: false, status: 'failed', counts: { failed: 79 } });
+  assert.equal(real.grades.find((g) => g.id === 'stage2').ok, false);
+  assert.equal(real.notGraded, undefined);
+  assert.deepEqual(real.verdict.failed, ['stage2']);
+});
+
+test('testing.md 6.5 環境で止まった観点：1段目の不合格がすべてディスクの誤り、入口がディスクの誤りで落ちた、内側の EVAL がディスクの空きで始めなかった', () => {
+  // 1段目だけ・両方
+  assert.deepEqual(Object.keys(environmentNotGraded({ stage1: { ok: false, failures: [{ reason: 'OSError: [Errno 28] No space left on device' }], diskErrorsOnly: true }, stage2: { ok: true } })), ['stage1']);
+  assert.match(environmentNotGraded({ stage1: { ok: false, counts: { failed: 2 }, diskErrorsOnly: true } }).stage1, /1段目の不合格 2 件/);
+  // 入口（tests/run.py）がディスクの誤りで落ちた（印 diskError）なら 1・2段目の両方。道具が足りないときなど、印がなければ外さない
+  const crashed = environmentNotGraded({ skipped: true, reason: 'tests/run.py の結果を読めない（終了コード 1）：OSError: [Errno 28] No space left on device', diskError: true });
+  assert.deepEqual(Object.keys(crashed), ['stage1', 'stage2']);
+  assert.match(crashed.stage1, /入口がディスクの誤りで落ちた/);
+  assert.deepEqual(environmentNotGraded({ skipped: true, reason: '道具が足りなくて止まった：Node.js' }), {});
+  assert.deepEqual(environmentNotGraded({ skipped: true, reason: 'x', stage2: { diskErrorsOnly: true } }), {});
+  // 内側の EVAL：disk_low のときだけ
+  assert.deepEqual(Object.keys(environmentNotGraded(null, { withScore: null, error: '足りない', code: 'disk_low' })), ['inner-deliverable']);
+  assert.deepEqual(environmentNotGraded(null, { withScore: null, error: '課題がない', code: 'usage' }), {});
+  assert.deepEqual(environmentNotGraded(null, null), {});
+});
+
+test('testing.md 6.5 環境の影響を受けた回：クリエイターのツールの結果にディスクの誤りが出たか、環境で止まった観点があれば、environment と partial を付け、会話例にしない', () => {
+  const s = passingRun();
+  const files = goodFiles();
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const grade = ({ items = s.items, stages = { stage1: { ok: true }, stage2: { ok: true } }, inner = { withScore: 1 } } = {}) =>
+    gradeOuter({ persona, personaFiles, items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages, inner, userSignals: [], model: 'claude-opus-5-5' });
+  const base = grade();
+  assert.equal(base.environment, undefined);
+  assert.equal(base.verdict.partial, undefined);
+  assert.equal(base.exampleCandidate, true);
+  // クリエイターの Chromium を入れるコマンドの結果に ENOSPC が出た（外側の EVAL〔改善〕3回目の [539]）。観点はすべて採点し、合否も変えない
+  const last = s.items.at(-1).seq;
+  const items = [...s.items, { seq: last + 1, kind: 'tool.use', owner: 'main', name: 'Bash', input: { command: 'npx playwright install chromium' } }, { seq: last + 2, kind: 'tool.result', owner: 'main', isError: false, text: '[Error: ENOSPC: no space left on device, write]' }];
+  const hit = grade({ items });
+  assert.deepEqual(hit.environment, { notGraded: [], toolResults: [last + 2] });
+  assert.deepEqual(hit.grades.map((g) => g.id), base.grades.map((g) => g.id));
+  assert.equal(hit.verdict.ok, true);
+  assert.equal(hit.verdict.partial, true);
+  assert.equal(hit.verdict.environment, true);
+  assert.equal(hit.verdict.notGraded, undefined);
+  assert.equal(hit.exampleCandidate, false);
+  // 内側の EVAL が disk_low で始めなかった：inner-deliverable を採点せず、環境の観点に残す
+  const inner = grade({ inner: { withScore: null, error: 'ディスクの空きが足りないので始めません', code: 'disk_low' } });
+  assert.equal(inner.grades.some((g) => g.id === 'inner-deliverable'), false);
+  assert.deepEqual(inner.notGraded.map((g) => [g.id, g.environment]), [['inner-deliverable', true]]);
+  assert.deepEqual(inner.environment, { notGraded: ['inner-deliverable'], toolResults: [] });
+  assert.deepEqual([inner.verdict.partial, inner.verdict.notGraded, inner.verdict.environment], [true, ['inner-deliverable'], true]);
+  // 1段目の不合格がすべてディスクの誤り：stage1 を採点しない
+  const stage1 = grade({ stages: { stage1: { ok: false, counts: { failed: 1 }, diskErrorsOnly: true }, stage2: { ok: true } } });
+  assert.deepEqual(stage1.notGraded.map((g) => g.id), ['stage1']);
+  assert.equal(stage1.verdict.ok, true);
 });
 
 test('REQ-015 全体の採点：聞かれないと話すナレッジが組み込まれていなければ不合格（クリエイターが聞かなかったとき）', () => {
@@ -393,7 +613,7 @@ test('REQ-015 開発者が答えたとき（testing.md 6.7）：ナレッジの�
   const persona = { id: 'human', title: '開発者が答える', experience: 'done', request: '作って', profile: '', files: [], knowledge: [], styles: { normal: { label: '開発者', instruction: '' } } };
   const args = { persona, personaFiles: [], items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: goodFiles(), stages: { stage1: { ok: true }, stage2: { ok: true } }, inner: null, userSignals: [], model: 'claude-opus-5-5' };
   const human = gradeOuter({ ...args, answerer: 'human' });
-  assert.deepEqual(human.grades.map((g) => g.id), ['one-plugin-generated', 'stage1', 'stage2', 'all-items-heard', 'no-generation-before-approval']);
+  assert.deepEqual(human.grades.map((g) => g.id), ['one-plugin-generated', 'stage1', 'stage2', 'screen-url-shown', 'all-items-heard', 'no-generation-before-approval']);
   assert.ok(human.grades.every((g) => g.ok), JSON.stringify(human.grades));
   assert.deepEqual(human.trace, []);
   assert.deepEqual(human.faults, []);
@@ -499,6 +719,121 @@ test('REQ-015 記録する数は、採点の合否に入らない：数が多く
   assert.equal(noisy.score, base.score);
   assert.deepEqual(noisy.verdict, base.verdict);
   assert.ok(base.counts.questions.total >= 0 && base.counts.recordRefusals.total === 0);
+});
+
+test('REQ-015 記録する数：英語の覚え書きのようなチャットの文（日本語の字を含まない文、内部の番号だけの文）を数える。合否には入れない', () => {
+  const items = [
+    { seq: 1, kind: 'creator.text', text: 'Need the carried knowledge list from state.json.' },
+    { seq: 2, kind: 'creator.text', text: '画面の URL は http://127.0.0.1:1/?k=x です。' },
+    { seq: 3, kind: 'creator.text', text: 'K-25 next.' },
+    { seq: 4, kind: 'creator.text', text: '   ' },
+    { seq: 5, kind: 'creator.question', question: 'Which file?' },
+    { seq: 6, kind: 'creator.text', text: 'カタカナだけ：OK' },
+    { seq: 7, kind: 'user.answer', answer: 'OK' },
+  ];
+  const c = countRecorded({ items, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(c.count, 2, '質問・ユーザーの答え・空の文は数えない');
+  assert.deepEqual(c.samples, [{ seq: 1, text: 'Need the carried knowledge list from state.json.' }, { seq: 3, text: 'K-25 next.' }]);
+  const many = Array.from({ length: 8 }, (_, i) => ({ seq: i + 1, kind: 'creator.text', text: `Note ${i} ${'x'.repeat(100)}` }));
+  const m = countRecorded({ items: many, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(m.count, 8);
+  assert.equal(m.samples.length, 5);
+  assert.equal(m.samples[0].text.length, 80);
+  assert.deepEqual(countRecorded({ items: [], toolEvents: [], state: null }).nonJapaneseTexts, { count: 0, samples: [] });
+});
+
+test('REQ-015 記録する数：日本語が混ざった英語の覚え書きも数える。URL だけ・コードだけの文と、日本語の文の中のファイル名の並びは数えない', () => {
+  const counted = [
+    'Next: いつもと違うとき, including K-25 in different form.', // 英単語が3つ以上続く（外側の EVAL〔改善〕1回目の [345]）
+    'Ask "ほかにありますか" first.', // 引用の中の日本語を除くと英語だけ（同じく [427]）
+    '直しました。\nNow run tests.', // 日本語の文の後の英語の行
+    'Passed. Commit.',
+  ];
+  const skipped = [
+    'http://127.0.0.1:41234/?k=abcDEF123_-xyz',
+    '```\nnpm test --prefix tests\n```',
+    '`git -C market log --oneline`',
+    '直すファイル：main.c, sensor_avg.c, sensor_avg.h, dbg_log.h, Makefile.target を見ます。',
+    'Copilot CLI を起動し直してください。戻すときは `git revert HEAD` です。',
+    '画面：http://127.0.0.1:1/?k=x を開いてください。',
+    '0.2.0',
+    // かぎ括弧の中に引いた機器の出力は、英単語の続きに数えない（外側の EVAL〔改善〕2回目の [524]）
+    '初めて入れたアプリなら「not installed (pending: reboot to activate)」と出ます。',
+    'ボードは "bad magic: not a kximg file" と返します。',
+  ];
+  const items = [...counted, ...skipped].map((text, n) => ({ seq: n + 1, kind: 'creator.text', text }));
+  const c = countRecorded({ items, toolEvents: [], state: null }).nonJapaneseTexts;
+  assert.equal(c.count, counted.length, JSON.stringify(c.samples));
+  assert.deepEqual(c.samples.map((x) => x.seq), counted.map((_, n) => n + 1));
+});
+
+test('REQ-015 記録する数：最初の問いより前のチャットの文に、これからの流れ（矢印2つ以上か、番号付きの行3つ以上）を示したか。合否には入れない', () => {
+  const FLOW = 'これから、次の順に進めます。今使っているスキルやファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 直す前に、まとめを確かめてもらう。';
+  const q = (seq) => ({ seq, kind: 'creator.question', header: 'ファイル', question: 'どこにありますか？', options: [] });
+  const t = (seq, text) => ({ seq, kind: 'creator.text', text });
+  const flowOf = (items) => countRecorded({ items, toolEvents: [], state: null }).flowShown;
+  // URL と同じ文でも、別の文でもよい
+  assert.deepEqual(flowOf([t(1, `plugin-creator の画面: http://127.0.0.1:1/?k=x\n\n${FLOW}`), q(2)]), { shown: true, seq: 1 });
+  assert.deepEqual(flowOf([t(1, 'plugin-creator の画面: http://127.0.0.1:1/?k=x'), t(2, FLOW), q(3)]), { shown: true, seq: 2 });
+  assert.deepEqual(flowOf([t(1, 'これから、次の順にお話を聞きます。\n1. ファイルを教えてもらう\n2. 最近やった1回の流れを聞く\n3. まとめを確かめてもらう'), q(2)]), { shown: true, seq: 1 });
+  // 言い方は見ない（例の書き出し「これから」と違う言い方の流れも数える）
+  assert.deepEqual(flowOf([t(1, '次の順に進めます。A → B → C'), q(2)]), { shown: true, seq: 1 });
+  assert.deepEqual(flowOf([t(1, '流れ：\n1) ファイル\n2) 決まりの確かめ\n3) 直す前の確認'), q(2)]), { shown: true, seq: 1 });
+  // URL だけ（外側の EVAL〔改善〕2回目の [11]）、最初の問いの後、問いの中、矢印が1つ、番号付きの行が2つの文は数えない
+  assert.deepEqual(flowOf([t(1, 'plugin-creator の画面: http://127.0.0.1:1/?k=x'), q(2), t(3, FLOW)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([{ ...q(1), question: FLOW }]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([t(1, 'これから、今のプラグインを読んで → 変えるところだけをお聞きします。'), q(2)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([t(1, 'これから、次の順に進めます。\n1. ファイルを教えてもらう\n2. まとめを確かめてもらう'), q(2)]), { shown: false, seq: null });
+  // 文章の問いも、最初の問いに数える
+  assert.deepEqual(flowOf([{ seq: 1, kind: 'creator.question-text', text: 'どこにありますか？' }, t(2, FLOW)]), { shown: false, seq: null });
+  assert.deepEqual(flowOf([]), { shown: false, seq: null });
+});
+
+test('REQ-043 画面の URL：画面を開くツールの返り値の URL が、最初の問いより前のチャットの文にあれば合格', () => {
+  const URL = 'http://127.0.0.1:37889/?k=CYfGZLjd7c7BOkfTZOh38tH9n5ZjIdl_';
+  const opened = (seq, isError = false, result = `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${URL}`) => [
+    { seq, type: 'tool.call', callId: seq, tool: 'open', args: {} },
+    { seq: seq + 0.5, type: 'tool.result', callId: seq, tool: 'open', isError, result },
+  ];
+  const question = (seq) => ({ seq, kind: 'creator.question', header: 'ファイル', question: 'ファイルはどこにありますか？', options: [] });
+  const ok = gradeScreenUrlShown({ items: [{ seq: 1, kind: 'user.request', text: '頼み' }, { seq: 3, kind: 'creator.text', text: `plugin-creator の画面：${URL}。決まったことはここで見られます。` }, question(4)], toolEvents: opened(2) });
+  assert.equal(ok.ok, true, ok.detail);
+  // 文章の問いが最初の問いでも、その前の文で見る
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: `画面：${URL}` }, { seq: 4, kind: 'creator.question-text', text: 'ファイルはどこですか？' }], toolEvents: opened(2) }).ok, true);
+  // URL がツールの返り値にしかない（チャットに書いていない）。外側の EVAL（改善）1回目と同じ
+  const hidden = gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: 'Need the carried knowledge list.' }, question(4), { seq: 6, kind: 'creator.text', text: `画面：${URL}` }], toolEvents: opened(2) });
+  assert.equal(hidden.ok, false);
+  assert.match(hidden.detail, /ツールの返り値はユーザーに見えない/);
+  // 合言葉を落とした URL は、開けないので数えない
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: '画面：http://127.0.0.1:37889/' }, question(4)], toolEvents: opened(2) }).ok, false);
+  // 画面を開くツールが、最初の問いより後・失敗だけ・呼んでいない
+  assert.match(gradeScreenUrlShown({ items: [question(1), { seq: 4, kind: 'creator.text', text: URL }], toolEvents: opened(2) }).detail, /最初の問いより前に、画面を開くツール/);
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: URL }, question(4)], toolEvents: opened(2, true, 'open に失敗しました') }).ok, false);
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 3, kind: 'creator.text', text: URL }, question(4)], toolEvents: [] }).ok, false);
+  // 失敗の後に成功した呼び出しの URL で見る。返り値に URL がなければ落ちる
+  assert.equal(gradeScreenUrlShown({ items: [{ seq: 5, kind: 'creator.text', text: `画面：${URL}` }, question(6)], toolEvents: [...opened(2, true, 'だめ'), ...opened(3)] }).ok, true);
+  assert.match(gradeScreenUrlShown({ items: [question(6)], toolEvents: opened(2, false, '用意ができました') }).detail, /URL がない/);
+});
+
+test('REQ-043 作る流れの採点（gradeOuter）も、腕 with では画面の URL を見る。示さないと、思考力の高いモデルの合格と会話例の候補が落ちる。対照とプラグインなしの腕には入れない', () => {
+  const personaFiles = weekly.files.map((f) => ({ src: f.src, place: f.place, role: f.role }));
+  const persona = JSON.parse(JSON.stringify(weekly.persona));
+  persona.knowledge = persona.knowledge.filter((k) => k.id === 'output');
+  const files = goodFiles();
+  files[2] = file('tests/eval/T-01/inputs/先週の売上.csv', fs.readFileSync(weekly.files.find((f) => f.role === 'input').src, 'utf8'));
+  const run = (s, o = {}) => gradeOuter({ persona, personaFiles, items: s.items, toolEvents: s.toolEvents, state: allItemsState({ stage: 'generate' }), generatedCount: 1, generatedFiles: files, stages: { stage1: { ok: true }, stage2: { ok: true } }, inner: null, userSignals: [], model: 'claude-opus-5-5', ...o });
+  const ok = run(passingRun());
+  assert.deepEqual(ok.grades.filter((g) => g.id === 'screen-url-shown').map((g) => [g.ok, g.req]), [[true, 'REQ-043']]);
+  // URL を、画面を開くツールの返り値にしか出していない（チャットに書いていない）
+  const hidden = passingRun();
+  hidden.items.splice(hidden.items.findIndex((i) => i.kind === 'creator.text'), 1);
+  const bad = run(hidden);
+  assert.deepEqual(bad.verdict.failed, ['screen-url-shown']);
+  assert.equal(bad.exampleCandidate, false);
+  // Haiku のクリエイターの合格は、2 点のまま
+  assert.equal(run(hidden, { model: 'claude-haiku-5-5' }).verdict.ok, true);
+  // 画面を開くツールは腕 with にだけあるので、対照とプラグインなしの腕には入れない
+  for (const arm of ['control', 'without']) assert.ok(!run(hidden, { arm }).grades.some((g) => g.id === 'screen-url-shown'), arm);
 });
 
 // ---- モデル（REQ-045・REQ-046。X2-09 の(1)） ----------------------------------------------------------------

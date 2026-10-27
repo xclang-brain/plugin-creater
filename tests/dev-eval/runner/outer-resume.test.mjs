@@ -6,7 +6,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -19,10 +18,11 @@ import { gradeOuter } from './outer-grade.mjs';
 import { createMessageRecorder, createRecorder } from './outer-record.mjs';
 import { checkReplayAgainstRelay, findSessionTranscript, readResumes, replayTranscript } from './outer-resume.mjs';
 import { CONVERSATION_GRADES, runOuterOnce } from './outer-run.mjs';
+import { diskOk, tempDir } from './temp-dirs.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(here, '..', '..', '..');
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `outer-resume-${prefix}-`));
+const tmp = (prefix) => tempDir(`outer-resume-${prefix}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const T = (name) => `mcp__plugin-creator__${name}`;
 const SETTABLE = ITEMS.filter((i) => !i.computed && !i.rebuildOnly).map((i) => i.name);
@@ -403,6 +403,7 @@ test('REQ-015 入口（outer.mjs --human --resume）：前の実行のフォル�
 
   const code = await main(['--human', '--resume', run.runDir, '--resume-prompt-file', promptFile, '--out', run.out, '--converted', converted, '--no-sandbox', '--max-exchanges', '10'], {
     query: rec2.query,
+    diskCheck: diskOk,
     runOptions: { runStages: okStages, convert: () => { throw new Error('置き換え直さないはず'); } },
   });
   await developer.stop();
@@ -464,7 +465,7 @@ test('REQ-015 入口（outer.mjs --human --resume）：前の実行のフォル�
   writeTranscript(path.join(run.runDir, 'agent-home'), path.join(run.runDir, 'work'), [...run.calls, ...rec2.calls]);
   const sdk2 = createFakeSdk({ agent: async () => '続けました。' });
   fs.writeFileSync(promptFile, '続けてください');
-  assert.equal(await main(['--human', '--resume', run.runDir, '--resume-prompt-file', promptFile, '--out', run.out, '--converted', converted, '--no-sandbox'], { query: sdk2.query, runOptions: { runStages: okStages } }), 0, stdout.join('\n'));
+  assert.equal(await main(['--human', '--resume', run.runDir, '--resume-prompt-file', promptFile, '--out', run.out, '--converted', converted, '--no-sandbox'], { query: sdk2.query, diskCheck: diskOk, runOptions: { runStages: okStages } }), 0, stdout.join('\n'));
   const again = JSON.parse(fs.readFileSync(path.join(run.out, 'records', 'human-normal-with-claude-opus-5-5-1.json'), 'utf8'));
   assert.equal(again.resumed.length, 2);
   assert.deepEqual(again.items.filter((i) => i.kind === 'user.answer' && i.via === 'resume').map((i) => i.answer), [RESUME_PROMPT, '続けてください']);

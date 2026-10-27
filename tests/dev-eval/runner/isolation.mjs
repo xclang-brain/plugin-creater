@@ -6,6 +6,8 @@
 // - ファイルの書き込みのツール（Write、Edit）は作業フォルダの中だけを許す。普段のツールはあらかじめ許可し、
 //   canUseTool に回すのは質問（AskUserQuestion）だけにする（裏で動くサブエージェントの許可の求めは、受け付けられずに失敗することがあるため）。
 // - Claude Code の本体は、Agent SDK が同梱するもの（SDK と同じ版）を使う。手元の claude には替えない（pathToClaudeCodeExecutable を渡さない）。
+// - 擬似の機器を使う実行（内側の EVAL。testing.md 7章）では、サンドボックスの通信を機器の口（localhost の1ポート）だけにし、機器の中身の
+//   フォルダを見せない・書かせない（sandboxNetwork・sandboxFilesystem）。許可の一覧にない宛先への通信の求めは、断って記録する（denyNetwork）。
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -53,10 +55,19 @@ export function sandboxStatus({ platform = process.platform, which = defaultWhic
   return { available: missing.length === 0, missing };
 }
 
-/** Agent SDK の sandbox の設定。サンドボックスが使えないのに始めると、黙って外で動かさず、失敗にする（failIfUnavailable） */
-export function makeSandboxOptions({ enabled = true } = {}) {
+/**
+ * Agent SDK の sandbox の設定。サンドボックスが使えないのに始めると、黙って外で動かさず、失敗にする（failIfUnavailable）。
+ * network と filesystem は、渡したときだけ足す（擬似の機器の口だけを許す、機器の中身を隠す。testing.md 7章）。
+ * @param {{ enabled?: boolean, network?: object, filesystem?: object }} [args]
+ *   network 例：{ allowedDomains: ['localhost:<ポート>'], strictAllowlist: true }。filesystem 例：{ denyRead: [<フォルダ>], denyWrite: [<フォルダ>] }
+ */
+export function makeSandboxOptions({ enabled = true, network, filesystem } = {}) {
   if (!enabled) return undefined;
-  return { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false };
+  return {
+    enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+    ...(network ? { network } : {}),
+    ...(filesystem ? { filesystem } : {}),
+  };
 }
 
 // ---- 許可 ----------------------------------------------------------------------------------------
@@ -86,14 +97,23 @@ export function isInsideDir(cwd, p) {
 
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit', 'MultiEdit']);
 
+/** サンドボックスの中のコマンドが、許可の一覧にない宛先に通信しようとしたときの求め（入力は { host }） */
+export const SANDBOX_NETWORK_TOOL = 'SandboxNetworkAccess';
+
 /**
  * canUseTool。あらかじめ許可していないものだけがここに来る。
  *   AskUserQuestion：onQuestion(questions) の答え（{ 質問の文: 答え }）を返す。onQuestion がなければ断る
  *   Write・Edit などで作業フォルダの外：断って refused に残す
+ *   SandboxNetworkAccess（サンドボックスの外への通信の求め）：denyNetwork が真なら、断って refused に残す（擬似の機器を使う実行。
+ *     本物の機器や外のシステムに何も送らないため。REQ-061）
  *   それ以外：許可する
  */
-export function makeCanUseTool({ cwd, onQuestion, refused = [] }) {
+export function makeCanUseTool({ cwd, onQuestion, refused = [], denyNetwork = false }) {
   return async (toolName, input) => {
+    if (denyNetwork && toolName === SANDBOX_NETWORK_TOOL) {
+      refused.push({ toolName, host: input?.host ?? null });
+      return { behavior: 'deny', message: 'この実行では、サンドボックスの外への通信はできません。' };
+    }
     if (toolName === 'AskUserQuestion') {
       if (typeof onQuestion !== 'function') return { behavior: 'deny', message: 'この実行では、ユーザーに質問できません。' };
       const answers = await onQuestion(input?.questions ?? []);
@@ -146,7 +166,10 @@ export async function usageLimitPrefixes(sdk) {
  * @param {string} [args.systemPromptAppend] システムプロンプトに足す文
  * @param {boolean} [args.sandbox] 真なら OS のサンドボックスで動かす
  * @param {Function} [args.onQuestion] AskUserQuestion の答え方
- * @param {Array} [args.refused] 断った書き込みを入れる配列
+ * @param {Array} [args.refused] 断った書き込み（と、denyNetwork のときは断った通信の求め）を入れる配列
+ * @param {object} [args.sandboxNetwork] サンドボックスの network の設定（sandbox が真のときだけ効く）
+ * @param {object} [args.sandboxFilesystem] サンドボックスの filesystem の設定（sandbox が真のときだけ効く）
+ * @param {boolean} [args.denyNetwork] 真なら、サンドボックスの外への通信の求めを断って refused に残す
  * @param {object} [args.envExtra] 環境変数に足すもの
  * @param {number} [args.maxTurns]
  * @param {string} [args.effort] 思考の深さ（low・medium・high・xhigh・max）。なければ渡さない
@@ -156,6 +179,7 @@ export async function usageLimitPrefixes(sdk) {
  */
 export function makeQueryOptions({
   cwd, home, model, plugins = [], mcpServers, mcpTools = [], hooks, agent, systemPromptAppend, sandbox = false,
+  sandboxNetwork, sandboxFilesystem, denyNetwork = false,
   onQuestion, refused = [], envExtra = {}, maxTurns, effort, resume, abortController, base = process.env,
 }) {
   if (!cwd || !home || !model) throw new Error('makeQueryOptions には cwd・home・model が要ります。');
@@ -168,12 +192,12 @@ export function makeQueryOptions({
     systemPrompt: { type: 'preset', preset: 'claude_code', ...(systemPromptAppend ? { append: systemPromptAppend } : {}) },
     plugins: plugins.map((p) => ({ type: 'local', path: p })),
     allowedTools: allowedToolsFor({ mcpTools }),
-    canUseTool: makeCanUseTool({ cwd, onQuestion, refused }),
+    canUseTool: makeCanUseTool({ cwd, onQuestion, refused, denyNetwork }),
   };
   if (mcpServers) options.mcpServers = mcpServers;
   if (hooks) options.hooks = hooks;
   if (agent) options.agent = agent;
-  const sandboxOptions = makeSandboxOptions({ enabled: sandbox });
+  const sandboxOptions = makeSandboxOptions({ enabled: sandbox, network: sandboxNetwork, filesystem: sandboxFilesystem });
   if (sandboxOptions) options.sandbox = sandboxOptions;
   if (maxTurns !== undefined) options.maxTurns = maxTurns;
   if (effort) options.effort = effort;
