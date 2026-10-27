@@ -201,6 +201,12 @@ test('REQ-064 続き：新しい回のフォルダを作ると落ち、続ける
   assert.ok(failed(gradeIdeaRun({ dataDir, calls, resume: { runsBefore, questions: ['続けますか？'] } })).includes('resume'));
 });
 
+test('REQ-064 続きの試験では、止まった柱より前の呼び出しを採点しない', () => {
+  const { dataDir } = finishedRun();
+  const r = gradeIdeaRun({ dataDir, calls: [], resume: { runsBefore: ['20261027-1000'], questions: ['続けますか？'], fromPillar: 5 } });
+  assert.deepEqual(failed(r), ['explain-readers']);
+});
+
 test('部品：組の行、数の移り方、候補と外した番号、今の柱', () => {
   const lines = comboLines('- c01｜数 3｜E1、E2、E3｜作った案 10｜通った案：1、4\n- c02｜数 3｜E4、E5、E6｜作った案 10｜通った案：なし\n');
   assert.deepEqual(lines.map((l) => [l.combo, l.size, l.essences, l.made, l.passed]), [['c01', 3, 3, 10, true], ['c02', 3, 3, 10, false]]);

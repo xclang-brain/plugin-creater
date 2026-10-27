@@ -146,6 +146,7 @@ async function main() {
   const dataDir = path.join(dirs.agentHome, '.plugin-creator', 'make-idea');
   prepareData(dataDir, { params: o.params, dataFrom: o.dataFrom });
   const runsBefore = fs.existsSync(path.join(dataDir, 'runs')) ? fs.readdirSync(path.join(dataDir, 'runs')) : [];
+  const fromPillar = o.expectResume ? currentPillar(dataDir) : null;
   const log = (x) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), ...x })}\n`);
   const status = (x) => fs.writeFileSync(path.join(outDir, 'status.json'), `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, ...x }, null, 2)}\n`);
 
@@ -264,7 +265,7 @@ async function main() {
   }
 
   const questions = conversation.filter((x) => x.kind === 'answer').map((x) => x.question);
-  const grade = gradeIdeaRun({ dataDir, calls, hearingState: toolkit.readState(), expectKnowledgeUse: o.expectKnowledge, resume: o.expectResume ? { runsBefore, questions } : null });
+  const grade = gradeIdeaRun({ dataDir, calls, hearingState: toolkit.readState(), expectKnowledgeUse: o.expectKnowledge, resume: o.expectResume ? { runsBefore, questions, fromPillar } : null });
   const result = { ok: (stopped.reason === 'finished' || stopped.reason === 'stopped_at_pillar') && (stopped.reason === 'stopped_at_pillar' || grade.ok), stopped, outDir, dataDir, runDir: grade.runDir, costUsd, calls: calls.length, checks: grade.checks };
   fs.writeFileSync(path.join(outDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   fs.writeFileSync(path.join(outDir, 'record.json'), `${JSON.stringify({ conversation, calls }, null, 2)}\n`);

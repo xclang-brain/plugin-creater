@@ -116,12 +116,17 @@ export function maxParallel(calls, type, promptPattern) {
 
 /**
  * 採点する。
- * @param {{ dataDir: string, calls: object[], hearingState?: object|null, expectKnowledgeUse?: boolean, resume?: { runsBefore: string[], questions: string[] } }} args
+ * @param {{ dataDir: string, calls: object[], hearingState?: object|null, expectKnowledgeUse?: boolean, resume?: { runsBefore: string[], questions: string[], fromPillar?: number } }} args
  * @returns {{ ok: boolean, runDir: string|null, checks: Array<{ id: string, title: string, ok: boolean, detail: string }> }}
  */
 export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowledgeUse = false, resume = null }) {
   const checks = [];
   const add = (id, title, ok, detail) => checks.push({ id, title, ok: Boolean(ok), detail: String(detail) });
+  // 続きの試験では、止まった柱より前の柱の呼び出しは前の実行の記録にあるので、呼び出しで見る採点をしない
+  const CALL_CHECK_PILLAR = { 'research-parallel': 2, 'essence-opinions': 3, 'essence-parallel': 3, 'essence-independent': 3, 'combine-separate': 4, 'explain-readers': 5, 'explain-reader-blind': 5, 'explain-reader-prompt': 5 };
+  const addCall = (id, title, ok, detail) => (resume && (resume.fromPillar ?? 0) > CALL_CHECK_PILLAR[id]
+    ? add(id, title, true, `続きの試験では見ない（柱${resume.fromPillar}から続けた）`)
+    : add(id, title, ok, detail));
   const runDir = latestRun(dataDir);
   if (!runDir) {
     add('run', '回のフォルダがある', false, `${dataDir}/runs/ に回のフォルダがない`);
@@ -165,7 +170,7 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const urls = uniqueUrls(indexText);
   add('research-count', `柱2：作品の一覧の URL が ${p.collect} 以上（REQ-055）`, urls.size >= p.collect, `${urls.size} 件`);
   const collectParallel = maxParallel(calls, AGENT.researcher, role('集める'));
-  add('research-parallel', `柱2：集める調査役を1つの応答で ${p.parallel} 体同時に起動（REQ-055）`, collectParallel >= p.parallel, `最大 ${collectParallel} 体`);
+  addCall('research-parallel', `柱2：集める調査役を1つの応答で ${p.parallel} 体同時に起動（REQ-055）`, collectParallel >= p.parallel, `最大 ${collectParallel} 体`);
   const deepFiles = listDir(r('research')).filter((n) => /^deep-.*\.md$/.test(n));
   const deepCount = deepFiles.reduce((n, f) => n + (readText(r(`research/${f}`)).match(/^## /gm) ?? []).length, 0);
   add('research-deep', `柱2：掘り下げた作品が ${p.deep} 以上`, deepCount >= p.deep, `${deepFiles.length} ファイル、${deepCount} 件`);
@@ -178,13 +183,13 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('essence-agents', `柱3：なぜなぜ分析と出し直しが ${p.analysts} 者以上（REQ-056）`, analyses >= p.analysts && finals >= p.analysts, `分析 ${analyses}、出し直し ${finals}`);
   const opinions = listDir(r('essence')).filter((n) => /^opinion-.*\.md$/.test(n)).length;
   const debateRounds = params['本質の見極め']['意見を出し合う往復の数'];
-  add('essence-opinions', `柱3：意見の出し合いが ${p.analysts} 者 × ${debateRounds} 往復以上（REQ-056）`, opinions >= p.analysts * debateRounds && maxParallel(calls, AGENT.thinker, role('ほかの分析への意見')) >= p.analysts, `意見のファイル ${opinions}、同時に最大 ${maxParallel(calls, AGENT.thinker, role('ほかの分析への意見'))} 体`);
+  addCall('essence-opinions', `柱3：意見の出し合いが ${p.analysts} 者 × ${debateRounds} 往復以上（REQ-056）`, opinions >= p.analysts * debateRounds && maxParallel(calls, AGENT.thinker, role('ほかの分析への意見')) >= p.analysts, `意見のファイル ${opinions}、同時に最大 ${maxParallel(calls, AGENT.thinker, role('ほかの分析への意見'))} 体`);
   const analysisParallel = maxParallel(calls, AGENT.thinker, role('なぜなぜ分析'));
-  add('essence-parallel', `柱3：なぜなぜ分析の検討役を ${p.analysts} 体同時に起動`, analysisParallel >= p.analysts, `最大 ${analysisParallel} 体`);
+  addCall('essence-parallel', `柱3：なぜなぜ分析の検討役を ${p.analysts} 体同時に起動`, analysisParallel >= p.analysts, `最大 ${analysisParallel} 体`);
   // 独立の分析：なぜなぜ分析の役が、ほかの分析・意見・出し直しのファイルを読んでいない
   const analystIds = new Set(ofType(AGENT.thinker, role('なぜなぜ分析')).map((c) => c.id));
   const peeks = calls.filter((c) => analystIds.has(c.owner) && c.name === 'Read' && /essence[\\/](analysis|opinion|final)-/.test(String(c.input?.file_path ?? '')));
-  add('essence-independent', '柱3：独立の分析で、ほかの分析を読んでいない', peeks.length === 0, peeks.map((c) => c.input?.file_path).join(', ') || 'なし');
+  addCall('essence-independent', '柱3：独立の分析で、ほかの分析を読んでいない', peeks.length === 0, peeks.map((c) => c.input?.file_path).join(', ') || 'なし');
 
   // 柱4
   const combos = listDir(r('combine')).filter((n) => /^c\d+$/.test(n));
@@ -194,7 +199,7 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('combine-judges', `柱4：どの組も、壁打ちの相手 ${p.partners} 者 × 往復 ${p.rounds} の判定がある（REQ-057）`, combos.length > 0 && shortJudges.length === 0, shortJudges.length ? `足りない組：${shortJudges.join(', ')}` : `${combos.length} 組すべて`);
   const partnerCalls = ofType(AGENT.thinker, role('壁打ちの相手'));
   const makerCalls = ofType(AGENT.thinker, role('案を作る|案を直す'));
-  add('combine-separate', '柱4：案を作る役と壁打ちの相手が別の起動', partnerCalls.length >= combos.length * p.partners && makerCalls.length >= combos.length && !partnerCalls.some((c) => makerCalls.includes(c)), `相手 ${partnerCalls.length} 回、作る・直す ${makerCalls.length} 回`);
+  addCall('combine-separate', '柱4：案を作る役と壁打ちの相手が別の起動', partnerCalls.length >= combos.length * p.partners && makerCalls.length >= combos.length && !partnerCalls.some((c) => makerCalls.includes(c)), `相手 ${partnerCalls.length} 回、作る・直す ${makerCalls.length} 回`);
   add('combine-passed', '柱4：combine/passed.md がある', exists(r('combine/passed.md')), r('combine/passed.md'));
   const lines = comboLines(readText(r('combine/log.md')));
   add('combine-log', `柱4：log.md に、組ごとの決まった形の行がある（設計書 3.6）`, lines.length >= combos.length && lines.length > 0, `行 ${lines.length}、組のフォルダ ${combos.length}`);
@@ -207,12 +212,12 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const explained = listDir(r('explain')).filter((n) => /^\d+\.md$/.test(n));
   add('explain-count', `柱5：説明が1〜${p.maxIdeas} 件（REQ-059）`, explained.length >= 1 && explained.length <= p.maxIdeas, `${explained.length} 件`);
   const readerCalls = ofType(AGENT.reader);
-  add('explain-readers', `柱5：読み手を説明ごとに ${p.readers} 者以上（REQ-059）`, readerCalls.length >= explained.length * p.readers && maxParallel(calls, AGENT.reader) >= p.readers, `${readerCalls.length} 回、同時に最大 ${maxParallel(calls, AGENT.reader)} 体`);
+  addCall('explain-readers', `柱5：読み手を説明ごとに ${p.readers} 者以上（REQ-059）`, readerCalls.length >= explained.length * p.readers && maxParallel(calls, AGENT.reader) >= p.readers, `${readerCalls.length} 回、同時に最大 ${maxParallel(calls, AGENT.reader)} 体`);
   const readerIds = new Set(readerCalls.map((c) => c.id));
   const readerTools = calls.filter((c) => readerIds.has(c.owner) && READING_TOOLS.has(c.name));
-  add('explain-reader-blind', '柱5：読み手がファイルを読む・探すツールを使っていない', readerTools.length === 0, readerTools.map((c) => c.name).join(', ') || 'なし');
+  addCall('explain-reader-blind', '柱5：読み手がファイルを読む・探すツールを使っていない', readerTools.length === 0, readerTools.map((c) => c.name).join(', ') || 'なし');
   const leaky = readerCalls.filter((c) => promptOf(c).includes(dataDir) || /runs[\\/]/.test(promptOf(c)));
-  add('explain-reader-prompt', '柱5：読み手の頼みに、作る過程のファイルの場所がない', leaky.length === 0, `${leaky.length} 件`);
+  addCall('explain-reader-prompt', '柱5：読み手の頼みに、作る過程のファイルの場所がない', leaky.length === 0, `${leaky.length} 件`);
   add('selection', '柱5：ユーザーの選択が selection.md にある（REQ-058）', exists(r('selection.md')), r('selection.md'));
 
   // 柱6
