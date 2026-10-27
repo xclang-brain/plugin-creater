@@ -40,6 +40,49 @@ export function essenceIds(text) {
   return new Set(String(text).match(/\bE\d+\b/g) ?? []);
 }
 
+/** combine/log.md の組の行（設計書 3.6 の形）：{ combo, size, essences, made, passed } */
+export function comboLines(text) {
+  const re = /^- (c\d+)｜数\s*(\d+)｜([^｜\n]*)｜作った案\s*(\d+)｜通った案[：:]\s*(.+)$/gm;
+  return [...String(text).matchAll(re)].map((m) => ({
+    combo: m[1], size: Number(m[2]), essences: essenceIds(m[3]).size, made: Number(m[4]), passed: !/^なし/.test(m[5].trim()),
+  }));
+}
+
+/**
+ * 掛け合わせる数の移り方が決まりに合うか（REQ-057、設計書 3.6）。合わない組の番号の並びを返す。
+ * 通れば同じ数のまま。同じ数で perSize 組続けてだめなら順の次の数。順の最後でもだめなら（ユーザーに聞いて）順の最初からやり直してよい。
+ */
+export function sizeSequenceProblems(lines, order, perSize) {
+  const problems = [];
+  let idx = 0;
+  let fails = 0;
+  for (const line of lines) {
+    if (line.size !== order[idx]) {
+      problems.push(`${line.combo}：数 ${line.size}（決まりでは ${order[idx]}）`);
+      const at = order.indexOf(line.size);
+      if (at >= 0) { idx = at; fails = 0; }
+    }
+    if (line.essences !== line.size) problems.push(`${line.combo}：本質が ${line.essences} 個（数 ${line.size}）`);
+    if (line.passed) { fails = 0; continue; }
+    fails += 1;
+    if (fails >= perSize) { idx = idx < order.length - 1 ? idx + 1 : 0; fails = 0; }
+  }
+  return problems;
+}
+
+/** reflect/candidates.md の候補（## 候補<n> <操作> 柱<m>）と、外した番号 */
+export function candidatesOf(text) {
+  const parts = String(text).split(/^(?=## 候補\d+)/m).filter((p) => /^## 候補\d+/.test(p));
+  const candidates = parts.map((p) => {
+    const head = p.match(/^## 候補(\d+)\s*(\S*)/);
+    const k = p.match(/^#{2,3} K\d+-\d+\s+(.+)$/m);
+    return { n: Number(head[1]), op: head[2], sentence: k ? k[1].trim() : null };
+  });
+  const ex = String(text).match(/外した番号[：:]\s*(.+)$/m);
+  const excluded = ex && !/なし/.test(ex[1]) ? (ex[1].match(/\d+/g) ?? []).map(Number) : [];
+  return { candidates, excluded, answered: Boolean(ex) };
+}
+
 /** 知識・経験のファイルの項目（## K<柱>-<番号> …） */
 export function knowledgeItems(text) {
   const parts = String(text).split(/^(?=## K\d+-\d+)/m).filter((p) => /^## K\d+-\d+/.test(p));
@@ -73,10 +116,10 @@ export function maxParallel(calls, type, promptPattern) {
 
 /**
  * 採点する。
- * @param {{ dataDir: string, calls: object[], hearingState?: object|null, expectKnowledgeUse?: boolean }} args
+ * @param {{ dataDir: string, calls: object[], hearingState?: object|null, expectKnowledgeUse?: boolean, resume?: { runsBefore: string[], questions: string[] } }} args
  * @returns {{ ok: boolean, runDir: string|null, checks: Array<{ id: string, title: string, ok: boolean, detail: string }> }}
  */
-export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowledgeUse = false }) {
+export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowledgeUse = false, resume = null }) {
   const checks = [];
   const add = (id, title, ok, detail) => checks.push({ id, title, ok: Boolean(ok), detail: String(detail) });
   const runDir = latestRun(dataDir);
@@ -118,7 +161,8 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('restriction', '柱1：restriction.md がある', exists(r('restriction.md')), r('restriction.md'));
 
   // 柱2
-  const urls = uniqueUrls(readText(r('research/index.md')));
+  const indexText = listDir(r('research')).filter((n) => /^index.*\.md$/.test(n)).map((n) => readText(r(`research/${n}`))).join('\n');
+  const urls = uniqueUrls(indexText);
   add('research-count', `柱2：作品の一覧の URL が ${p.collect} 以上（REQ-055）`, urls.size >= p.collect, `${urls.size} 件`);
   const collectParallel = maxParallel(calls, AGENT.researcher, role('集める'));
   add('research-parallel', `柱2：集める調査役を1つの応答で ${p.parallel} 体同時に起動（REQ-055）`, collectParallel >= p.parallel, `最大 ${collectParallel} 体`);
@@ -132,6 +176,9 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const analyses = listDir(r('essence')).filter((n) => /^analysis-.*\.md$/.test(n)).length;
   const finals = listDir(r('essence')).filter((n) => /^final-.*\.md$/.test(n)).length;
   add('essence-agents', `柱3：なぜなぜ分析と出し直しが ${p.analysts} 者以上（REQ-056）`, analyses >= p.analysts && finals >= p.analysts, `分析 ${analyses}、出し直し ${finals}`);
+  const opinions = listDir(r('essence')).filter((n) => /^opinion-.*\.md$/.test(n)).length;
+  const debateRounds = params['本質の見極め']['意見を出し合う往復の数'];
+  add('essence-opinions', `柱3：意見の出し合いが ${p.analysts} 者 × ${debateRounds} 往復以上（REQ-056）`, opinions >= p.analysts * debateRounds && maxParallel(calls, AGENT.thinker, role('ほかの分析への意見')) >= p.analysts, `意見のファイル ${opinions}、同時に最大 ${maxParallel(calls, AGENT.thinker, role('ほかの分析への意見'))} 体`);
   const analysisParallel = maxParallel(calls, AGENT.thinker, role('なぜなぜ分析'));
   add('essence-parallel', `柱3：なぜなぜ分析の検討役を ${p.analysts} 体同時に起動`, analysisParallel >= p.analysts, `最大 ${analysisParallel} 体`);
   // 独立の分析：なぜなぜ分析の役が、ほかの分析・意見・出し直しのファイルを読んでいない
@@ -149,9 +196,12 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const makerCalls = ofType(AGENT.thinker, role('案を作る|案を直す'));
   add('combine-separate', '柱4：案を作る役と壁打ちの相手が別の起動', partnerCalls.length >= combos.length * p.partners && makerCalls.length >= combos.length && !partnerCalls.some((c) => makerCalls.includes(c)), `相手 ${partnerCalls.length} 回、作る・直す ${makerCalls.length} 回`);
   add('combine-passed', '柱4：combine/passed.md がある', exists(r('combine/passed.md')), r('combine/passed.md'));
-  const sizeLines = readText(r('combine/log.md')).match(/\bE\d+\b(?:[^\n]*?\bE\d+\b)*/g) ?? [];
-  const badSizes = sizeLines.map((line) => essenceIds(line).size).filter((n) => n > 0 && (n < p.size['最小'] || n > p.size['最大']));
-  add('combine-size', `柱4：組の本質の数が ${p.size['最小']}〜${p.size['最大']}（log.md の行で見る）`, sizeLines.length > 0 && badSizes.length === 0, `${sizeLines.length} 行、範囲の外 ${badSizes.length}`);
+  const lines = comboLines(readText(r('combine/log.md')));
+  add('combine-log', `柱4：log.md に、組ごとの決まった形の行がある（設計書 3.6）`, lines.length >= combos.length && lines.length > 0, `行 ${lines.length}、組のフォルダ ${combos.length}`);
+  const outOfRange = lines.filter((l) => l.size < p.size['最小'] || l.size > p.size['最大']).map((l) => l.combo);
+  const sequence = sizeSequenceProblems(lines, params['本質の掛け合わせ']['掛け合わせる数を変える順'], params['本質の掛け合わせ']['同じ数で試す組の数']);
+  add('combine-size', `柱4：組の本質の数が ${p.size['最小']}〜${p.size['最大']} で、数の移り方が決まりどおり（REQ-057）`, lines.length > 0 && outOfRange.length === 0 && sequence.length === 0, [...outOfRange.map((c) => `${c}：範囲の外`), ...sequence].join(' / ') || `${lines.length} 組`);
+  add('combine-some-passed', '柱4：通った案が1つ以上ある（REQ-057）', lines.some((l) => l.passed), `${lines.filter((l) => l.passed).length} 組で通った`);
 
   // 柱5
   const explained = listDir(r('explain')).filter((n) => /^\d+\.md$/.test(n));
@@ -175,6 +225,10 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('knowledge-items', '柱6：知識・経験の項目が決まった形（REQ-060）', items.length > 0 && badItems.length === 0, `${items.length} 項目、欠け ${badItems.map((i) => `${i.file} ${i.head}：${i.missing.join('・')}`).join(' / ') || 'なし'}`);
   const big = kfiles.filter((f) => fs.statSync(path.join(kdir, f)).size >= p.fileMax);
   add('knowledge-size', `柱6：知識・経験のファイルが ${p.fileMax} バイトより小さい`, big.length === 0, big.join(', ') || 'すべて小さい');
+  const cands = candidatesOf(readText(r('reflect/candidates.md')));
+  const allKnowledge = kfiles.map((f) => readText(path.join(kdir, f))).join('\n');
+  const leakedExcluded = cands.candidates.filter((c) => cands.excluded.includes(c.n) && ['足す', '直す'].includes(c.op) && c.sentence && allKnowledge.includes(c.sentence));
+  add('knowledge-excluded', '柱6：ユーザーが外した候補が保存されていない（REQ-060）', cands.answered && leakedExcluded.length === 0, cands.answered ? `外した番号 ${cands.excluded.join('、') || 'なし'}、保存されたもの ${leakedExcluded.map((c) => c.n).join('、') || 'なし'}` : 'candidates.md に「外した番号：」がない');
   const used = readText(r('knowledge-used.md'));
   const usedSections = (used.match(/^## 柱\d/gm) ?? []).length;
   add('knowledge-used', '各柱：knowledge-used.md に柱ごとの記録がある（REQ-061）', usedSections >= 6, `${usedSections} 柱`);
@@ -189,5 +243,15 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('separation-hearing', 'ヒアリングの記録ができていない（REQ-065）', !hearingState, hearingState ? JSON.stringify(hearingState).slice(0, 200) : 'なし');
   const otherAgents = agents.filter((c) => !Object.values(AGENT).includes(typeOf(c)));
   add('separation-agents', 'make-idea のエージェントだけを起動（REQ-065）', otherAgents.length === 0, otherAgents.map(typeOf).join(', ') || 'なし');
+  const WRITES = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+  const outside = calls.filter((c) => WRITES.has(c.name) && !String(c.input?.file_path ?? c.input?.notebook_path ?? '').startsWith(dataDir));
+  add('data-only', 'ファイルの書き込みが、すべてデータの置き場所の中（REQ-063）', outside.length === 0, outside.map((c) => c.input?.file_path).join(', ') || 'すべて中');
+
+  if (resume) {
+    const runsNow = listDir(path.join(dataDir, 'runs'));
+    const added = runsNow.filter((n) => !resume.runsBefore.includes(n));
+    const asked = (resume.questions ?? []).some((q) => /続け/.test(q));
+    add('resume', '続き：続けるかを聞き、新しい回のフォルダを作らずに、止まった回を終えた（REQ-064）', added.length === 0 && asked && /状態[：:]\s*終わり/.test(readText(r('state.md'))), `新しい回 ${added.join(', ') || 'なし'}、続けるかの問い ${asked ? 'あり' : 'なし'}`);
+  }
   return { ok: checks.every((c) => c.ok), runDir, checks };
 }

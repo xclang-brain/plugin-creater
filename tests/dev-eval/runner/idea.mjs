@@ -11,10 +11,13 @@
 //   node tests/dev-eval/runner/idea.mjs --request-file <頼みの文> --restriction-file <ユーザー役が知っている制限>
 //        [--params small|default|<params.json>] [--data-from <前の実行の data フォルダ>] [--expect-knowledge]
 //        [--model claude-opus-5-5] [--user-model claude-sonnet-5-5] [--out <結果のフォルダ>] [--converted <置き換えた版>]
-//        [--max-exchanges 60] [--dry-run]
+//        [--max-exchanges 60] [--exclude-first-candidate] [--stop-at-pillar <番号>] [--expect-resume] [--dry-run]
 //   --params        small は流れを短く通す小さな値、default は既定（スキルが assets/params.json を写す）、ほかはファイル
 //   --data-from     前の実行のデータの置き場所（知識・経験、パラメーター、回）を写してから始める（2回目の実行、続きの試験）
 //   --expect-knowledge  前の回の知識・経験を使ったかも採点する（REQ-061）
+//   --exclude-first-candidate  ユーザー役が、知識・経験の候補の1番を外す（外した候補が保存されないかを採点するため。REQ-060）
+//   --stop-at-pillar  回の今の柱がこの番号になったら、手番の終わりで会話を止める（続きの試験の前半。採点は「途中」で終わる）
+//   --expect-resume   続きの試験の後半。--data-from の回を続け、新しい回のフォルダを作らずに終えたかを採点する（REQ-064）
 //   終了コード：0 最後まで動いて採点がすべて合格、1 採点に不合格がある・途中で止まった、2 始められなかった。
 //   進み具合は標準エラー出力と <out>/status.json に、結果は <out>/result.json と <out>/record.json に書く。
 
@@ -32,19 +35,19 @@ import { gradeIdeaRun, latestRun } from './idea-grade.mjs';
 /** 流れを短く通すための小さな値（アイデア創出の設計 7章。数の決まり〔2者以上など〕は守る） */
 export const SMALL_PARAMS = Object.freeze({
   説明: '流れの試験の小さな値',
-  徹底的な事前調査: { 集める作品の数: 12, 同時に調べるエージェントの数: 3, 掘り下げる作品の数: 6 },
+  徹底的な事前調査: { 集める作品の数: 12, 同時に調べるエージェントの数: 3, 掘り下げる作品の数: 6, '1体が掘り下げる作品の数': 3, 集め直しの回数の上限: 1 },
   本質の見極め: { 本質の数: 6, なぜなぜ分析をするエージェントの数: 2, なぜを重ねる段の上限: 3, 意見を出し合う往復の数: 1 },
   本質の掛け合わせ: {
     一度に掛け合わせる本質の数: { 最小: 2, 最大: 3 },
     掛け合わせる数を変える順: [2, 3],
-    同じ数で試す組の数: 2,
+    同じ数で試す組の数: 1,
     壁打ちの相手のエージェントの数: 2,
-    '1つの組から作る案の数': 3,
+    '1つの組から作る案の数': 2,
     壁打ちする案の総数: 6,
     壁打ちの往復の数: 2,
   },
   アイデアの説明: { 説明を読む第三者のエージェントの数: 2, 説明するアイデアの数の上限: 1, 説明を直す回数の上限: 1, '説明の長さの上限（文字）': 2500 },
-  知識・経験の蓄積: { 振り返りのエージェントの数: 2, '知識・経験のファイル1つの大きさの上限（バイト）': 16000 },
+  知識・経験の蓄積: { 振り返りのエージェントの数: 2, '知識・経験のファイル1つの大きさの上限（バイト）': 16000, 'まとめ始める大きさの割合（%）': 80 },
 });
 
 /** ユーザー役（制限を知っている人）への決まり。make-idea の問いの形（アイデア創出の設計 6章）に合わせる */
@@ -54,20 +57,24 @@ export const IDEA_USER_RULES = Object.freeze([
   '調べ始めてよいか、続けてよいかを文章で聞かれたら、「続けて」と答える。',
   '説明してほしいアイデアを選ぶように言われたら、一覧の中から、上の制限にいちばん合うものを、上限の数まで選び、番号と、選んだ理由を一言ずつ書く。',
   '残したくない候補の番号を聞かれたら、会社名・製品名・人の名前など、外に出せない具体を含むものだけを番号で答える。なければ「なし」と答える。',
-  '選択肢がある質問には、選択肢の名前（「（」の前の言葉）だけを書く。進め方を選ぶ質問では、「（おすすめ）」の付いた選択肢を選ぶ。',
+  '選択肢がある質問には、選択肢の名前（「（」の前の言葉）だけを書く。進め方を選ぶ質問では、「（おすすめ）」の付いた選択肢を選ぶ。前の回を続けるか、新しく始めるかを聞かれたら、続けるほうを選ぶ。',
   'ふつうの人として、チャットの言葉で書く。この決まりのことは口に出さない。',
 ]);
 
-export function buildIdeaUserSystem(restriction) {
+/** 外した候補が保存されないかを採点するときだけ足す決まり（REQ-060） */
+export const EXCLUDE_FIRST_RULE = '残したくない候補の番号を聞かれたら、上の決まりにかかわらず、1番を外すと答える（ほかに外すものがあれば足す）。理由は「1番は自分の業務には当てはまらない気がする」とする。';
+
+export function buildIdeaUserSystem(restriction, { excludeFirst = false } = {}) {
+  const rules = [...IDEA_USER_RULES, ...(excludeFirst ? [EXCLUDE_FIRST_RULE] : [])];
   return [
     'あなたは、AI のアシスタントに、アイデア出しを頼んだ人です。',
     `あなたの立場と制限:\n${restriction.trim()}`,
-    `答え方の決まり:\n${IDEA_USER_RULES.map((r) => `- ${r}`).join('\n')}`,
+    `答え方の決まり:\n${rules.map((r) => `- ${r}`).join('\n')}`,
   ].join('\n\n');
 }
 
 function parseArgs(argv) {
-  const o = { params: 'small', model: 'claude-opus-5-5', userModel: USER_ROLE_MODEL, maxExchanges: 60, expectKnowledge: false, dryRun: false };
+  const o = { params: 'small', model: 'claude-opus-5-5', userModel: USER_ROLE_MODEL, maxExchanges: 60, expectKnowledge: false, excludeFirst: false, stopAtPillar: null, expectResume: false, dryRun: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const next = () => {
@@ -85,6 +92,9 @@ function parseArgs(argv) {
     else if (a === '--out') o.out = next();
     else if (a === '--converted') o.converted = next();
     else if (a === '--max-exchanges') o.maxExchanges = Number(next());
+    else if (a === '--exclude-first-candidate') o.excludeFirst = true;
+    else if (a === '--stop-at-pillar') o.stopAtPillar = Number(next());
+    else if (a === '--expect-resume') o.expectResume = true;
     else if (a === '--dry-run') o.dryRun = true;
     else throw new Error(`知らない引数です：${a}`);
   }
@@ -101,6 +111,13 @@ export function prepareData(dataDir, { params, dataFrom }) {
 }
 
 const readIf = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '');
+
+/** いちばん新しい回の今の柱の番号（state.md の「今の柱：<番号>」）。なければ null */
+export function currentPillar(dataDir) {
+  const run = latestRun(dataDir);
+  const m = run ? readIf(path.join(run, 'state.md')).match(/今の柱[：:]\s*(\d)/) : null;
+  return m ? Number(m[1]) : null;
+}
 
 export function isFinished(dataDir) {
   const run = latestRun(dataDir);
@@ -122,6 +139,7 @@ async function main() {
   for (const d of [dirs.work, dirs.agentHome, dirs.userHome, dirs.copilotHome]) fs.mkdirSync(d, { recursive: true });
   const dataDir = path.join(dirs.agentHome, '.plugin-creator', 'make-idea');
   prepareData(dataDir, { params: o.params, dataFrom: o.dataFrom });
+  const runsBefore = fs.existsSync(path.join(dataDir, 'runs')) ? fs.readdirSync(path.join(dataDir, 'runs')) : [];
   const log = (x) => process.stderr.write(`${JSON.stringify({ at: new Date().toISOString(), ...x })}\n`);
   const status = (x) => fs.writeFileSync(path.join(outDir, 'status.json'), `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, ...x }, null, 2)}\n`);
 
@@ -142,7 +160,7 @@ async function main() {
   let costUsd = 0;
   let stopped = null;
   const unreadNotes = [];
-  const userSystem = buildIdeaUserSystem(restriction);
+  const userSystem = buildIdeaUserSystem(restriction, { excludeFirst: o.excludeFirst });
 
   async function userAnswer(question, choices, notes) {
     const prompt = buildUserPrompt({ question, choices, history, notes });
@@ -229,6 +247,7 @@ async function main() {
         break;
       }
       if (isFinished(dataDir)) { stopped = { reason: 'finished' }; break; }
+      if (o.stopAtPillar !== null && (currentPillar(dataDir) ?? 0) >= o.stopAtPillar) { stopped = { reason: 'stopped_at_pillar', pillar: currentPillar(dataDir) }; break; }
       const question = (turn.result.result ?? '').trim() || turn.lastText.trim() || '（発言がありませんでした）';
       const notes = unreadNotes.splice(0).filter((t) => t !== question);
       prompt = await userAnswer(question, [], notes);
@@ -238,8 +257,9 @@ async function main() {
     stopped = { reason: 'exception', message: String(e?.stack ?? e).slice(0, 600) };
   }
 
-  const grade = gradeIdeaRun({ dataDir, calls, hearingState: toolkit.readState(), expectKnowledgeUse: o.expectKnowledge });
-  const result = { ok: stopped.reason === 'finished' && grade.ok, stopped, outDir, dataDir, runDir: grade.runDir, costUsd, calls: calls.length, checks: grade.checks };
+  const questions = conversation.filter((x) => x.kind === 'answer').map((x) => x.question);
+  const grade = gradeIdeaRun({ dataDir, calls, hearingState: toolkit.readState(), expectKnowledgeUse: o.expectKnowledge, resume: o.expectResume ? { runsBefore, questions } : null });
+  const result = { ok: (stopped.reason === 'finished' || stopped.reason === 'stopped_at_pillar') && (stopped.reason === 'stopped_at_pillar' || grade.ok), stopped, outDir, dataDir, runDir: grade.runDir, costUsd, calls: calls.length, checks: grade.checks };
   fs.writeFileSync(path.join(outDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
   fs.writeFileSync(path.join(outDir, 'record.json'), `${JSON.stringify({ conversation, calls }, null, 2)}\n`);
   status({ phase: 'done', stopped, ok: result.ok, costUsd });

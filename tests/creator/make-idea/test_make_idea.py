@@ -4,6 +4,7 @@
 - 6つの柱の名前と順番が、憲章 第25条、仕様書 1章、SKILL.md で同じ（憲章 第25条3項。承認なしに変えない）。
 - 3つのエージェントの tools が設計どおり（読み手はファイルを読めない、検討役は Web を持たない、どれも skill を持たない）。
 - make-idea が、make-plugin・test-plugin の仕組み（plugin-creator_ のツール、読み取り役、作業エージェント）を使うよう書いていない（REQ-065）。
+- README に、データの置き場所と消し方がある（REQ-063）。
 - 手順のファイルが名指しするエージェントと知識・経験のファイルが、そろっている。
 - Claude Code 向けの置き換え（convert.py）で、エージェントのツールと本文の task の引数が置き換わる。
 
@@ -90,7 +91,7 @@ class Params(unittest.TestCase):
     def test_REQ_062_names_and_defaults_match_the_spec_table(self):
         p = params()
         rows = spec_param_rows()
-        self.assertEqual(20, len(rows), rows)
+        self.assertEqual(23, len(rows), rows)
         listed = {(pillar, name) for pillar, name, _ in rows}
         in_file = {(pillar, name) for pillar, group in p.items() if isinstance(group, dict) for name in group}
         self.assertEqual(listed, in_file)
@@ -213,6 +214,17 @@ class Separation(unittest.TestCase):
         accumulate = set(re.findall(r"`(\d-[a-z]+\.md)`", read(os.path.join(SKILL_DIR, "references", "accumulate.md"))))
         self.assertEqual(6, len(skill))
         self.assertEqual(skill, accumulate)
+
+
+class Readme(unittest.TestCase):
+    def test_REQ_063_readme_tells_where_the_data_is_and_how_to_delete_it(self):
+        text = read(os.path.join(REPO, "README.md"))
+        part = text[text.index("## アイデアを作る"):]
+        part = part[:part.index("\n## ", 1)]
+        self.assertIn("~/.plugin-creator/make-idea/", part)
+        self.assertIn("フォルダを削除", part)
+        self.assertIn("/plugin-creator:make-idea", part)
+        self.assertIn("/clear", part)
 
 
 @unittest.skipUnless(shutil.which(sys.executable), "Python がない")
