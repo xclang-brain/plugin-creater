@@ -834,6 +834,33 @@ class Eval(Sandbox):
             self.assertIsInstance(self.problems("eval"), list)   # 例外にならず、検査の結果が返る
             self.assertTrue(self.problems("task"))   # 定義の誤りは task の試験が示す
 
+    def test_REQ_061_a_task_with_the_fake_device_folder_bin_passes(self):
+        self.write("tests/eval/T-01/inputs/bin/kxtool", "#!/bin/sh\necho ok\n")
+        self.edit_json(self.EVAL, lambda d: d.update({"bin": "inputs/bin", "inputs": ["inputs/memo.txt", "inputs/bin"]}))
+        self.assertPasses("eval")
+        self.edit_json(self.EVAL, lambda d: d.update({"inputs": ["inputs/memo.txt", "inputs/bin/kxtool"]}))
+        self.assertPasses("eval")
+
+    def test_REQ_061_bin_may_only_be_inputs_bin_and_must_be_copied_as_an_input(self):
+        self.write("tests/eval/T-01/inputs/tools/kxtool", "#!/bin/sh\n")
+        for value in ("inputs/tools", "./inputs/bin", "inputs/bin/", ["inputs/bin"]):
+            self.edit_json(self.EVAL, lambda d: d.update({"bin": value, "inputs": ["inputs/memo.txt", "inputs/tools"]}))
+            self.assertFailsWith("eval", 'bin は "inputs/bin" だけを書ける')
+        self.edit_json(self.EVAL, lambda d: d.update({"bin": "inputs/bin", "inputs": ["inputs/memo.txt", "inputs/tools"]}))
+        self.assertFailsWith("eval", "inputs に、inputs/bin か、その下のファイルがない")
+
+    def test_REQ_061_agent_ran_needs_an_agent_of_this_plugin(self):
+        self.set_check({"type": "agent_ran", "agent": "worker"})
+        self.assertPasses("eval")
+        self.set_check({"type": "agent_ran", "agent": "worker-summary"})
+        self.assertFailsWith("eval", "check.agent「worker-summary」のエージェントの定義（com.github.copilot/agents/worker-summary.agent.md）がない")
+        self.set_check({"type": "agent_ran", "agent": "sample-plugin:worker"})
+        self.assertFailsWith("eval", "check.agent は、エージェントの名前")
+        self.set_check({"type": "agent_ran"})
+        self.assertFailsWith("eval", "agent がない（agent_ran には要る）")
+        self.set_check({"type": "agent_ran", "agent": "worker", "file": "out/*.md"})
+        self.assertFailsWith("eval", "agent_ran では使わない項目「file」")
+
     def test_REQ_011_eval_json_that_is_not_an_object_fails(self):
         self.write(self.EVAL, "[]")
         self.assertFailsWith("eval", "JSON のオブジェクトではない")
@@ -875,6 +902,9 @@ class EvalParity(Sandbox):
         shutil.rmtree(folder)
         os.makedirs(folder)
         self.write("tests/eval/T-01/eval.json", json.dumps(self.build_task(case), ensure_ascii=False))
+        for rel, content in self.CASES.get("pluginFiles", {}).items():   # 見本に同じ名前のファイルがあれば、見本のものを使う
+            if not os.path.exists(self.path(rel)):
+                self.write(rel, content)
         for rel, content in dict(self.CASES["baseFiles"], **case.get("files", {})).items():
             if content is None:
                 continue
@@ -958,6 +988,263 @@ class Knowledge(Sandbox):
         self.assertFailsWith("knowledge", "kind")
         self.edit_json(self.LIST, lambda d: d.__setitem__(slice(None), [{"id": "03", "kind": "other", "text": "x"}]))
         self.assertFailsWith("knowledge", "id は K-数字")
+
+
+class RemovedKnowledge(Sandbox):
+    """外した決まり（tests/knowledge-removed.json）の番号を指したままの箇所を見つける（REQ-058）。"""
+    REMOVED = "tests/knowledge-removed.json"
+    WORKER = "com.github.copilot/agents/worker.agent.md"
+
+    def write_removed(self, items):
+        self.write(self.REMOVED, json.dumps(items, ensure_ascii=False))
+
+    def setUp(self):
+        super().setUp()
+        # K-03 は中身を直して K-02 にした、K-04 は中身を直さずに外した
+        self.write_removed([{"id": "K-03", "kind": "other", "item": "決まった書き方", "text": "成果物の題は短くする", "replacedBy": "K-02"},
+                            {"id": "K-04", "kind": "other", "item": "x", "text": "古い決まり"}])
+
+    def test_REQ_058_removed_numbers_kept_only_in_the_removed_list_pass(self):
+        self.assertPasses("knowledge")
+        self.assertTrue(self.report().ok, [c.errors for c in self.report().checks if c.errors])
+
+    def test_REQ_058_a_removed_number_left_in_an_agent_fails_with_the_place_and_the_new_number(self):
+        self.write(self.WORKER, self.read(self.WORKER) + "\n題は短くする（K-03）。\n")
+        line = len(self.read(self.WORKER).splitlines())
+        self.assertFailsWith("knowledge", "com.github.copilot/agents/worker.agent.md:%d が、外した決まり K-03 を指している" % line,
+                             "今の番号は K-02")
+
+    def test_REQ_058_a_number_removed_without_a_new_one_asks_to_delete_the_reference(self):
+        self.write("skills/sample-entry/SKILL.md", self.read("skills/sample-entry/SKILL.md") + "\n古い決まり（K-04）\n")
+        self.assertFailsWith("knowledge", "skills/sample-entry/SKILL.md:", "外した決まり K-04", "指している箇所を消す")
+
+    def test_REQ_058_the_new_number_follows_a_chain_of_replacements(self):
+        self.write_removed([{"id": "K-03", "kind": "other", "text": "一つ目", "replacedBy": "K-04"},
+                            {"id": "K-04", "kind": "other", "text": "二つ目", "replacedBy": "K-02"}])
+        self.write("README.md", self.read("README.md") + "\nK-03\n")
+        self.assertFailsWith("knowledge", "README.md:", "外した決まり K-03", "今の番号は K-02")
+
+    def test_REQ_058_removed_numbers_are_searched_in_eval_tasks_and_task_tests_too(self):
+        self.edit_json("tests/eval/T-01/eval.json", lambda d: d.update({"prompt": d["prompt"] + "（K-03）"}))
+        self.write("tests/stage2/task/test_sample.py", self.read("tests/stage2/task/test_sample.py") + "\n# K-04\n")
+        self.assertFailsWith("knowledge", "tests/eval/T-01/eval.json:", "tests/stage2/task/test_sample.py:")
+
+    def test_REQ_058_task_inputs_and_other_test_files_are_not_searched(self):
+        self.write("tests/eval/T-01/inputs/memo.txt", "部品 K-03 の在庫\n")   # 課題の入力はユーザーのデータ
+        self.write("tests/notes.txt", "K-03\n")
+        self.assertPasses("knowledge")
+
+    def test_REQ_058_a_criterion_may_not_cite_a_removed_number(self):
+        self.write_removed([{"id": "K-05", "kind": "criterion", "text": "古い基準", "replacedBy": "K-01"}])
+        self.edit_json("%s/task.json" % EXT, lambda d: d["criteria"][0].update({"knowledge": "K-05"}))
+        self.assertFailsWith("knowledge", "基準 C-01 の knowledge K-05 は、外した決まりの番号", "今の番号は K-01")
+
+    def test_REQ_058_a_removed_number_may_not_be_used_again_in_the_list(self):
+        self.write_removed([{"id": "K-02", "kind": "other", "text": "成果物には題を付ける"}])
+        self.assertFailsWith("knowledge", "番号 K-02 が tests/knowledge.json にもある")
+
+    def test_REQ_058_replaced_by_must_be_a_known_number(self):
+        self.write_removed([{"id": "K-03", "kind": "other", "text": "x", "replacedBy": "K-09"}])
+        self.assertFailsWith("knowledge", "K-03: replacedBy 'K-09' が")
+        self.write_removed([{"id": "K-03", "kind": "other", "text": "x", "replacedBy": "K-03"}])
+        self.assertFailsWith("knowledge", "K-03: replacedBy 'K-03' が")
+
+    def test_REQ_058_removed_list_shape(self):
+        self.write(self.REMOVED, json.dumps({"K-03": "x"}))
+        self.assertFailsWith("knowledge", "外した決まりの並び（リスト）になっていない")
+        self.write_removed([{"id": "K-03", "kind": "maybe", "text": "x"}, {"id": "K-04", "kind": "other", "text": "x"},
+                            {"id": "K-04", "kind": "other", "text": "y"}])
+        self.assertFailsWith("knowledge", "tests/knowledge-removed.json の 1 番目（K-03）: kind", "番号 K-04 が重なっている")
+
+    def test_REQ_059_the_work_folder_of_plugin_creator_is_not_searched(self):
+        # 改善・設計変更の作業用の一時フォルダ（.plugin-creator-work/）は、プラグインのフォルダの中にできることがある。
+        # 中の下見の古い文（外した番号）を拾わず、そこにだけ書かれた番号を、本文にあると数えない
+        self.write(".plugin-creator-work/preview/sample-plugin/com.github.copilot/agents/worker.agent.md", "題は短くする（K-03）\n")
+        self.edit_json("tests/knowledge.json", lambda d: d.append({"id": "K-06", "kind": "other", "item": "x", "text": "表は使わない"}))
+        self.write(".plugin-creator-work/parts/slots/worker-task.worker.md", "表は使わない（K-06）\n")
+        problems = self.problems("knowledge")
+        self.assertFalse(any("K-03" in p for p in problems), problems)
+        self.assertTrue(any("K-06 がエージェントの指示などのファイル" in p for p in problems), problems)
+
+    def test_REQ_059_links_in_the_work_folder_are_not_checked(self):
+        os.makedirs(self.path(".plugin-creator-work/preview"))
+        try:
+            os.symlink(self.tmp, self.path(".plugin-creator-work/escape"))
+        except (OSError, NotImplementedError):
+            self.skipTest("シンボリックリンクを作れない")
+        self.assertPasses("symlinks")
+        os.symlink(self.tmp, self.path("escape"))   # 作業用の一時フォルダの外なら落ちる（見落としでないことの確かめ）
+        self.assertFailsWith("symlinks", "escape")
+
+
+class Standalone(Sandbox):
+    """入口のほかのスキル（ルールのスキル）が、そのスキルのフォルダだけで使える（REQ-062）。"""
+    SKILL = "skills/build-rules/SKILL.md"
+    WORKER = "com.github.copilot/agents/worker.agent.md"
+    RULE = "ビルドの前に、古い成果物のフォルダを必ず消す。"   # knowledge.json の文は、ふつう句点で終わる
+    MARKED = "ビルドの前に、古い成果物のフォルダを必ず消す（K-03）。"   # 番号は句点の前に添える（作業エージェントの決まり）
+
+    def setUp(self):
+        super().setUp()
+        self.edit_json("tests/knowledge.json", lambda d: d.append({"id": "K-03", "kind": "other", "item": "進め方", "text": self.RULE}))
+        self.write("skills/build-rules/scripts/build.py", "print('ok')\n")
+        self.write("skills/build-rules/references/format.md", "# 形\n\n見出しは1つ。\n")
+        self.write_skill("")
+
+    def write_skill(self, extra):
+        self.write(self.SKILL, "---\nname: build-rules\ndescription: \"見本のビルドを頼まれたときに使う。\"\n---\n\n# ビルド\n\n"
+                   "- %s\n- `python3 <このスキルのフォルダ>/scripts/build.py --out DIR` で動かす。\n"
+                   "- 形は [形の決まり](references/format.md)（`references/format.md`）を読む。\n- ログは `logs/build.log` に書く。\n%s"
+                   % (self.MARKED, extra))
+
+    def add_to_worker(self, text):
+        self.write(self.WORKER, self.read(self.WORKER) + "\n" + text)
+
+    def test_REQ_062_a_rule_skill_that_uses_only_its_own_folder_passes(self):
+        self.assertPasses("standalone")
+        self.assertTrue(self.report().ok, [c.errors for c in self.report().checks if c.errors])
+
+    def test_REQ_062_paths_outside_the_skill_folder_fail(self):
+        for extra, snippet in (("`python3 ../scripts/x.py`\n", "../（スキルのフォルダの外）"),
+                               ("`${PLUGIN_ROOT}/skills/build-rules/scripts/build.py`\n", "${PLUGIN_ROOT}（スキルの本文では展開されない）"),
+                               ("`${CLAUDE_SKILL_DIR}/scripts/build.py`\n", "${CLAUDE_SKILL_DIR}"),
+                               ("`skills/sample-entry/SKILL.md` を読む\n", "skills/sample-entry/（ほかのスキルのフォルダ）"),
+                               ("`com.github.copilot/agents/worker.agent.md`\n", "com.github.copilot/（エージェントやエクステンションの場所）")):
+            self.write_skill(extra)
+            self.assertFailsWith("standalone", "skills/build-rules/SKILL.md: ", snippet)
+
+    def test_REQ_062_a_glob_like_path_is_not_a_missing_file(self):
+        self.write_skill("できたファイルは `scripts/build-*.sh` の形の名前になる\n")
+        self.assertTrue(self.report().ok, [c.errors for c in self.report().checks if c.errors])
+
+    def test_REQ_062_a_script_kept_at_the_plugin_root_fails(self):
+        self.remove("skills/build-rules/scripts")
+        self.write("scripts/build.py", "print('root')\n")
+        self.assertFailsWith("standalone", "scripts/build.py が、スキルのフォルダ（skills/build-rules/）の中にない")
+
+    def test_REQ_062_a_missing_reference_or_link_fails(self):
+        self.remove("skills/build-rules/references/format.md")
+        self.assertFailsWith("standalone", "リンク references/format.md が指すファイル", "references/format.md が、スキルのフォルダ")
+
+    def test_REQ_062_urls_output_places_and_placeholders_are_not_files_of_the_skill(self):
+        self.write_skill("- [手引き](https://example.com/assets/guide.html)、`curl https://example.com/scripts/get.sh`\n"
+                         "- 結果は `out/report.md`、`<作業フォルダ>/logs/device-latest.log` に置く。`scripts/<名前>.py` の形。\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_rule_skill_may_not_name_parts_of_the_plugin(self):
+        for extra, snippet in (("`sample-plugin_show` で送る\n", "sample-plugin_show（記録のツール）"),
+                               ("`sample-plugin:worker` に頼む\n", "sample-plugin:worker（エージェント）"),
+                               ("task.json の設定を読む\n", "task.json（作業の定義かナレッジの一覧）"),
+                               ("tests/knowledge.json を読む\n", "knowledge.json（作業の定義かナレッジの一覧）")):
+            self.write_skill(extra)
+            self.assertFailsWith("standalone", snippet)
+
+    def test_REQ_062_references_of_a_rule_skill_are_checked_too(self):
+        self.write("skills/build-rules/references/format.md", "# 形\n\n`sample-plugin_show` で送る。\n")
+        self.assertFailsWith("standalone", "skills/build-rules/references/format.md: ", "sample-plugin_show")
+
+    def test_REQ_062_the_entry_skill_is_not_checked(self):
+        self.write("skills/sample-entry/SKILL.md", self.read("skills/sample-entry/SKILL.md")
+                   + "\n`sample-plugin:worker` と `../x` と task.json と `scripts/none.py`\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_a_rule_text_copied_into_an_agent_fails(self):
+        # 番号を句点の前に添えた写し、番号のない写し、半角のかっこ、折り返した写しのどれも見つける
+        for copy in (self.MARKED, self.RULE, "ビルドの前に、古い成果物のフォルダを必ず消す (K-03)。",
+                     "2. %s\n" % self.MARKED.replace("、", "、\n   ")):
+            self.write(self.WORKER, self.read(self.WORKER).split("\n<!-- copy -->")[0] + "\n<!-- copy -->\n" + copy + "\n")
+            self.assertFailsWith("standalone", "K-03 の決まりの文「%s」が、" % self.RULE, "skills/build-rules/", self.WORKER)
+
+    def test_REQ_062_one_copied_sentence_of_a_longer_rule_fails(self):
+        rule = "ビルドの前に、古い成果物のフォルダを必ず消す。消した後に、ビルドの道具の版を記録に残す。"
+        self.edit_json("tests/knowledge.json", lambda d: d[-1].update({"text": rule}))
+        self.write_skill("")
+        self.replace(self.SKILL, self.MARKED, "ビルドの前に、古い成果物のフォルダを必ず消す。消した後に、ビルドの道具の版を記録に残す（K-03）。")
+        self.add_to_worker("ビルドの道具の版を記録に残す前に、消した後に、ビルドの道具の版を記録に残す（K-03）。\n")
+        self.assertFailsWith("standalone", "K-03 の決まりの文", self.WORKER)
+
+    def test_REQ_062_short_sentences_of_a_rule_are_not_compared(self):
+        rule = "古い成果物は消す。ビルドの前に、古い成果物のフォルダを必ず消す。"
+        self.edit_json("tests/knowledge.json", lambda d: d[-1].update({"text": rule}))
+        self.replace(self.SKILL, self.MARKED, "古い成果物は消す。" + self.MARKED)
+        self.add_to_worker("古い成果物は消す（K-03）。\n")   # 15字より短い文は、たまたま同じになりやすいので比べない
+        self.assertPasses("standalone")
+
+    def test_REQ_062_a_rule_text_copied_into_another_skill_fails(self):
+        self.write("skills/deploy-rules/SKILL.md", "---\nname: deploy-rules\ndescription: \"見本のデプロイ。\"\n---\n\n%s\n" % self.RULE)
+        self.assertFailsWith("standalone", "skills/build-rules/、skills/deploy-rules/")
+
+    def test_REQ_062_an_agent_that_points_to_the_skill_with_its_number_passes(self):
+        self.write(self.WORKER, self.read(self.WORKER) + "\n`<プラグインのフォルダ>/skills/build-rules/SKILL.md` を読み、その手順でビルドする（K-03）。\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_short_rule_texts_are_not_compared(self):
+        self.edit_json("tests/knowledge.json", lambda d: d.append({"id": "K-04", "kind": "other", "item": "x", "text": "題を付ける"}))
+        self.write_skill("- 題を付ける（K-04）\n")
+        self.write(self.WORKER, self.read(self.WORKER) + "\n題を付ける（K-04）\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_paths_of_other_folders_in_a_rule_skill_are_not_files_of_the_skill(self):
+        # 決まりはそのまま写すので、ソースやプロジェクトのパスに scripts/・assets/・references/・skills/ があっても落とさない
+        self.write_skill("- 機器の設定は `<ソースのフォルダ>/scripts/board.cfg` にある。\n- 画像は `src/assets/logo.png` を使う。\n"
+                         "- 道具は `/opt/kx/scripts/flash.sh` にある。\n- 文書は `docs/references/api.md` を読む。\n"
+                         "- ほかの決まりは `<作業フォルダ>/.github/skills/team-rules/SKILL.md` にある。\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_skill_relative_paths_in_any_form_must_exist(self):
+        for extra in ("`python3 <このスキルのフォルダ>/scripts/none.py`\n", "`python3 ./scripts/none.py`\n",
+                      "`tool --config=scripts/none.cfg`\n", "`bash scripts/none.sh`\n"):
+            self.write_skill(extra)
+            self.assertFailsWith("standalone", "scripts/none.", "が、スキルのフォルダ（skills/build-rules/）の中にない")
+
+    def test_REQ_062_a_rule_skill_may_not_point_to_another_skill_of_the_plugin(self):
+        self.write_skill("`<プラグインのフォルダ>/skills/sample-entry/SKILL.md` を読む\n")
+        self.assertFailsWith("standalone", "skills/sample-entry/（ほかのスキルのフォルダ）")
+
+    def test_REQ_062_agents_may_not_point_to_plugin_files_by_relative_paths(self):
+        # エージェントは利用者の作業フォルダで動くので、相対パスではプラグインのファイルに届かない
+        self.add_to_worker("2. `skills/build-rules/SKILL.md` のルールに従い、ビルドする（K-03）。\n3. `python3 scripts/render.py` で図を描く。\n"
+                           "4. ルールはskills/build-rules/references/format.mdにある。`./scripts/log.py` で記録する。\n")
+        self.assertFailsWith("standalone", "worker.agent.md: skills/build-rules/SKILL.md を相対パスで書いている",
+                             "<プラグインのフォルダ>/skills/build-rules/SKILL.md と書く", "worker.agent.md: scripts/render.py を相対パスで",
+                             "worker.agent.md: skills/build-rules/references/format.md を相対パスで", "worker.agent.md: scripts/log.py を相対パスで")
+
+    def test_REQ_062_agents_may_point_to_plugin_files_and_user_files_with_their_folders(self):
+        self.add_to_worker("`<プラグインのフォルダ>/skills/build-rules/SKILL.md` を読む。`python3 <プラグインのフォルダ>/scripts/render.py` で描く。\n"
+                           "`<作業フォルダ>/scripts/build.sh` と `<ソースのフォルダ>/skills/vendor/` は変えない。\n")
+        self.assertPasses("standalone")
+
+    def test_REQ_062_agents_may_not_use_plugin_root_and_must_point_to_existing_skills(self):
+        self.write(self.WORKER, self.read(self.WORKER) + "\n`${PLUGIN_ROOT}/scripts/x.py` と `<プラグインのフォルダ>/skills/old-rules/SKILL.md`\n")
+        self.assertFailsWith("standalone", "worker.agent.md: ${PLUGIN_ROOT} を書いている",
+                             "worker.agent.md: skills/old-rules/ を指しているが、そのスキル（skills/old-rules/SKILL.md）がない")
+
+    def test_REQ_059_copies_in_the_work_folder_of_plugin_creator_are_not_checked(self):
+        # 改善・設計変更の作業用の一時フォルダ（.plugin-creator-work/）の下見と部品は、同じ決まりの文と古い書き方を持つ
+        bad = "`${PLUGIN_ROOT}/scripts/x.py`、`skills/build-rules/SKILL.md`\n" + self.MARKED + "\n"
+        for rel in (".plugin-creator-work/preview/sample-plugin/com.github.copilot/agents/worker.agent.md",
+                    ".plugin-creator-work/preview/sample-plugin/skills/build-rules/SKILL.md",
+                    ".plugin-creator-work/parts/slots/worker-task.worker.md",
+                    ".plugin-creator-work/parts/files/skills/build-rules/SKILL.md"):
+            self.write(rel, bad)
+        self.assertPasses("standalone")
+        self.add_to_worker(bad)   # 同じ文がプラグインの中にあれば落ちる（見落としでないことの確かめ）
+        self.assertFailsWith("standalone", "${PLUGIN_ROOT}", "skills/build-rules/SKILL.md を相対パスで", "K-03 の決まりの文")
+
+    def test_REQ_062_the_check_runs_only_for_generated_plugins(self):
+        # クリエイター自身の1段目（種類 plugin）は、作業エージェントの定義に mcp.json の例として ${PLUGIN_ROOT} を書いている
+        self.write(self.WORKER, self.read(self.WORKER) + "\n`${PLUGIN_ROOT}/scripts/x.py`\n")
+        self.write_skill("`sample-plugin_show`\n")
+        report = self.report("plugin")
+        self.assertNotIn("standalone", {c.id for c in report.checks})
+        self.assertTrue(report.ok, [c.errors for c in report.checks if c.errors])
+
+    def test_REQ_062_a_rule_skill_folder_taken_out_alone_passes_the_skill_check(self):
+        lone = os.path.join(self.tmp, "lone", "build-rules")
+        shutil.copytree(self.path("skills/build-rules"), lone)
+        check = cs.Check("skills", "x")
+        cs.check_skill_file(os.path.join(lone, "SKILL.md"), "build-rules", check)
+        self.assertEqual([], check.errors)
 
 
 class AgentTools(Sandbox):

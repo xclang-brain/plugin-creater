@@ -2,6 +2,7 @@
 // 外側の EVAL の1回目で落ちた2観点への守り：
 //   - 項目を未着手から変えるときの抜き書きは、それより前の問答の記録のユーザーの言葉の中にある
 //   - 生成前の確認で足したナレッジの抜き書きが、選んだ選択肢の文だけなら、足したことにならない
+// 外側の EVAL（改善）の1回目で落ちた観点への守り：直すとき、引き継いだ決まりを「決まった」にする抜き書きは、その番号を示した問いへの答えの中にある
 // 抜き書きが見つかるかの決め方は、外側の EVAL の採点（tests/dev-eval/runner/outer-grade.mjs）と同じなので、同じ場合分けを両方に通して見張る。
 // 設計書：hearing.md 7.2、testing.md 6.5、REQ-015、REQ-020。
 import assert from 'node:assert/strict';
@@ -112,5 +113,42 @@ describe('問答の記録から取り出すもの（quote.mjs）', () => {
     assert.equal(only(''), false);
     assert.equal(quote.isOnlyChosenOption('毎月', []), false);
     assert.equal(quote.isOnlyChosenOption('毎月', [{ type: 'ask_user', question: { choices: ['毎月'] }, answer: 'User cancelled the request.', outcome: 'cancelled' }]), false, '取り消しは選んだことにならない');
+  });
+
+  test('REQ-054 引き継いだ決まりの抜き書きが、その番号を示した問いへの答えの中にあるかを見分ける（番号は前後が英数字でない形。ask_user がなければ通す）', () => {
+    const qa = [
+      { type: 'ask_user', question: { message: '今のプラグインは、次のことができます。違うところはありますか？' }, answer: 'User responded: 決まりの一覧（K-01〜K-03）で古いものはありません', outcome: 'answered' },
+      { type: 'ask_user', question: { message: '今の決まりは次のとおりです。\nK-01 毎週金曜に出す\nK-02 見出しは実績、予定の順\nK-030 ほか' }, answer: 'User responded: ない', outcome: 'answered' },
+      { type: 'ask_user', question: { message: 'K-03 は今も同じですか？' }, answer: 'User cancelled the request.', outcome: 'cancelled' },
+      { type: 'ask_user', question: { header: '直す決まり', options: [{ label: 'K-04 を直す' }] }, answer: 'User responded: K-04 を直す', outcome: 'answered' },
+      { type: 'user_prompt', text: 'K-03 もそのとおりです' },
+    ];
+    const shown = (text, id) => quote.quoteInAnswerShowing(text, id, qa);
+    assert.equal(shown('ない', 'K-01'), true);
+    assert.equal(shown('ない', 'K-02'), true);
+    assert.equal(shown('ない', 'K-03'), false, 'K-030 は K-03 に当たらない。取り消した問いと打った発言は数えない');
+    assert.equal(shown('K-03 もそのとおりです', 'K-03'), false, '打った発言は、番号を示した問いへの答えではない');
+    assert.equal(shown('古いものはありません', 'K-01'), false, '番号を示していない問いの答え（答えに番号の範囲があっても）');
+    assert.equal(shown('ない', 'K-0'), false, 'K-01 は K-0 に当たらない');
+    assert.equal(shown('K-04 を直す', 'K-04'), true, '選択肢の文に番号があってもよい');
+    assert.equal(quote.quoteInAnswerShowing('何でも', 'K-01', [{ type: 'user_prompt', text: 'x' }]), true, 'ask_user がなければ確かめない');
+    assert.equal(quote.quoteInAnswerShowing('何でも', 'K-01', undefined), true);
+  });
+
+  test('REQ-054 番号のすぐ後が英字でも当たらない。答えが来なかった問いのすぐ次に打った発言は、その問いへの答えに数える（間にほかの記録があれば数えない）', () => {
+    const list = { message: '今の決まりは次のとおりです。\nK-01 毎週金曜に出す\nK-02 見出しは実績、予定の順' };
+    const ask = (question, answer, outcome = 'answered') => ({ type: 'ask_user', question, answer, outcome });
+    const shown = (text, id, qa) => quote.quoteInAnswerShowing(text, id, qa);
+    assert.equal(shown('ない', 'K-01', [ask({ message: 'K-01a の件' }, 'User responded: ない')]), false, 'K-01a は K-01 に当たらない');
+    assert.equal(shown('ない', 'K-01', [ask({ header: 'K-01 の確かめ', message: '今と違いますか？' }, 'User responded: ない')]), true, '見出しの番号も数える');
+    // 取り消した・答えられなかった一覧の問いの後に、チャットに打った答え
+    for (const [answer, outcome] of [['User cancelled the request.', 'cancelled'], ['The user is not available to respond.', 'unavailable']]) {
+      const qa = [ask(list, answer, outcome), { type: 'user_prompt', text: 'K-02 だけ古いです' }];
+      assert.equal(shown('K-02 だけ古いです', 'K-01', qa), true, outcome);
+    }
+    const between = [ask(list, 'User cancelled the request.', 'cancelled'), ask({ message: '別の問い' }, 'User responded: はい'), { type: 'user_prompt', text: 'K-02 だけ古いです' }];
+    assert.equal(shown('K-02 だけ古いです', 'K-01', between), false, '間にほかの問いがある');
+    const afterAnswered = [ask(list, 'User responded: ない'), { type: 'user_prompt', text: 'K-02 だけ古いです' }];
+    assert.equal(shown('K-02 だけ古いです', 'K-01', afterAnswered), false, '答えが来た問いの後の発言は、その問いへの答えではない');
   });
 });

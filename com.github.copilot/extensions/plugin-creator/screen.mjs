@@ -38,7 +38,7 @@ export function createUiLoader({ pluginRoot = DEFAULT_PLUGIN_ROOT } = {}) {
         mod = await import(pathToFileURL(serverFile).href);
       } catch (error) {
         loading = null;
-        throw new Error(`画面の部品（ひな形の ui/server.mjs）を読み込めません：${error.message}`);
+        throw new Error(`画面の部品（plugin-creator が用意した共通の形の ui/server.mjs）を読み込めません：${error.message}`);
       }
       return {
         startServer: mod.startServer,

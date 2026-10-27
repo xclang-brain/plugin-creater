@@ -26,7 +26,7 @@
   const sections = {};
 
   // 項目の状態 → 札の色（文字がいつも付くので、色は補助）
-  const STATUS_TONE = { 未着手: 'standby', 聞いた: 'completed', 決まりなし: 'info', 保留: 'warn' };
+  const STATUS_TONE = { 未着手: 'standby', 聞いた: 'completed', 決まりなし: 'info', 保留: 'warn', 変えないので聞かない: 'neutral' };
   const RESULT_TONE = { 合格: 'completed', 不合格: 'failed', 止まった: 'stopped', 試験なし: 'standby', 対象外: 'standby' };
 
   // ---- 小さな部品 --------------------------------------------------------------------------------
@@ -61,6 +61,7 @@
 
   function renderHead(view) {
     const stage = view.hearing.exists ? view.hearing.stage : null;
+    const change = view.hearing.change;
     return [
       h('h1', null, view.title ?? 'plugin-creator の画面'),
       h(
@@ -69,6 +70,16 @@
         stage ? ['今の段階：', badge(stage, 'info')] : badge('お話を聞くことはまだ始まっていません', 'standby'),
         view.hearing.approvedAt ? badge(`ユーザーがよいと答えた時刻：${formatDateTime(view.hearing.approvedAt) ?? view.hearing.approvedAt}`, 'completed') : null,
       ),
+      // 今のプラグインを直すとき：直すプラグインと、変えたいこと
+      change
+        ? h(
+            'div',
+            { class: 'change-target', id: 'change-target' },
+            h('p', null, `直すプラグイン：${change.name}（今の版 ${change.version ?? 'なし'}）`),
+            h('p', { class: 'help' }, `フォルダ：${change.folder}`),
+            change.wants.length ? h('ul', { class: 'plain-list' }, change.wants.map((w) => h('li', null, `変えたいこと：${w}`))) : null,
+          )
+        : null,
       h('p', { class: 'help top-message' }, 'この画面は見るだけです。答えや直しは、Copilot CLI のチャットで行ってください。'),
     ];
   }
@@ -105,10 +116,13 @@
   function renderItems(view) {
     const hearing = view.hearing;
     if (!hearing.exists) return [h('h2', null, 'お話を聞くことの進み具合'), none('お話を聞くことが始まると、聞くことの進み具合がここに出ます。')];
-    const main = hearing.items.filter((i) => i.main);
+    // 変えないので聞かないもの（今のプラグインを直すとき。REQ-056）は、まだ聞いていないものとも、聞いたものとも分けて示す。
+    // 欄は、plugin-creator が作ったプラグインを直すときだけ出す（作っていないプラグインでは、すべて聞くので使わない）
+    const skipped = hearing.items.filter((i) => i.skipped);
+    const main = hearing.items.filter((i) => i.main && !i.skipped);
     const asked = main.filter((i) => i.done);
     const notAsked = main.filter((i) => !i.done);
-    const others = hearing.items.filter((i) => !i.main);
+    const others = hearing.items.filter((i) => !i.main && !i.skipped);
     return [
       h('h2', null, 'お話を聞くことの進み具合'),
       h(
@@ -126,6 +140,15 @@
           h('h3', null, `聞いたこと（${asked.length}）`),
           asked.length ? h('ul', { class: 'item-list' }, asked.map(itemRow)) : none('まだありません'),
         ),
+        hearing.change?.generated || skipped.length
+          ? h(
+              'section',
+              { class: 'item-column', id: 'skipped' },
+              h('h3', null, `変えないので聞かないこと（${skipped.length}）`),
+              h('p', { class: 'help' }, '今のプラグインのまま引き継ぐので、聞き直さないことです。'),
+              skipped.length ? h('ul', { class: 'item-list' }, skipped.map(itemRow)) : none('まだありません'),
+            )
+          : null,
       ),
       h('h3', { class: 'sub' }, 'そのほかの聞くこと'),
       others.length ? h('ul', { class: 'item-list', id: 'other-items' }, others.map(itemRow)) : none('ありません'),
@@ -182,20 +205,44 @@
     return h('div', null, h('p', { class: 'help' }, 'この課題で作業の画面に入れる設定の値'), h('ul', { class: 'plain-list' }, entries.map(([key, value]) => h('li', null, `${key}：${String(value)}`))));
   }
 
+  // 直すときの、直すプラグイン・版・決まりの変わり方（REQ-057）
+  function changeBlock(change) {
+    const list = (ids) => (ids.length ? ids.join('、') : 'なし');
+    return [
+      h('h3', { class: 'sub' }, '直すプラグインと版'),
+      h(
+        'div',
+        { id: 'confirm-change' },
+        h('p', null, `直すフォルダ：${change.folder}`),
+        h('p', { id: 'confirm-version' }, `版：今 ${change.version.from ?? 'なし'} → 直した後 ${change.version.to ?? 'なし'}`),
+        h('h4', null, '仕事のやり方や決まりの変わり方'),
+        h(
+          'ul',
+          { class: 'plain-list', id: 'confirm-knowledge-changes' },
+          h('li', null, `足す：${list(change.added)}`),
+          h('li', null, `直す（新しい番号に付け直す）：${list(change.replaced.map((r) => `${r.from} → ${r.to}`))}`),
+          h('li', null, `外す：${list(change.removed)}`),
+        ),
+      ),
+    ];
+  }
+
   function renderConfirmation(view) {
     const c = view.confirmation;
     if (!c) return null;
+    const word = c.change ? '直す前の確認' : '作る前の確認';
     const parts = [
-      h('h2', null, '作る前の確認で示すもの'),
+      h('h2', null, `${word}で示すもの`),
       h('p', { class: 'help' }, `受け付けた時刻：${formatDateTime(c.at) ?? c.at}。よいと答えることや、直すことは、チャットで行います。`),
+      c.change ? changeBlock(c.change) : null,
       h('h3', { class: 'sub' }, `仕事のやり方や決まりの一覧（${c.knowledge.length}件）`),
-      h('div', { id: 'confirm-knowledge' }, knowledgeTable(c.knowledge, '作る前の確認で示す仕事のやり方や決まりの一覧')),
+      h('div', { id: 'confirm-knowledge' }, knowledgeTable(c.knowledge, `${word}で示す仕事のやり方や決まりの一覧`)),
       h('h3', { class: 'sub' }, 'できあがるプラグインの振る舞いの案'),
       h('p', { class: 'text-block', id: 'confirm-behavior' }, c.behavior),
       h('h3', { class: 'sub' }, '作業の画面の見本'),
       c.sampleUrl
         ? h('p', { id: 'confirm-sample' }, h('a', { class: 'sample-link', href: c.sampleUrl, target: '_blank', rel: 'noopener noreferrer' }, '作業の画面の見本を開く（別のタブで開きます）'))
-        : h('p', { class: 'muted', id: 'confirm-sample' }, '見本はまだ開けません。チャットで、作る前の確認をやり直すと開けます。'),
+        : h('p', { class: 'muted', id: 'confirm-sample' }, `見本はまだ開けません。チャットで、${word}をやり直すと開けます。`),
       h('h3', { class: 'sub' }, `試しに動かして採点する試験の課題と合格の条件`),
       h('p', { class: 'help' }, '合格の条件は、種類が「合否の決め方」の仕事のやり方や決まりの文のままです。'),
       c.criteria.length
@@ -228,7 +275,7 @@
     ];
     if (c.rebuild) {
       parts.push(
-        h('h3', { class: 'sub' }, '作り直しで、引き継ぐことと変わること'),
+        h('h3', { class: 'sub' }, c.change ? '直すときに、引き継ぐことと変わること' : '作り直しで、引き継ぐことと変わること'),
         h(
           'div',
           { class: 'item-columns', id: 'confirm-rebuild' },

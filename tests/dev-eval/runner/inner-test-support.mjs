@@ -5,11 +5,11 @@
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { firstUserText, lastToolResults, lastUserMessage } from './fake-anthropic.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO = path.resolve(HERE, '..', '..', '..');
@@ -21,7 +21,8 @@ export function pythonHasModules() {
   return spawnSync('python3', ['-c', 'import yaml, jsonschema'], { encoding: 'utf8' }).status === 0;
 }
 
-export const tmpDir = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `dev-eval-${prefix}-`)));
+// 試験が作った一時フォルダは、試験のプロセスが終わるときに消す（見本の生成プラグインは1つで十数 MB あり、残すとディスクがあふれる）
+export const tmpDir = (prefix) => fs.realpathSync(tempDir(`dev-eval-${prefix}`));
 
 /** 見本から生成プラグインを組み立て、Claude Code 向けに置き換える。@returns {{ root, pluginRoot, convertedRoot, taskDir, task }} */
 export function buildSamplePlugin() {

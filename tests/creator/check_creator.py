@@ -5,8 +5,8 @@
 公式仕様の検査（plugin.json、mcp.json、スキル、エージェント、置き場所、シンボリックリンク、references）に、
 クリエイターだけの確かめを足す。
 
-  - make-plugin の SKILL.md の本文が500行以内で、5,000トークン以内（トークンは tiktoken の o200k_base で数える）
-  - make-idea の SKILL.md の本文も同じ（アイデア創出の設計 7章。make-idea がなければ対象外）
+  - スキル（skills/*/SKILL.md）の本文が、どれも500行以内で、5,000トークン以内（トークンは tiktoken の o200k_base で数える）。
+    make-plugin の SKILL.md がなければ不合格にする
   - 会話例（examples/ の Markdown）に書いた版と plugin.json の版が同じ。会話例がなければ不合格にする
 
 使い方:
@@ -61,25 +61,28 @@ def count_tokens(text: str) -> int:
     return len(encoding.encode(text, disallowed_special=()))
 
 
-def check_skill_size(cs: Any, root: str, c: Any, skill: str = "make-plugin", required: bool = True) -> None:
-    path = os.path.join(root, "skills", skill, "SKILL.md")
-    if not os.path.isfile(path):
-        if required:
-            c.error("skills/%s/SKILL.md がない" % skill)
-        else:
-            c.skip("skills/%s/SKILL.md がない" % skill)
-        return
-    _, body = cs.parse_frontmatter(path, "skills/%s/SKILL.md" % skill, cs.Check("_", "_"))   # 書式の誤りは skills の試験が示す
-    lines = len(body.splitlines())
-    if lines > SKILL_MAX_LINES:
-        c.error("%s の SKILL.md の本文が %d 行ある（%d 行以内）" % (skill, lines, SKILL_MAX_LINES))
-    try:
-        tokens = count_tokens(body)
-    except RuntimeError as e:
-        c.error(str(e))
-        return
-    if tokens > SKILL_MAX_TOKENS:
-        c.error("%s の SKILL.md の本文が %d トークンある（%s で数えて %d トークン以内）" % (skill, tokens, TOKEN_ENCODING, SKILL_MAX_TOKENS))
+def skill_files(root: str) -> List[str]:
+    """skills/ の直下のフォルダの SKILL.md（名前の順）。"""
+    return sorted(glob.glob(os.path.join(root, "skills", "*", "SKILL.md")))
+
+
+def check_skill_size(cs: Any, root: str, c: Any) -> None:
+    if not os.path.isfile(os.path.join(root, "skills", "make-plugin", "SKILL.md")):
+        c.error("skills/make-plugin/SKILL.md がない")
+    for path in skill_files(root):
+        name = os.path.basename(os.path.dirname(path))
+        shown = "skills/%s/SKILL.md" % name
+        _, body = cs.parse_frontmatter(path, shown, cs.Check("_", "_"))   # 書式の誤りは skills の試験が示す
+        lines = len(body.splitlines())
+        if lines > SKILL_MAX_LINES:
+            c.error("%s の SKILL.md の本文が %d 行ある（%d 行以内）" % (name, lines, SKILL_MAX_LINES))
+        try:
+            tokens = count_tokens(body)
+        except RuntimeError as e:
+            c.error(str(e))
+            return
+        if tokens > SKILL_MAX_TOKENS:
+            c.error("%s の SKILL.md の本文が %d トークンある（%s で数えて %d トークン以内）" % (name, tokens, TOKEN_ENCODING, SKILL_MAX_TOKENS))
 
 
 def example_files(root: str) -> List[str]:
@@ -116,9 +119,7 @@ def run_creator_checks(root: str) -> Any:
     cs = load_template_checks()
     report = cs.run_checks(root, "plugin")
     report.kind = "creator"
-    check_skill_size(cs, report.root, report.new("skill-size", "make-plugin の SKILL.md の本文が500行以内で、5,000トークン以内"))
-    check_skill_size(cs, report.root, report.new("idea-skill-size", "make-idea の SKILL.md の本文が500行以内で、5,000トークン以内"),
-                     skill="make-idea", required=False)
+    check_skill_size(cs, report.root, report.new("skill-size", "スキルの SKILL.md の本文が500行以内で、5,000トークン以内"))
     check_examples_version(cs, report.root, report.new("examples-version", "REQ-037 会話例に書いた版が plugin.json の版と同じ"))
     return report
 

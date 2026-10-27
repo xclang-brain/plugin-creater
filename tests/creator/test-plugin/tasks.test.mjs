@@ -143,6 +143,72 @@ describe('作業フォルダ', () => {
   });
 });
 
+describe('擬似の機器の道具（bin）と、エージェントが動いたかの基準（agent_ran）', () => {
+  const binTask = (overrides = {}) => sampleTask({ inputs: ['inputs/src', 'inputs/bin'], bin: 'inputs/bin', ...overrides });
+  const binFiles = (task = binTask()) => ({
+    'tests/eval/T-01/eval.json': evalJson(task),
+    'tests/eval/T-01/inputs/src/main.c': 'int main(void) { return 0; }\n',
+    'tests/eval/T-01/inputs/bin/kxtool': '#!/bin/sh\necho "$@" >> "$(dirname "$0")/../../device-history.log"\n',
+  });
+  const withPlatform = (platform, fn) => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { ...original, value: platform });
+    try {
+      return fn();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  };
+
+  test('REQ-061 bin の課題を読み、作業フォルダに写した bin の下のファイルに実行の権限を付ける', () => {
+    const dir = plugin(binFiles());
+    fs.chmodSync(path.join(dir, 'tests/eval/T-01/inputs/bin/kxtool'), 0o644);
+    const out = tasks.loadTasks(dir);
+    assert.deepEqual(out.problems, []);
+    const [task] = out.tasks;
+    const { workDir, inputs, binDir } = tasks.prepareWorkDir({ task, dir: path.join(makeTemp(), 'w') });
+    assert.equal(binDir, path.join(workDir, 'inputs', 'bin'));
+    assert.equal(tasks.binDirOf(task, workDir), binDir);
+    if (process.platform !== 'win32') assert.notEqual(fs.statSync(path.join(binDir, 'kxtool')).mode & 0o111, 0, '実行の権限がある');
+    assert.equal(inputs.get('inputs/bin/kxtool'), grade.sha256OfFile(path.join(binDir, 'kxtool')), '権限を付けても中身は変わらない');
+    assert.deepEqual(fs.readdirSync(workDir).sort(), ['inputs']);
+  });
+
+  test('REQ-061 bin のない課題では、binDir は null で、権限も変えない', () => {
+    const dir = plugin({ 'tests/eval/T-01/eval.json': evalJson(sampleTask({ inputs: ['inputs/a.sh'] })), 'tests/eval/T-01/inputs/a.sh': 'echo' });
+    fs.chmodSync(path.join(dir, 'tests/eval/T-01/inputs/a.sh'), 0o644);
+    const [task] = tasks.loadTasks(dir).tasks;
+    const { workDir, binDir } = tasks.prepareWorkDir({ task, dir: path.join(makeTemp(), 'w') });
+    assert.equal(binDir, null);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(workDir, 'inputs/a.sh')).mode & 0o111, 0);
+  });
+
+  test('REQ-061 bin が inputs/bin でない課題、bin のフォルダを入力にしない課題は、課題の誤りにする', () => {
+    const wrong = tasks.loadTasks(plugin(binFiles(binTask({ bin: 'inputs/tools' }))));
+    assert.match(wrong.problems.join('\n'), /tests\/eval\/T-01\/eval\.json\.bin は "inputs\/bin" だけを書ける/);
+    const notCopied = tasks.loadTasks(plugin(binFiles(binTask({ inputs: ['inputs/src'] }))));
+    assert.match(notCopied.problems.join('\n'), /inputs に、inputs\/bin か、その下のファイルがない/);
+  });
+
+  test('REQ-061 Windows では、bin のある課題を、理由を示して課題の誤りにする（bin のない課題は読む）', () => {
+    const out = withPlatform('win32', () =>
+      tasks.loadTasks(plugin({ ...binFiles(), 'tests/eval/T-02/eval.json': evalJson(sampleTask({ id: 'T-02' })) })),
+    );
+    assert.deepEqual(out.tasks.map((t) => t.id), ['T-02']);
+    assert.match(out.problems.join('\n'), /T-01\/eval\.json は擬似の機器の道具（bin）を使う課題なので、Windows では動かさない/);
+    assert.match(out.problems.join('\n'), /本物の機器に送ってしまうため/);
+    assert.deepEqual(withPlatform('linux', () => tasks.loadTasks(plugin(binFiles()))).problems, []);
+  });
+
+  test('REQ-061 agent_ran の基準のエージェントの定義が生成プラグインにないと、課題の誤りにする', () => {
+    const task = sampleTask({ criteria: [{ id: 'C-01', text: 'デプロイ役が動いた', grading: 'program', check: { type: 'agent_ran', agent: 'worker-deploy' } }] });
+    const missing = tasks.loadTasks(plugin({ 'tests/eval/T-01/eval.json': evalJson(task) }));
+    assert.match(missing.problems.join('\n'), /check\.agent「worker-deploy」のエージェントの定義（com\.github\.copilot\/agents\/worker-deploy\.agent\.md）がない/);
+    const found = tasks.loadTasks(plugin({ 'tests/eval/T-01/eval.json': evalJson(task), 'com.github.copilot/agents/worker-deploy.agent.md': '---\n---\n' }));
+    assert.deepEqual(found.problems, []);
+  });
+});
+
 describe('unchanged の採点と、入力の名前の正規化', () => {
   test('REQ-041 入力のフォルダの中のファイルの名前が NFD でも、unchanged は写した入力を見つける', async () => {
     const nfd = 'がいど.md'.normalize('NFD');

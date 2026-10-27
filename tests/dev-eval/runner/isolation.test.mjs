@@ -1,13 +1,13 @@
 // Agent SDK の隔離（testing.md 5章）。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { agentEnv, allowedToolsFor, ENV_ALLOW, isInsideDir, makeCanUseTool, makeQueryOptions, makeSandboxOptions, sandboxStatus } from './isolation.mjs';
+import { agentEnv, allowedToolsFor, ENV_ALLOW, isInsideDir, makeCanUseTool, makeQueryOptions, makeSandboxOptions, SANDBOX_NETWORK_TOOL, sandboxStatus } from './isolation.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
-const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'isolation-test-')));
+const tmp = () => fs.realpathSync(tempDir('isolation-test'));
 
 test('testing.md 5章 環境変数は許可の一覧のものだけを渡し、一時的なホームを使う', () => {
   const base = { PATH: '/bin', LANG: 'ja_JP.UTF-8', GITHUB_TOKEN: 'secret', AWS_SECRET_ACCESS_KEY: 'secret', CLAUDE_EFFORT: 'high', CLAUDE_AUTO_BACKGROUND_TASKS: 'true', HOME: '/home/real', ANTHROPIC_BASE_URL: 'https://api.example' };
@@ -41,6 +41,42 @@ test('testing.md 11.1 サンドボックスの道具：Linux は bwrap と socat
 test('testing.md 5章 サンドボックスは使えないとき失敗にする（黙って外で動かさない）', () => {
   assert.deepEqual(makeSandboxOptions({ enabled: true }), { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false });
   assert.equal(makeSandboxOptions({ enabled: false }), undefined);
+});
+
+test('REQ-061 testing.md 7章 擬似の機器の実行：サンドボックスの通信は機器の口だけ、機器の中身は見せない・書かせない（渡したときだけ足す）', () => {
+  const network = { allowedDomains: ['localhost:41575'], strictAllowlist: true };
+  const filesystem = { denyRead: ['/runs/r/device'], denyWrite: ['/runs/r/device'] };
+  assert.deepEqual(makeSandboxOptions({ enabled: true, network, filesystem }), {
+    enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network, filesystem,
+  });
+  assert.deepEqual(Object.keys(makeSandboxOptions({ enabled: true, network })).sort(), ['allowUnsandboxedCommands', 'autoAllowBashIfSandboxed', 'enabled', 'failIfUnavailable', 'network']);
+  assert.equal(makeSandboxOptions({ enabled: false, network, filesystem }), undefined, 'サンドボックスなしでは何も付けない');
+  // query の options にも、そのまま入る
+  const cwd = tmp();
+  const options = makeQueryOptions({ cwd, home: '/tmp/h', model: 'claude-sonnet-5-5', sandbox: true, sandboxNetwork: network, sandboxFilesystem: filesystem, base: { PATH: '/bin' } });
+  assert.deepEqual(options.sandbox.network, network);
+  assert.deepEqual(options.sandbox.filesystem, filesystem);
+  const plain = makeQueryOptions({ cwd, home: '/tmp/h', model: 'claude-sonnet-5-5', sandbox: true, base: { PATH: '/bin' } });
+  assert.equal(plain.sandbox.network, undefined);
+  assert.equal(plain.sandbox.filesystem, undefined);
+});
+
+test('REQ-061 testing.md 7章 canUseTool：denyNetwork なら、サンドボックスの外への通信の求めを断って記録する。なければ今までどおり許可する', async () => {
+  const cwd = tmp();
+  const refused = [];
+  const deny = makeCanUseTool({ cwd, refused, denyNetwork: true });
+  const denied = await deny(SANDBOX_NETWORK_TOOL, { host: 'example.com' });
+  assert.equal(denied.behavior, 'deny');
+  assert.match(denied.message, /通信はできません/);
+  assert.deepEqual(refused, [{ toolName: 'SandboxNetworkAccess', host: 'example.com' }]);
+  assert.equal((await deny('Bash', { command: 'ls' })).behavior, 'allow', 'ほかのツールは変わらない');
+  const allow = makeCanUseTool({ cwd, refused });
+  assert.equal((await allow(SANDBOX_NETWORK_TOOL, { host: 'example.com' })).behavior, 'allow');
+  assert.equal(refused.length, 1);
+  // query の options の canUseTool にも効く
+  const options = makeQueryOptions({ cwd, home: '/tmp/h', model: 'claude-sonnet-5-5', denyNetwork: true, refused, base: { PATH: '/bin' } });
+  assert.equal((await options.canUseTool(SANDBOX_NETWORK_TOOL, { host: 'localhost' })).behavior, 'deny');
+  assert.deepEqual(refused.at(-1), { toolName: 'SandboxNetworkAccess', host: 'localhost' });
 });
 
 test('testing.md 5章 作業フォルダの中か：シンボリックリンクをたどった本当の場所で見る', () => {

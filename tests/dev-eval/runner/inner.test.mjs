@@ -9,8 +9,11 @@ import { fileURLToPath } from 'node:url';
 import * as realSdk from '@anthropic-ai/claude-agent-sdk';
 
 import { firstUserText, guardSdk, startFakeAnthropic } from './fake-anthropic.mjs';
-import { describeFailure, InnerEvalError, innerEval, main, parseArgs, scoresOf, summarizeRun, userRoleFunction } from './inner.mjs';
+import { DEVICE_STARTERS, describeFailure, InnerEvalError, innerEval, main, parseArgs, personaTaskOf, scoresOf, summarizeRun, userRoleFunction } from './inner.mjs';
+import { DEVICE_UNFENCED_WARNING } from './inner-run.mjs';
+import { runInnerForGenerated } from './outer-inner.mjs';
 import { buildSamplePlugin, pythonHasModules, scriptedModel, tmpDir } from './inner-test-support.mjs';
+import { diskOk } from './temp-dirs.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PERSONAS = path.resolve(HERE, '..', 'personas');
@@ -50,6 +53,9 @@ test('REQ-041 引数：必須の引数と、値の形を確かめる', () => {
   bad(['--plugin', '/p', '--persona', '/a', '--nothing'], /知らない引数/);
   bad(['--plugin', '/p', '--persona'], /値が要ります/);
   bad(['--plugin', '/p', '--persona', '/a', '--timeout-minutes', '0'], /正の数/);
+  // 単体の腕（REQ-062）
+  assert.deepEqual(parseArgs(['--plugin', '/p', '--persona', '/a', '--arms', 'with,without,standalone']).arms, ['with', 'without', 'standalone']);
+  bad(['--plugin', '/p', '--persona', '/a', '--arms', 'with,alone'], /standalone/);
 });
 
 test('REQ-041 点数：採点した実行（score がある）の平均。差は「あり」から「なし」を引く。採点しない実行は平均に入れない', () => {
@@ -68,6 +74,97 @@ test('REQ-041 点数：採点した実行（score がある）の平均。差は
   assert.deepEqual(scores.byTask['T-01'], { with: 0.75, without: 0.25, difference: 0.5 });
   assert.deepEqual(scores.byTask['T-02'], { with: 0, without: null, difference: null });
   assert.deepEqual(scoresOf([]), { with: null, without: null, difference: null, byTask: {} });
+  // 単体の腕を回したときだけ、その点数を出す（REQ-062）
+  const alone = scoresOf([...runs, { task: 'T-09', arm: 'standalone', score: 0.75 }, { task: 'T-09', arm: 'standalone', score: null }]);
+  assert.equal(alone.standalone, 0.75);
+  assert.deepEqual(alone.byTask['T-09'], { with: null, without: null, difference: null, standalone: 0.75 });
+  assert.equal(alone.byTask['T-01'].standalone, undefined);
+});
+
+// ---- 単体の腕と擬似の機器（REQ-062、testing.md 7章） ---------------------------------------------------------------
+
+/** 擬似の機器の代わり（I10 の形）。起動と止めた回数を数える */
+function fakeDevice() {
+  const calls = { started: [], stopped: 0 };
+  return {
+    calls,
+    startDevice: async ({ stateDir }) => {
+      calls.started.push(stateDir);
+      return {
+        env: { KXEMU_GATEWAY: 'http://localhost:4242', KXEMU_ADDRS: '192.168.7.2' }, binDir: '/dev-eval/device/bin', ready: { isolate: 'none' },
+        sandboxNetwork: { allowedDomains: ['localhost:4242'], strictAllowlist: true }, sandboxFilesystem: { denyRead: [stateDir], denyWrite: [stateDir] },
+        copyRecordsTo: (workDir) => ({ consoleLog: path.join(workDir, '.device', 'console.log'), history: path.join(workDir, '.device', 'history.jsonl') }),
+        stop: async () => { calls.stopped += 1; },
+      };
+    },
+  };
+}
+
+test('REQ-062 模擬ユーザーの課題：inner/standalone.json があれば単体の課題を、persona.device があれば擬似の機器の名前を付ける', () => {
+  const dir = tmpDir('persona-task');
+  fs.mkdirSync(path.join(dir, 'inner'));
+  fs.writeFileSync(path.join(dir, 'inner', 'eval.json'), JSON.stringify({ id: 'T-01', prompt: 'A', criteria: [] }));
+  const plain = personaTaskOf({ dir, persona: { id: 'p' } });
+  assert.deepEqual([plain.id, plain.device, plain.standalone], ['T-01', null, null]);
+  fs.writeFileSync(path.join(dir, 'inner', 'standalone.json'), JSON.stringify({ id: 'T-02', prompt: 'B', criteria: [] }));
+  const both = personaTaskOf({ dir, persona: { id: 'p', device: 'kx200' } });
+  assert.equal(both.device, 'kx200');
+  assert.deepEqual([both.standalone.id, both.standalone.dir, both.standalone.json.prompt, both.standalone.personaId], ['T-02', path.join(dir, 'inner'), 'B', 'p']);
+  assert.equal(typeof DEVICE_STARTERS.kx200, 'function');
+});
+
+test('REQ-062 単体の腕だけを回す：単体の課題で動かし、腕ごとに擬似の機器を起動して止める。単体の課題がなければ始めない', { skip: SKIP }, async () => {
+  const fixture = buildSamplePlugin();
+  const sdk = {
+    calls: [],
+    query: ({ options }) => {
+      sdk.calls.push(options);
+      return (async function* generate() {
+        yield { type: 'system', subtype: 'init', session_id: 's', model: 'x', plugins: [{ name: 'weekly-report' }], mcp_servers: [] };
+        yield { type: 'result', subtype: 'success', is_error: false, result: '書きました。', total_cost_usd: 0, num_turns: 1, session_id: 's' };
+      })();
+    },
+  };
+  const device = fakeDevice();
+  const standalone = { id: 'S-01', dir: fixture.task.dir, json: { ...fixture.task.json, id: 'S-01' } };
+  const outDir = tmpDir('standalone-eval');
+  const record = await innerEval({
+    sdk, chromium: null, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, outDir, runs: 1, arms: ['standalone'], sandbox: false, diskCheck: diskOk, judge: async () => ({ pass: true, reason: '' }),
+    tasks: [{ ...fixture.task, device: 'kx200', standalone }, { ...fixture.task, id: 'T-09' }], userRoleFor: () => async () => '', startDevice: device.startDevice,
+  });
+  assert.deepEqual(record.runs.map((r) => [r.task, r.arm, r.status]), [['S-01', 'standalone', 'completed'], ['T-09', 'standalone', 'skipped']]);
+  assert.match(record.runs[1].reason, /単体の課題/);
+  assert.equal(record.runs[0].standalone.orchestratorStarted, false);
+  assert.ok(record.runs[0].device, '機器を使った実行は、機器の記録を要点に残す');
+  assert.deepEqual(record.runs[0].networkRefused, []);
+  assert.ok(typeof record.scores.standalone === 'number');
+  assert.deepEqual(device.calls.started, [path.join(outDir, 'inner-runs', 'S-01', 'standalone-1', 'device')]);
+  assert.equal(device.calls.stopped, 1);
+  assert.deepEqual(sdk.calls[0].plugins, [{ type: 'local', path: fixture.convertedRoot }]);
+  assert.equal(record.tasks[0].device, 'kx200');
+  assert.equal(record.tasks[0].standalone.id, 'S-01');
+  // サンドボックスなしで機器を使ったので、機器の通信と中身の制限が効いていないことを、全体と実行の要点に残す
+  assert.ok(record.warnings.includes(DEVICE_UNFENCED_WARNING), JSON.stringify(record.warnings));
+  assert.deepEqual(record.runs[0].warnings, [DEVICE_UNFENCED_WARNING]);
+  assert.equal(record.runs[0].device.fenced, false);
+  // 知らない機器は、始める前に断る
+  await assert.rejects(
+    innerEval({ sdk: neverSdk, chromium: null, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, outDir: tmpDir('x'), arms: ['without'], sandbox: false, tasks: [{ ...fixture.task, device: 'kx999' }], userRoleFor: () => async () => '' }),
+    (e) => e instanceof InnerEvalError && /kx999/.test(e.message),
+  );
+});
+
+test('REQ-061 外側から呼ぶ内側の EVAL：模擬ユーザーの device を課題に付けて渡す', async () => {
+  const personaDir = tmpDir('outer-inner');
+  fs.mkdirSync(path.join(personaDir, 'inner'));
+  fs.writeFileSync(path.join(personaDir, 'inner', 'eval.json'), JSON.stringify({ id: 'T-01', prompt: 'A', criteria: [] }));
+  let seen = null;
+  await runInnerForGenerated({
+    pluginDir: '/p', loaded: { dir: personaDir, persona: { id: 'edl', device: 'kx200' } }, styleName: 'normal', query: () => {}, outDir: tmpDir('outer-inner-out'), sandbox: false,
+    convert: () => {}, chromium: {}, innerEval: async (o) => { seen = o; return { status: 'completed' }; },
+  });
+  assert.equal(seen.tasks[0].device, 'kx200');
+  assert.deepEqual(seen.arms, ['with', 'without']);
 });
 
 test('REQ-041 結果の要点：基準ごとの合否と理由、画面の終わった理由、確かめ、費用を残す', () => {
@@ -98,10 +195,46 @@ test('testing.md 11.1 サンドボックスの道具がなければ、実際の�
     (error) => error instanceof InnerEvalError && error.code === 'sandbox_missing' && /bwrap、socat/.test(error.message) && /--no-sandbox/.test(error.message),
   );
   await assert.rejects(
-    innerEval({ sdk: neverSdk, chromium, pluginRoot: fixture.pluginRoot, convertedRoot: tmpDir('notconverted'), tasks: [fixture.task], userRoleFor: () => async () => '', outDir: tmpDir('x'), sandbox: false }),
+    innerEval({ sdk: neverSdk, chromium, pluginRoot: fixture.pluginRoot, convertedRoot: tmpDir('notconverted'), tasks: [fixture.task], userRoleFor: () => async () => '', outDir: tmpDir('x'), sandbox: false, diskCheck: diskOk }),
     /変換レポートがありません/,
   );
   await assert.rejects(innerEval({ sdk: neverSdk, chromium, pluginRoot: '/p', convertedRoot: '/c', tasks: [], userRoleFor: () => async () => '', outDir: tmpDir('x') }), /課題が1つもありません/);
+});
+
+test('testing.md 5章 ディスクの空き（/ と OS の一時フォルダと結果のフォルダ）が足りなければ、実際のモデルを使う前に断る（disk_low）。確かめの順は外側の EVAL と同じ', async () => {
+  const lowDisk = () => ({ ok: false, low: [{ path: '/', freeBytes: 1 }], message: 'ディスクの空きが足りないので始めません（/ の空き 0.0 GB。2.0 GB 以上が要ります）。' });
+  const outDir = tmpDir('disk');
+  const seen = [];
+  await assert.rejects(
+    innerEval({
+      sdk: neverSdk, chromium: null, pluginRoot: '/p', convertedRoot: '/c', tasks: [{ id: 'T-01', dir: '/t', json: { criteria: [] } }], userRoleFor: () => async () => '', outDir,
+      sandbox: false, diskCheck: (o) => { seen.push(o); return lowDisk(); },
+    }),
+    (error) => error instanceof InnerEvalError && error.code === 'disk_low' && /\/ の空き 0\.0 GB/.test(error.message),
+  );
+  assert.deepEqual(seen, [{ dirs: [outDir] }], '結果のフォルダも見る');
+  // サンドボックスの道具が先（outer.mjs と同じ順）
+  await assert.rejects(
+    innerEval({
+      sdk: neverSdk, chromium: null, pluginRoot: '/p', convertedRoot: '/c', tasks: [{ id: 'T-01', dir: '/t', json: { criteria: [] } }], userRoleFor: () => async () => '', outDir,
+      sandbox: true, sandboxCheck: () => ({ available: false, missing: ['bwrap'] }), diskCheck: lowDisk,
+    }),
+    (error) => error.code === 'sandbox_missing',
+  );
+  // コマンドラインの入口は、結果のフォルダを作って置き換える前に断る（終了コード 2）
+  const out = path.join(tmpDir('disk-main'), 'out');
+  const saved = console.log;
+  const printed = [];
+  console.log = (line) => printed.push(String(line));
+  let code;
+  try {
+    code = await main(['--plugin', '/nonexistent', '--persona', path.join(PERSONAS, 'weekly-report'), '--out', out, '--no-sandbox'], { sdk: neverSdk, chromium: {}, diskCheck: lowDisk });
+  } finally {
+    console.log = saved;
+  }
+  assert.equal(code, 2);
+  assert.equal(JSON.parse(printed.at(-1)).error, 'disk_low');
+  assert.equal(fs.existsSync(out), false, '結果のフォルダも置き換えた版も作らない');
 });
 
 test('REQ-041 あり・なしを回して、点数とその差を出し、実行ごとの記録を残す。利用枠の上限では残りを始めない', { skip: SKIP, timeout: 300_000 }, async (t) => {
@@ -114,7 +247,7 @@ test('REQ-041 あり・なしを回して、点数とその差を出し、実行
   const progress = [];
   const record = await innerEval({
     sdk, chromium, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, tasks: [fixture.task], userRoleFor: () => async () => 'はい', outDir, runs: 1,
-    envExtra: { ...FAKE_ENV, ANTHROPIC_BASE_URL: api.url }, sandbox: false, timeoutMs: 120_000, pollMs: 300, env: BROWSER_ENV, onProgress: (p) => progress.push(`${p.phase}:${p.arm}`),
+    envExtra: { ...FAKE_ENV, ANTHROPIC_BASE_URL: api.url }, sandbox: false, diskCheck: diskOk, timeoutMs: 120_000, pollMs: 300, env: BROWSER_ENV, onProgress: (p) => progress.push(`${p.phase}:${p.arm}`),
   });
   assert.equal(record.status, 'completed');
   assert.equal(record.stopped, null);
@@ -154,12 +287,24 @@ test('REQ-041 利用枠の上限で止まった実行があれば、残りの実
   };
   const record = await innerEval({
     sdk: fakeSdk, chromium, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, tasks: [fixture.task], userRoleFor: () => async () => '', outDir: tmpDir('limit'), runs: 2,
-    arms: ['without'], sandbox: false, judge: async () => ({ pass: true, reason: '' }),
+    arms: ['without'], sandbox: false, diskCheck: diskOk, judge: async () => ({ pass: true, reason: '' }),
   });
   assert.equal(record.status, 'stopped');
   assert.equal(record.stopped.reason, 'usage_limit');
   assert.deepEqual(record.runs.map((r) => r.status), ['stopped', 'skipped']);
   assert.equal(record.scores.without, null);
+  assert.equal(record.stopped.run, `${fixture.task.id}/without-1`);
+  // 機器を使わない課題では、機器の警告を出さない
+  assert.ok(!record.warnings.includes(DEVICE_UNFENCED_WARNING));
+  // 単体の腕で止まったときは、単体の課題の実行のフォルダ（inner-runs/<単体の課題>/standalone-<回>）を示す
+  const standalone = { id: 'S-01', dir: fixture.task.dir, json: { ...fixture.task.json, id: 'S-01' } };
+  const alone = await innerEval({
+    sdk: fakeSdk, chromium: null, pluginRoot: fixture.pluginRoot, convertedRoot: fixture.convertedRoot, tasks: [{ ...fixture.task, standalone }], userRoleFor: () => async () => '',
+    outDir: tmpDir('limit-standalone'), arms: ['standalone'], sandbox: false, diskCheck: diskOk, judge: async () => ({ pass: true, reason: '' }),
+  });
+  assert.equal(alone.stopped.run, 'S-01/standalone-1');
+  assert.ok(fs.existsSync(path.join(alone.runs[0].runDir, 'result.json')));
+  assert.equal(path.relative(path.dirname(alone.resultFile), alone.runs[0].runDir), path.join('inner-runs', 'S-01', 'standalone-1'));
 });
 
 test('REQ-041 コマンドライン：模擬ユーザーの inner/ の課題を、置き換えた生成プラグインあり・なしで回し、結果を標準出力と inner-result.json に出す', { skip: SKIP, timeout: 300_000 }, async (t) => {
@@ -178,7 +323,7 @@ test('REQ-041 コマンドライン：模擬ユーザーの inner/ の課題を�
   console.log = (line) => printed.push(String(line));
   let code;
   try {
-    code = await main(['--plugin', fixture.pluginRoot, '--persona', persona, '--out', outDir, '--no-sandbox', '--timeout-minutes', '4', '--pass-env', 'ANTHROPIC_API_KEY,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'], { sdk });
+    code = await main(['--plugin', fixture.pluginRoot, '--persona', persona, '--out', outDir, '--no-sandbox', '--timeout-minutes', '4', '--pass-env', 'ANTHROPIC_API_KEY,CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'], { sdk, diskCheck: diskOk });
   } finally {
     console.log = saved.log;
     process.env = saved.env;
@@ -210,7 +355,7 @@ test('REQ-041 コマンドライン：引数の誤りと、置き換えられな
   console.log = (line) => printed.push(String(line));
   try {
     assert.equal(await main(['--persona', '/a']), 2);
-    assert.equal(await main(['--plugin', '/nonexistent', '--persona', '/nonexistent', '--out', tmpDir('bad'), '--no-sandbox']), 2);
+    assert.equal(await main(['--plugin', '/nonexistent', '--persona', '/nonexistent', '--out', tmpDir('bad'), '--no-sandbox'], { diskCheck: diskOk }), 2);
   } finally {
     console.log = saved;
   }

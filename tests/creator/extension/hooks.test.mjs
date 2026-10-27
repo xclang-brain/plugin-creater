@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { describe, test } from 'node:test';
 
-import { answerEverything, readyToConfirm, tempDir, withRun } from './helpers.mjs';
+import { answerEverything, readyToConfirm, startChange, tempDir, withRun } from './helpers.mjs';
+import { leftWordsIn } from './words.mjs';
 
 const CANCELLED = 'User cancelled the request.';
 const UNAVAILABLE = 'The user is not available to respond and will review your work later. Work autonomously and make good decisions. If the request is genuinely ambiguous or unresolvable, stop and call task_complete.';
@@ -201,6 +202,23 @@ describe('コンパクションの後の差し込み（onPreToolUse）', () => {
 
       assert.equal(await preToolUse(run), undefined, '1回だけ');
       assert.equal(await preToolUse(run, { toolName: 'ask_user' }), undefined, '1回だけ');
+    });
+  });
+
+  test('REQ-052 今のプラグインを直すお話の最中は、change-plugin を読み直す差し込みが返る（1回、1KB 未満）', async () => {
+    await withRun(async (run) => {
+      await startChange(run);
+      complete(run);
+      const first = await preToolUse(run);
+      assert.ok(first?.additionalContext, '差し込みが返らない');
+      assert.ok(Buffer.byteLength(first.additionalContext, 'utf8') < 1000, '1KB 未満にする');
+      assert.equal(
+        first.additionalContext,
+        '会話が自動で要約されました。いまの手順が消えているかもしれません。skill ツールで change-plugin を読み直し、plugin-creator_state を呼んで、段階と、まだ聞いていないことを確かめてから続けてください。',
+      );
+      assert.ok(!first.additionalContext.includes('make-plugin'));
+      assert.deepEqual(leftWordsIn(first.additionalContext), []);
+      assert.equal(await preToolUse(run), undefined, '1回だけ');
     });
   });
 

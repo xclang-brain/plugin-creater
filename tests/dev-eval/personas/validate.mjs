@@ -2,13 +2,16 @@
 //   node tests/dev-eval/personas/validate.mjs <模擬ユーザーのフォルダ>… [--all-styles]
 // 外部の npm パッケージは使わない。docx・xlsx の中の文字は、クリエイターの文書をテキストにする部品で読み、
 // 内側の EVAL の課題と採点は、生成プラグインの試験と同じ grade.mjs を使う（testing.md 10.5）。
+// 改善・設計変更の模擬ユーザー（kind が change）の題材（tests/dev-eval/fixtures/ の tar.gz）は、Node の zlib で読む。
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import zlib from 'node:zlib';
 
 import { documentText } from '../../../com.github.copilot/extensions/plugin-creator/doc-text.mjs';
+import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
 import { gradeProgram, inputCheckProblems, listFiles, normalizeRelPath, validateTask } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { listInputFiles, prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
 
@@ -29,19 +32,41 @@ export const KIND_ANSWER = {
 };
 
 export const STYLE_KEYS = ['normal', 'terse', 'vague', 'dont-know', 'nothing-special', 'hurry'];
+/** 模擬ユーザーの種類（kind）。省くと「作る」。change は改善・設計変更（今あるプラグインを直す） */
+export const KINDS = ['change'];
+/** 擬似の機器（device）。kx200 は tests/dev-eval/device/ の KX-200 */
+export const DEVICES = ['kx200'];
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+/** 改善の模擬ユーザーの題材（workspace.repo.fixture）を置くフォルダ */
+export const FIXTURES_DIR = path.resolve(HERE, '..', 'fixtures');
+/** 擬似の機器の道具（expect.deviceTool）があるフォルダ */
+const DEVICE_BIN_DIR = path.resolve(HERE, '..', 'device', 'bin');
 /** 聞き直されたあとに答えが出ればよい話し方 */
 export const REASK_STYLES = ['vague', 'dont-know', 'nothing-special'];
 
 const EXPERIENCES = ['done', 'never'];
 const FROMS = ['talk', 'file'];
 const ROLES = ['output', 'input', 'template'];
+/** 改善の模擬ユーザーだけが使える role。skill：ユーザーの既存のスキルのファイル。repo：初めのコミットの前に題材のリポジトリに置くファイル */
+const CHANGE_ROLES = ['skill', 'repo'];
 const SRC_EXTENSIONS = new Set(['.docx', '.xlsx', '.csv', '.txt', '.md']);
+/** 改善の模擬ユーザーでは、スキルのスクリプトやソースも示せる */
+const CHANGE_SRC_EXTENSIONS = new Set([...SRC_EXTENSIONS, '.py', '.sh', '.c', '.h']);
 const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx']);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-const TOP_KEYS = ['id', 'title', 'experience', 'request', 'profile', 'files', 'knowledge', 'userRoleTests', 'styles'];
+const TOP_KEYS = ['id', 'title', 'experience', 'request', 'profile', 'files', 'knowledge', 'userRoleTests', 'styles', 'kind', 'workspace', 'target', 'device', 'expect'];
+const CHANGE_KEYS = ['workspace', 'target', 'device', 'expect'];
+const WORKSPACE_KEYS = ['repo'];
+const REPO_KEYS = ['place', 'fixture', 'commitDate', 'staged', 'origin'];
+const STAGED_KEYS = ['path', 'append'];
+const EXPECT_KEYS = ['carriedMax', 'replaced', 'deviceTool', 'userSkills', 'screenUnchanged', 'screenAsked', 'lastTimeAsked', 'explained'];
+/** 作業の画面の3つの項目（クリエイターの項目の記号。names.mjs）。expect.screenUnchanged には、この名前（か記号）を書く */
+const SCREEN_ITEM_KEYS = ['settings', 'running_view', 'result_view'];
+/** 生成プラグインのファイルを見る markers（改善の模擬ユーザーでは、題材と流用される資産の文字に当たってはいけない） */
+const PLUGIN_MARKERS = ['embedded', 'excluded', 'task'];
 const FILE_KEYS = ['src', 'place', 'role', 'describe', 'reveal'];
-const KNOWLEDGE_KEYS = ['id', 'fact', 'reveal', 'volunteer', 'from', 'file', 'markers'];
+const KNOWLEDGE_KEYS = ['id', 'fact', 'reveal', 'volunteer', 'from', 'stance', 'file', 'markers'];
 const KNOWLEDGE_FILE_KEYS = ['path', 'evidence', 'kind', 'answer', 'detail'];
 const MARKER_KEYS = ['asked', 'answered', 'leak', 'embedded', 'excluded', 'task'];
 const TEST_KEYS = ['generic', 'recall', 'compound', 'unknown', 'abstain', 'context', 'options', 'confirm'];
@@ -100,6 +125,9 @@ function sourceText(absPath) {
 
 function validateFiles(persona, dir, errors, context) {
   const places = new Set();
+  const change = persona.kind === 'change';
+  const roles = change ? [...ROLES, ...CHANGE_ROLES] : ROLES;
+  const extensions = change ? CHANGE_SRC_EXTENSIONS : SRC_EXTENSIONS;
   if (!Array.isArray(persona.files)) {
     errors.push('files は、示すファイルの並びで書く（なければ []）');
     return;
@@ -111,8 +139,12 @@ function validateFiles(persona, dir, errors, context) {
       return;
     }
     unknownKeys(f, FILE_KEYS, label, errors);
-    for (const key of ['src', 'place', 'describe', 'reveal']) if (!isText(f[key])) errors.push(`${label}.${key} がない`);
-    if (!ROLES.includes(f.role)) errors.push(`${label}.role は ${ROLES.join('・')} のどれかで書く`);
+    // repo のファイルは、ユーザー役に示さない（題材のリポジトリの初めの中身の一部）ので、describe と reveal は要らない
+    const keys = f.role === 'repo' ? ['src', 'place'] : ['src', 'place', 'describe', 'reveal'];
+    for (const key of keys) if (!isText(f[key])) errors.push(`${label}.${key} がない`);
+    if (!roles.includes(f.role)) {
+      errors.push(`${label}.role は ${roles.join('・')} のどれかで書く${change ? '' : `（${CHANGE_ROLES.join('・')} は kind が change のときだけ）`}`);
+    }
     if (isText(f.place)) {
       const place = normalizeRelPath(f.place);
       if (path.isAbsolute(f.place) || /^[A-Za-z]:/.test(f.place) || place.split('/').includes('..') || f.place.includes('\\')) {
@@ -131,7 +163,7 @@ function validateFiles(persona, dir, errors, context) {
         errors.push(`${label}.src「${f.src}」はシンボリックリンクなので使えない`);
       } else {
         const ext = path.extname(src).toLowerCase();
-        if (!SRC_EXTENSIONS.has(ext)) errors.push(`${label}.src の形式「${ext}」は使えない（${[...SRC_EXTENSIONS].join('・')}）`);
+        if (!extensions.has(ext)) errors.push(`${label}.src の形式「${ext}」は使えない（${[...extensions].join('・')}）`);
         const text = sourceText(src);
         if (text === null) errors.push(`${label}.src「${f.src}」の中の文字を読めない`);
         else context.fileText.set(normalizeRelPath(f.place ?? ''), text);
@@ -142,10 +174,26 @@ function validateFiles(persona, dir, errors, context) {
   });
   if (persona.experience === 'never') {
     if (persona.files.length > 0) errors.push('experience が never のとき、files は [] にする（まだやったことのない作業にはファイルがない）');
-  } else if (persona.experience === 'done') {
+  } else if (persona.experience === 'done' && !change) {   // 改善の模擬ユーザーは、今あるスキルやプラグインを示すので、Office の文書がなくてよい
     const offices = persona.files.filter((f) => isObject(f) && OFFICE_EXTENSIONS.has(path.extname(String(f.src ?? '')).toLowerCase()));
     if (offices.length === 0) errors.push('experience が done のとき、files に docx か xlsx を 1 つ以上入れる（testing.md 6.1）');
   }
+}
+
+/**
+ * ユーザー役が、ファイルを聞かれて示すファイル（role が repo のものを除く）を答える文：置き場所、名前、紹介と、
+ * 置き場所か名前に「です」「でした」を続けた文、紹介を続けた文（「<名前> で、<紹介>です。」）
+ */
+export function fileAnswerTexts(files) {
+  return (files ?? []).filter((f) => isObject(f) && f.role !== 'repo').flatMap((f) => {
+    const describe = isText(f.describe) ? f.describe : '';
+    const names = isText(f.place) ? [...new Set([f.place, path.posix.basename(normalizeRelPath(f.place))])] : [];
+    return [
+      ...names,
+      ...(describe ? [describe] : []),
+      ...names.flatMap((n) => [`${n} です。`, `${n} でした。`, ...(describe ? [`${n} で、${describe}です。`] : [])]),
+    ];
+  });
 }
 
 function validateKnowledge(persona, errors, warnings, context) {
@@ -173,6 +221,10 @@ function validateKnowledge(persona, errors, warnings, context) {
     if (!isText(k.reveal)) errors.push(`${name}.reveal（答える条件）がない`);
     if (typeof k.volunteer !== 'boolean') errors.push(`${name}.volunteer は true か false で書く`);
     if (!FROMS.includes(k.from)) errors.push(`${name}.from は ${FROMS.join(' か ')} で書く`);
+    // 答え方の立場（生成プラグインに入る決まりではない）。話の中で出るもので、生成プラグインのファイルを見る markers を持たない
+    const stance = k.stance === true;
+    if ('stance' in k && typeof k.stance !== 'boolean') errors.push(`${name}.stance は true か false で書く`);
+    if (stance && k.from !== 'talk') errors.push(`${name} は stance（答え方の立場）なので、from を talk にする`);
 
     let detailText = '';
     if (k.from === 'file') {
@@ -211,6 +263,13 @@ function validateKnowledge(persona, errors, warnings, context) {
     checkRegex(m.asked, `${name}.markers.asked`, errors);
     const answered = checkRegex(m.answered, `${name}.markers.answered`, errors);
     if (answered && !answered.test(own)) errors.push(`${name}.markers.answered が、fact（と file.detail）の中の言葉に当たらない（答えが当たるか見られない）`);
+    // 聞かれないと話さないナレッジの answered は、示すファイルを答える文（置き場所、名前、紹介と、それに「です」などを続けた文）に当たらない
+    // 言葉にする。ユーザー役は、ファイルを聞かれたら置き場所や名前を答えてよい（files[].reveal）ので、当たると、ファイルの名前を言っただけで
+    // 聞かれずに話したことになる
+    if (answered && k.volunteer === false && Array.isArray(persona.files)) {
+      const hit = fileAnswerTexts(persona.files).find((text) => answered.test(text));
+      if (hit) errors.push(`${name}.markers.answered が、示すファイルの置き場所か紹介「${hit}」に当たる（ファイルの名前を言っただけで、決まりを話したことになる）`);
+    }
     if (k.volunteer === false) {
       const leak = checkRegex(m.leak, `${name}.markers.leak`, errors);
       if (leak && !leak.test(own)) errors.push(`${name}.markers.leak が、fact（と file.detail）の中の言葉に当たらない（漏れを見られない）`);
@@ -222,8 +281,10 @@ function validateKnowledge(persona, errors, warnings, context) {
     if ('embedded' in m) checkRegexList(m.embedded, `${name}.markers.embedded`, errors);
     if ('excluded' in m) checkRegexList(m.excluded, `${name}.markers.excluded`, errors);
     if ('task' in m) checkRegexList(m.task, `${name}.markers.task`, errors);
-    if (!hasEmbedded && !hasExcluded && k.id !== 'first-run') {
-      errors.push(`${name}.markers に embedded か excluded を書く（first-run だけは省ける）`);
+    if (stance) {
+      for (const key of PLUGIN_MARKERS) if (key in m) errors.push(`${name} は stance（答え方の立場）なので、markers.${key} は書かない（生成プラグインに入る決まりではない）`);
+    } else if (!hasEmbedded && !hasExcluded && k.id !== 'first-run') {
+      errors.push(`${name}.markers に embedded か excluded を書く（first-run と stance のナレッジだけは省ける）`);
     }
     if (k.from === 'file' && isObject(k.file)) {
       if ((k.file.kind === 'incidental' || k.file.kind === 'wrong') && !hasExcluded) {
@@ -283,14 +344,33 @@ function validateUserRoleTests(persona, errors, context) {
       else if (id) for (const q of r.questions) askedMatches(id, q, `userRoleTests.recall[${i}]`);
     });
   }
+  // 言わないはずのナレッジ（compound と options の forbid。任意）：聞かれないと話さないもので、expect にないもの
+  const checkForbid = (c, label) => {
+    if (!c || !('forbid' in c)) return;
+    if (!Array.isArray(c.forbid) || c.forbid.length === 0) {
+      errors.push(`${label}.forbid は、knowledge の id を 1 つ以上並べる`);
+      return;
+    }
+    for (const id of c.forbid) {
+      const k = context.knowledgeById.get(id);
+      if (!k) errors.push(`${label}.forbid の「${id}」が、knowledge の id にない`);
+      else if (k.volunteer !== false) errors.push(`${label}.forbid の「${id}」は、聞かれないと話さないナレッジ（volunteer が false）ではない`);
+      // 質問が asked に当たると、外側の EVAL では、言っても聞かれずに話したことにならない（見分けられない）
+      else if (isText(c.question) && regexOf(k.markers?.asked)?.test(c.question)) errors.push(`${label} の質問が、forbid のナレッジ「${id}」の markers.asked に当たる`);
+      if (Array.isArray(c.expect) && c.expect.includes(id)) errors.push(`${label}.forbid の「${id}」が、expect にもある`);
+    }
+  };
   if (!Array.isArray(t.compound) || t.compound.length === 0) errors.push('userRoleTests.compound がない（1 件以上）');
   else {
     t.compound.forEach((c, i) => {
       const label = `userRoleTests.compound[${i}]`;
       if (!isText(c?.question)) errors.push(`${label}.question がない`);
-      if (!Array.isArray(c?.expect) || c.expect.length < 2 || c.expect.some((id) => !context.ids.has(id))) {
-        errors.push(`${label}.expect は、knowledge の id を 2 つ以上並べる`);
+      // forbid があるときは、expect は空でもよい（言わないことだけを見る問い。要約を示して違うところを聞く問いなど）
+      const hasForbid = Array.isArray(c?.forbid) && c.forbid.length > 0;
+      if (!Array.isArray(c?.expect) || c.expect.some((id) => !context.ids.has(id)) || !(c.expect.length >= 2 || (c.expect.length === 0 && hasForbid))) {
+        errors.push(`${label}.expect は、knowledge の id を 2 つ以上並べる（forbid があるときは空でもよい）`);
       } else for (const id of c.expect) askedMatches(id, c.question, label);
+      checkForbid(c, label);
     });
   }
   if (!Array.isArray(t.context) || t.context.length === 0) errors.push('userRoleTests.context がない（1 件以上）');
@@ -308,6 +388,7 @@ function validateUserRoleTests(persona, errors, context) {
       if (!isText(o?.question)) errors.push(`${label}.question がない`);
       if (!isTextList(o?.choices, 2)) errors.push(`${label}.choices は、選択肢を 2 つ以上並べる`);
       checkRegex(o?.expect, `${label}.expect`, errors);
+      checkForbid(o, label);
     });
   }
   const confirmed = new Set();
@@ -320,7 +401,9 @@ function validateUserRoleTests(persona, errors, context) {
       if (id) {
         confirmed.add(id);
         covered.add(id);
-        if (context.knowledgeById.get(id).from !== 'file') errors.push(`${label}.knowledge「${id}」は、from が file のナレッジではない`);
+        // 決まりの確かめの形で聞かれるのは、ファイルの決まりと、示すファイルの文への答え方の立場（stance。FORMAT.md 2.5）
+        const k = context.knowledgeById.get(id);
+        if (k.from !== 'file' && k.stance !== true) errors.push(`${label}.knowledge「${id}」は、from が file のナレッジでも、stance のナレッジでもない`);
       }
       if (!isText(c?.question)) errors.push(`${label}.question がない`);
       else if (id) askedMatches(id, c.question, label);
@@ -375,17 +458,220 @@ function validateStyles(persona, errors, { allStyles }, context) {
   }
 }
 
-async function validateInner(persona, dir, errors, context) {
-  const innerDir = path.join(dir, 'inner');
-  const evalFile = path.join(innerDir, 'eval.json');
-  let task;
-  try {
-    task = JSON.parse(fs.readFileSync(evalFile, 'utf8'));
-  } catch (error) {
-    errors.push(error.code === 'ENOENT' ? 'inner/eval.json がない' : `inner/eval.json を JSON として読めない（${error.message}）`);
+// ---- 改善・設計変更の模擬ユーザー（kind が change） -------------------------------------------------------
+
+/**
+ * tar.gz の中の通常のファイルを、{ 場所 → 中身（Buffer） } で返す。git archive が作る形（ustar と pax の見出し）を読む。
+ * @param {string} file tar.gz の場所
+ * @returns {Map<string, Buffer>}
+ */
+export function readTarGz(file) {
+  const data = zlib.gunzipSync(fs.readFileSync(file));
+  const files = new Map();
+  let paxPath = null;
+  for (let offset = 0; offset + 512 <= data.length;) {
+    const head = data.subarray(offset, offset + 512);
+    if (head.every((b) => b === 0)) break;
+    const field = (from, to) => head.subarray(from, to).toString('utf8').replace(/\0[\s\S]*$/, '');
+    const size = parseInt(field(124, 136).trim() || '0', 8);
+    const type = head[156] === 0 ? '0' : String.fromCharCode(head[156]);
+    const body = data.subarray(offset + 512, offset + 512 + size);
+    if (type === 'x') {
+      const m = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(body.toString('utf8'));
+      paxPath = m ? m[1] : null;
+    } else if (type !== 'g') {
+      const prefix = field(345, 500);
+      const name = paxPath ?? `${prefix ? `${prefix}/` : ''}${field(0, 100)}`;
+      if (type === '0' || type === '7') files.set(normalizeRelPath(name).replace(/^\.\//, ''), Buffer.from(body));
+      paxPath = null;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+/** 文字のファイルの中身（0 のバイトがあるファイルは、文字でないとみなして null） */
+const textOf = (buf) => (buf.includes(0) ? null : nfc(buf.toString('utf8')));
+
+/** 作業フォルダの中の相対の場所か（.. と絶対パスと \ を使わない） */
+function isRelPlace(value) {
+  return isText(value) && !path.isAbsolute(value) && !/^[A-Za-z]:/.test(value) && !value.includes('\\') && !normalizeRelPath(value).split('/').includes('..');
+}
+const under = (place, base) => normalizeRelPath(place).startsWith(`${normalizeRelPath(base).replace(/\/+$/, '')}/`);
+
+function validateChange(persona, errors, context) {
+  if (persona.kind === undefined) {
+    for (const key of CHANGE_KEYS) if (key in persona) errors.push(`${key} は、kind が change のときだけ書く`);
     return;
   }
-  const problems = validateTask(task, 'inner/eval.json');
+  if (!KINDS.includes(persona.kind)) {
+    errors.push(`kind は ${KINDS.join('・')} だけを書ける（作る模擬ユーザーでは書かない）`);
+    return;
+  }
+
+  // workspace.repo：題材のリポジトリ
+  const ws = persona.workspace;
+  const repo = isObject(ws) ? ws.repo : null;
+  if (!isObject(ws)) errors.push('workspace がない（kind が change のとき、題材のリポジトリを書く）');
+  else unknownKeys(ws, WORKSPACE_KEYS, 'workspace', errors);
+  if (isObject(ws) && !isObject(repo)) errors.push('workspace.repo がない');
+  let fixture = null;
+  if (isObject(repo)) {
+    unknownKeys(repo, REPO_KEYS, 'workspace.repo', errors);
+    if (!isRelPlace(repo.place)) errors.push('workspace.repo.place は、作業フォルダの中の相対の場所で、区切りは / で書く（.. は使えない）');
+    if (!isRelPlace(repo.fixture) || !/\.tar\.gz$/.test(repo.fixture)) {
+      errors.push('workspace.repo.fixture は、tests/dev-eval/fixtures/ の中の .tar.gz の場所で書く');
+    } else {
+      const file = path.join(FIXTURES_DIR, ...normalizeRelPath(repo.fixture).split('/'));
+      try {
+        fixture = readTarGz(file);
+      } catch (error) {
+        errors.push(`workspace.repo.fixture「${repo.fixture}」を読めない（${error.code === 'ENOENT' ? 'ファイルがない' : error.message}）`);
+      }
+    }
+    const date = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/;
+    if (!isText(repo.commitDate) || !date.test(repo.commitDate) || Number.isNaN(Date.parse(repo.commitDate))) {
+      errors.push('workspace.repo.commitDate は、時差つきの日時（例：2026-10-01T00:00:00+09:00）で書く');
+    }
+    if (typeof repo.origin !== 'boolean') errors.push('workspace.repo.origin は true か false で書く');
+    if (!Array.isArray(repo.staged)) errors.push('workspace.repo.staged は、git add しただけの変更の並びで書く（なければ []）');
+  }
+
+  // target：直す対象のフォルダ（題材のリポジトリの中）
+  const inRepo = (place) => (isObject(repo) && isText(repo.place) && under(place, repo.place) ? normalizeRelPath(place).slice(normalizeRelPath(repo.place).replace(/\/+$/, '').length + 1) : null);
+  const targetRel = isRelPlace(persona.target) ? inRepo(persona.target) : null;
+  if (!targetRel) errors.push('target は、workspace.repo.place の下の、直すプラグインのフォルダ（作業フォルダからの相対の場所）で書く');
+  const targetFiles = new Map();
+  if (fixture && targetRel) {
+    for (const [name, buf] of fixture) if (under(name, targetRel)) targetFiles.set(name, buf);
+    if (targetFiles.size === 0) errors.push(`target「${persona.target}」のファイルが、題材 ${repo.fixture} にない`);
+  }
+  if (isObject(repo) && Array.isArray(repo.staged)) {
+    repo.staged.forEach((st, i) => {
+      const label = `workspace.repo.staged[${i}]`;
+      if (!isObject(st)) {
+        errors.push(`${label} がオブジェクトではない`);
+        return;
+      }
+      unknownKeys(st, STAGED_KEYS, label, errors);
+      if (!isRelPlace(st.path)) errors.push(`${label}.path は、リポジトリの中の相対の場所で書く`);
+      else if (fixture && !fixture.has(normalizeRelPath(st.path))) errors.push(`${label}.path「${st.path}」が、題材 ${repo.fixture} にない`);
+      else if (targetRel && (normalizeRelPath(st.path) === targetRel || under(st.path, targetRel))) {
+        errors.push(`${label}.path「${st.path}」は、target の外に置く（ほかのフォルダの git add しただけの変更が、直したコミットに入らないかを見るため）`);
+      }
+      if (!isText(st.append)) errors.push(`${label}.append（ファイルの終わりに足す文字）がない`);
+    });
+  }
+
+  // files：skill はユーザーのスキル（target の外）、repo は題材のリポジトリの中
+  const files = Array.isArray(persona.files) ? persona.files.filter(isObject) : [];
+  files.forEach((f, i) => {
+    if (!isText(f.place)) return;
+    if (f.role === 'repo' && !inRepo(f.place)) errors.push(`files[${i}] は role が repo なので、place を workspace.repo.place の下にする`);
+    if (f.role === 'skill' && persona.target && (normalizeRelPath(f.place) === normalizeRelPath(persona.target) || under(f.place, persona.target))) {
+      errors.push(`files[${i}] は role が skill なので、place を target の外にする（ユーザーの既存のスキルは、直すプラグインの外にある）`);
+    }
+  });
+
+  // device と expect
+  if ('device' in persona && !DEVICES.includes(persona.device)) errors.push(`device は ${DEVICES.join('・')} のどれかで書く（擬似の機器を使わないときは書かない）`);
+  const ex = persona.expect;
+  if (!isObject(ex)) {
+    errors.push('expect がない（kind が change のとき、改善の採点に使う値を書く）');
+  } else {
+    unknownKeys(ex, EXPECT_KEYS, 'expect', errors);
+    if (!Number.isInteger(ex.carriedMax) || ex.carriedMax < 1) errors.push('expect.carriedMax は、元の決まりの番号の最大（1 以上の整数）で書く');
+    if (!isText(ex.replaced) || !/^K-\d+$/.test(ex.replaced)) errors.push('expect.replaced は、中身を直す決まりの番号（例：K-15）で書く');
+    const knowledgeFile = targetRel ? `${targetRel}/tests/knowledge.json` : null;
+    if (fixture && knowledgeFile && fixture.has(knowledgeFile)) {
+      let ids = [];
+      try {
+        ids = JSON.parse(fixture.get(knowledgeFile).toString('utf8')).map((k) => k.id);
+      } catch {
+        errors.push(`題材の ${knowledgeFile} を読めない`);
+      }
+      const max = Math.max(0, ...ids.map((id) => Number(/^K-(\d+)$/.exec(id)?.[1] ?? 0)));
+      if (ids.length && Number.isInteger(ex.carriedMax) && ex.carriedMax !== max) errors.push(`expect.carriedMax（${ex.carriedMax}）が、題材の ${knowledgeFile} の番号の最大（${max}）と違う`);
+      if (ids.length && isText(ex.replaced) && !ids.includes(ex.replaced)) errors.push(`expect.replaced「${ex.replaced}」が、題材の ${knowledgeFile} にない`);
+    }
+    if (!isText(ex.deviceTool)) errors.push('expect.deviceTool（機器の道具の名前。例：kxtool）がない');
+    else if ('device' in persona && !fs.existsSync(path.join(DEVICE_BIN_DIR, ex.deviceTool))) errors.push(`expect.deviceTool「${ex.deviceTool}」が、擬似の機器の道具（tests/dev-eval/device/bin/）にない`);
+    if (!isRelPlace(ex.userSkills)) errors.push('expect.userSkills は、ユーザーの既存のスキルのフォルダ（作業フォルダからの相対の場所）で書く');
+    else {
+      const skills = files.filter((f) => f.role === 'skill' && isText(f.place));
+      if (skills.length === 0) errors.push('files に role が skill のファイル（ユーザーの既存のスキル）がない');
+      for (const f of skills) if (!under(f.place, ex.userSkills)) errors.push(`files の「${f.place}」が、expect.userSkills「${ex.userSkills}」の下にない`);
+    }
+    if ('screenUnchanged' in ex) {
+      const names = SCREEN_ITEM_KEYS.map((key) => itemIndex.nameOf(key));
+      const given = Array.isArray(ex.screenUnchanged) ? ex.screenUnchanged : null;
+      const keys = given?.map((x) => (SCREEN_ITEM_KEYS.includes(x) ? x : itemIndex.keyOf(x))) ?? [];
+      if (!given || !keys.every((key) => SCREEN_ITEM_KEYS.includes(key))) {
+        errors.push(`expect.screenUnchanged は、変えないはずの画面の項目の名前（${names.join('・')}）の並びで書く`);
+      } else if (new Set(keys).size !== keys.length) errors.push('expect.screenUnchanged に、同じ項目が重なっている');
+    }
+    checkRegex(ex.screenAsked, 'expect.screenAsked', errors);
+    checkRegex(ex.lastTimeAsked, 'expect.lastTimeAsked', errors);
+    checkRegexList(ex.explained, 'expect.explained', errors);
+  }
+
+  // 生成プラグインのファイルを見る markers は、題材のもとの文字にも、そのまま写される資産（スキルの SKILL.md のほかのファイル）の
+  // 文字にも当たらない言葉にする。当たると、クリエイターが何もしなくても（資産を写しただけでも）合格や不合格が決まってしまう
+  const sources = [];
+  for (const [name, buf] of targetFiles) {
+    const text = textOf(buf);
+    if (text !== null) sources.push({ where: `題材の ${name}`, text });
+  }
+  for (const f of files) {
+    if (f.role === 'skill' && isText(f.place) && path.posix.basename(normalizeRelPath(f.place)) !== 'SKILL.md' && context.fileText.has(normalizeRelPath(f.place))) {
+      sources.push({ where: `流用される資産 ${f.place}`, text: context.fileText.get(normalizeRelPath(f.place)) });
+    }
+  }
+  // ほかのナレッジの文（fact と file.detail）にも当たらない言葉にする。外側の EVAL は差分の足した行をまとめて見るので、
+  // 当たると、ほかの決まりを組み込んだだけで、この決まりも組み込んだ（または入ってはいけない書き方が入った）ことになる
+  const others = [...context.knowledgeById].map(([id, k]) => ({ id, text: `${k.fact ?? ''}\n${k.file?.detail ?? ''}` }));
+  for (const [id, k] of context.knowledgeById) {
+    // 聞かれないと話さないナレッジの answered も、ほかのナレッジの文に当たらない言葉にする。外側の EVAL は、answered に当たり
+    // asked に当たらない答えを「聞かれずに話した」にするので、当たると、ほかのナレッジを話しただけで漏れになる
+    const answered = k.volunteer === false && isText(k.markers?.answered) ? regexOf(k.markers.answered) : null;
+    const otherAnswered = answered ? others.find((o) => o.id !== id && answered.test(o.text)) : null;
+    if (otherAnswered) errors.push(`ナレッジ「${id}」の markers.answered「${k.markers.answered}」が、ナレッジ「${otherAnswered.id}」の文に当たる（ほかのナレッジを話しただけで、聞かれずに話したことになる）`);
+    for (const key of PLUGIN_MARKERS) {
+      for (const pattern of Array.isArray(k.markers?.[key]) ? k.markers[key] : []) {
+        const re = regexOf(pattern);
+        if (!re) continue;
+        const hit = sources.find((src) => re.test(src.text));
+        if (hit) errors.push(`ナレッジ「${id}」の markers.${key}「${pattern}」が、${hit.where} の文字に当たる（元からある言葉や、写すだけで入る言葉では、組み込んだかを見分けられない）`);
+        const other = others.find((o) => o.id !== id && re.test(o.text));
+        if (other) errors.push(`ナレッジ「${id}」の markers.${key}「${pattern}」が、ナレッジ「${other.id}」の文に当たる（ほかの決まりを組み込んだだけで当たる言葉では、この決まりを見分けられない）`);
+      }
+    }
+  }
+
+  // ユーザーのスキルから読み取る決まりに、決まりの確かめの 4 つの答え（rule・exception・incidental・wrong）が 1 つ以上ずつある
+  const skillPlaces = new Set(files.filter((f) => f.role === 'skill' && isText(f.place)).map((f) => normalizeRelPath(f.place)));
+  const skillKinds = new Set([...context.knowledgeById.values()]
+    .filter((k) => k.from === 'file' && isText(k.file?.path) && skillPlaces.has(normalizeRelPath(k.file.path)))
+    .map((k) => k.file.kind));
+  for (const kind of Object.keys(KIND_ANSWER)) {
+    if (!skillKinds.has(kind)) errors.push(`ユーザーのスキル（role が skill のファイル）から読み取るナレッジに、kind が ${kind} のものがない（rule・exception・incidental・wrong を 1 つ以上ずつ）`);
+  }
+}
+
+/**
+ * 内側の EVAL の課題 1 つ（inner/eval.json か inner/standalone.json）を確かめる。
+ * standalone.json は、取り込んだルールのスキルだけに頼む単体の課題（REQ-062。改善の模擬ユーザーの確かめ B）。
+ */
+async function validateInnerTask(innerDir, name, errors, context, { goldenOk }) {
+  const label = `inner/${name}`;
+  let task;
+  try {
+    task = JSON.parse(fs.readFileSync(path.join(innerDir, name), 'utf8'));
+  } catch (error) {
+    errors.push(error.code === 'ENOENT' ? `${label} がない` : `${label} を JSON として読めない（${error.message}）`);
+    return;
+  }
+  const problems = validateTask(task, label);
   errors.push(...problems);
   if (problems.length > 0) return;
 
@@ -396,51 +682,55 @@ async function validateInner(persona, dir, errors, context) {
     try {
       stat = fs.lstatSync(source);
     } catch {
-      errors.push(`inner/eval.json の入力「${rel}」が見つからない`);
+      errors.push(`${label} の入力「${rel}」が見つからない`);
       continue;
     }
-    if (stat.isSymbolicLink()) errors.push(`inner/eval.json の入力「${rel}」はシンボリックリンクなので使えない`);
+    if (stat.isSymbolicLink()) errors.push(`${label} の入力「${rel}」はシンボリックリンクなので使えない`);
   }
   const inputsOk = errors.length === before;
   // 入力のままで当てはまってしまう採点や、入力に当てはまらない unchanged は、生成プラグインの課題と同じく誤りにする
-  if (inputsOk) errors.push(...inputCheckProblems(task, listInputFiles(innerDir, task.inputs ?? []), 'inner/eval.json'));
+  if (inputsOk) errors.push(...inputCheckProblems(task, listInputFiles(innerDir, task.inputs ?? []), label));
 
   const gradedKnowledge = new Set();
   for (const c of task.criteria) {
-    if (!context.ids.has(c.knowledge)) errors.push(`inner/eval.json の基準「${c.id}」の knowledge「${c.knowledge ?? ''}」が、knowledge の id にない`);
+    if (!context.ids.has(c.knowledge)) errors.push(`${label} の基準「${c.id}」の knowledge「${c.knowledge ?? ''}」が、knowledge の id にない`);
     else gradedKnowledge.add(c.knowledge);
   }
-  for (const [id, k] of context.knowledgeById) {
-    if (Array.isArray(k.markers?.task) && k.markers.task.length > 0 && !gradedKnowledge.has(id)) {
-      errors.push(`ナレッジ「${id}」は markers.task を持つが、inner/eval.json に基準がない`);
+  if (name === 'eval.json') {
+    for (const [id, k] of context.knowledgeById) {
+      if (Array.isArray(k.markers?.task) && k.markers.task.length > 0 && !gradedKnowledge.has(id)) {
+        errors.push(`ナレッジ「${id}」は markers.task を持つが、inner/eval.json に基準がない`);
+      }
     }
   }
 
   // 正しい成果物の見本で、program の基準がすべて合格すること
-  const goldenDir = path.join(innerDir, 'golden');
-  if (!fs.existsSync(goldenDir) || !fs.statSync(goldenDir).isDirectory()) {
-    errors.push('inner/golden/ がない（正しい成果物の見本）');
-    return;
-  }
-  if (listFiles(goldenDir).length === 0) {
-    errors.push('inner/golden/ にファイルがない');
-    return;
-  }
-  if (!inputsOk) return;
+  if (!goldenOk || !inputsOk) return;
   // 採点と同じく、入力を写した作業フォルダに見本を重ねて採点する（見本にない入力は、写したまま変えていないとみなす）
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-golden-'));
   try {
     const { workDir, inputs } = prepareWorkDir({ task: { dir: innerDir, json: task }, dir: path.join(temp, 'work') });
-    fs.cpSync(goldenDir, workDir, { recursive: true });
+    fs.cpSync(path.join(innerDir, 'golden'), workDir, { recursive: true });
     const files = listFiles(workDir, { inputs });
     for (const c of task.criteria) {
       if (c.grading !== 'program') continue;
       const result = await gradeProgram(c.check, files, { inputs, workDir });
-      if (!result.pass) errors.push(`inner/golden/ の見本が、基準「${c.id}」（${c.text}）に合格しない：${result.reason}`);
+      if (!result.pass) errors.push(`inner/golden/ の見本が、${label} の基準「${c.id}」（${c.text}）に合格しない：${result.reason}`);
     }
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
+}
+
+async function validateInner(persona, dir, errors, context) {
+  const innerDir = path.join(dir, 'inner');
+  const goldenDir = path.join(innerDir, 'golden');
+  let goldenOk = false;
+  if (!fs.existsSync(goldenDir) || !fs.statSync(goldenDir).isDirectory()) errors.push('inner/golden/ がない（正しい成果物の見本）');
+  else if (listFiles(goldenDir).length === 0) errors.push('inner/golden/ にファイルがない');
+  else goldenOk = true;
+  await validateInnerTask(innerDir, 'eval.json', errors, context, { goldenOk });
+  if (fs.existsSync(path.join(innerDir, 'standalone.json'))) await validateInnerTask(innerDir, 'standalone.json', errors, context, { goldenOk });
 }
 
 /**
@@ -471,6 +761,7 @@ export async function validatePersona(dir, { allStyles = false } = {}) {
   const context = { fileText: new Map(), fileExt: new Map(), ids: new Set(), knowledgeById: new Map() };
   validateFiles(persona, absDir, errors, context);
   validateKnowledge(persona, errors, warnings, context);
+  validateChange(persona, errors, context);
   if (context.ids.size > 0) {
     validateUserRoleTests(persona, errors, context);
     await validateInner(persona, absDir, errors, context);
@@ -481,8 +772,9 @@ export async function validatePersona(dir, { allStyles = false } = {}) {
 
 /**
  * 模擬ユーザーを読み込む。形に合わなければ Error を投げる。
- * @returns {Promise<{ persona: object, dir: string, files: Array<{ src: string, place: string, role: string, describe: string }> }>}
- *   files の src は、示すファイルの元の絶対の場所
+ * @returns {Promise<{ persona: object, dir: string, files: Array<{ src: string, place: string, role: string, describe: string }>, fixture: string|null }>}
+ *   files の src は、示すファイルの元の絶対の場所（role が repo のファイルは describe がない）。
+ *   fixture は、改善の模擬ユーザー（kind が change）の題材の tar.gz の絶対の場所（ほかは null）
  */
 export async function loadPersona(dir, options = {}) {
   const absDir = path.resolve(dir);
@@ -496,7 +788,9 @@ export async function loadPersona(dir, options = {}) {
     role: f.role,
     describe: f.describe,
   }));
-  return { persona: result.persona, dir: absDir, files };
+  const repo = result.persona.kind === 'change' ? result.persona.workspace.repo : null;
+  const fixture = repo ? path.join(FIXTURES_DIR, ...normalizeRelPath(repo.fixture).split('/')) : null;
+  return { persona: result.persona, dir: absDir, files, fixture };
 }
 
 // ---- コマンド ---------------------------------------------------------------------------------------------

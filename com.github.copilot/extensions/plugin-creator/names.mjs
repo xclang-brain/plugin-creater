@@ -49,11 +49,13 @@ export const ITEMS = Object.freeze([
 ]);
 
 // 項目の状態（hearing.md 7.2）
+// unchanged：今のプラグインを直すときだけ。変えるところに関わらないので聞かない項目（REQ-056。BLUEPRINT 4.1）
 export const ITEM_STATUSES = table([
   ['todo', '未着手'],
   ['asked', '聞いた'],
   ['none', '決まりなし'],
   ['pending', '保留'],
+  ['unchanged', '変えないので聞かない'],
 ]);
 
 // ナレッジの種類（hearing.md 7.3。記号は tests/knowledge.json の kind と同じ）
@@ -129,10 +131,14 @@ export const ossChoiceIndex = indexOf(OSS_CHOICES);
 // ただし、段階・項目・状態・種類・出どころの名前は、ツールの引数の値なので、そのまま使う（BLUEPRINT 7章）。
 // 引数の値のうち、表の左の言葉を含むものだけは、画面と返り値に出すときに、次の言葉にする。
 
-const SOURCE_DISPLAY = { answer: 'お話を聞いた答え', added_at_confirmation: '作る前の確認で足した' };
+/** ユーザーに見せる確認の呼び名。今のプラグインを直すときは「直す前の確認」、作るときは「作る前の確認」 */
+export const confirmWordFor = (isChange) => (isChange ? '直す前の確認' : '作る前の確認');
 
-/** ナレッジの出どころを、ユーザーに見せる言葉にする */
-export const sourceDisplay = (key) => SOURCE_DISPLAY[key] ?? sourceIndex.nameOf(key);
+const SOURCE_DISPLAY = { answer: 'お話を聞いた答え' };
+
+/** ナレッジの出どころを、ユーザーに見せる言葉にする。確認で足したものは、確認の呼び名を、作るときと直すときで変える */
+export const sourceDisplay = (key, isChange = false) =>
+  key === 'added_at_confirmation' ? `${confirmWordFor(isChange)}で足した` : SOURCE_DISPLAY[key] ?? sourceIndex.nameOf(key);
 
 /** ナレッジの状態を、ユーザーに見せる言葉にする（候補 → 確かめたいこと） */
 export const knowledgeStatusDisplay = (key) => (key === 'candidate' ? '確かめたいこと' : knowledgeStatusIndex.nameOf(key));

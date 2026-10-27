@@ -11,13 +11,14 @@ import fs from 'node:fs';
 
 import { checkSchema } from './schema-check.mjs';
 
-const pad2 = (n) => String(n).padStart(2, '0');
-
-/** 作業の定義の案に、「合否の決め方」のナレッジから合否の基準を差し込む。案は変えず、写しを返す */
-export function injectCriteria(draft, criterionRows) {
+/**
+ * 作業の定義の案に、合否の基準を差し込む。案は変えず、写しを返す。
+ * 基準は番号つき（change.mjs の criteriaRows の結果：{ id, text, knowledge }）で受け、番号を付け直さない（BLUEPRINT 4.4）
+ */
+export function injectCriteria(draft, criteria) {
   return {
     ...draft,
-    criteria: criterionRows.map((k, i) => ({ id: `C-${pad2(i + 1)}`, text: k.text, knowledge: k.id })),
+    criteria: criteria.map((c) => ({ id: c.id, text: c.text, knowledge: c.knowledge })),
   };
 }
 

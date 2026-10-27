@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CONFIRM_CHOICES, loadPersona } from '../personas/validate.mjs';
 import { createFakeSdk } from './outer-fake-sdk.mjs';
-import { REASK_QUESTION } from './user-role.mjs';
+import { MARKUP_RETRY_NOTE, REASK_QUESTION } from './user-role.mjs';
 import { REPS, THRESHOLDS, parseArgs, testUserRole } from './user-role-test.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -165,4 +165,130 @@ test('REQ-015 コマンドの引数：模擬ユーザーのフォルダ・話し
   assert.throws(() => parseArgs([]), /模擬ユーザーのフォルダ/);
   assert.throws(() => parseArgs(['p', '--reps']), /値が要ります/);
   assert.throws(() => parseArgs(['p', '--wat']), /知らない引数/);
+});
+
+test('REQ-015 ユーザー役の試験：道具の呼び出しの形で答えるユーザー役は、呼び直して直っても落ちる。直らない質問は、その質問だけ答えを空にして試験を続ける', async () => {
+  const LT = '<';
+  const markupAnswer = `${LT}invoke name="Read">\n${LT}parameter name="file_path">週報.docx${LT}/parameter>\n${LT}/invoke>`;
+  const good = oracle(loadedWeekly.persona);
+  const target = loadedWeekly.persona.userRoleTests.unknown[0];
+  // 1回目だけ道具の呼び出しの形（呼び直しで直る）
+  const seen = new Map();
+  const once = (req) => {
+    const q = questionOf(req.prompt);
+    if (q !== target) return good(req);
+    seen.set(req.prompt, (seen.get(req.prompt) ?? 0) + 1);
+    return req.prompt.endsWith(MARKUP_RETRY_NOTE) ? good(req) : markupAnswer;
+  };
+  const fixed = await run(loadedWeekly, once);
+  assert.equal(fixed.ok, false);
+  assert.equal(fixed.observations.toolMarkup.count, REPS.unknown);
+  assert.equal(fixed.observations.toolMarkup.fixed, REPS.unknown);
+  assert.equal(fixed.observations.unknown.rate, 1, '直った答えで、その観点は見る');
+  assert.match(fixed.failures.join('\n'), /道具の呼び出しの形で答えない/);
+  assert.equal(fixed.samples.toolMarkup[0].q, target);
+  // ずっと道具の呼び出しの形（直らない）：全体は落ちずに結果を返し、その質問は空の答えとして不合格になる
+  const always = (req) => (questionOf(req.prompt) === target ? markupAnswer : good(req));
+  const broken = await run(loadedWeekly, always);
+  assert.equal(broken.ok, false);
+  assert.equal(broken.observations.toolMarkup.unfixed, REPS.unknown);
+  assert.ok(broken.observations.unknown.rate < 1);
+  assert.equal(broken.questions, fixed.questions, '直らなかった質問も、聞いた数に入る');
+  // 見本のユーザー役では 0 件
+  assert.equal((await run(loadedWeekly, good)).observations.toolMarkup.count, 0);
+});
+
+test('REQ-015 ユーザー役の試験：まとめた質問で、言わないはずのナレッジ（forbid）を話すユーザー役は、まとめて答える観点で落ちる', async () => {
+  const loadedChange = await loadPersona(path.join(PERSONAS, 'edl-change'));
+  const persona = loadedChange.persona;
+  const stumble = persona.userRoleTests.compound.find((c) => (c.forbid ?? []).length > 0);
+  assert.ok(stumble, 'edl-change に forbid のあるまとめた質問がある');
+  const byId = new Map(persona.knowledge.map((k) => [k.id, k]));
+  const good = oracle(persona);
+  const allowed = stumble.expect.map((id) => byId.get(id).fact).join(' ');
+  const goodRole = (req) => (questionOf(req.prompt) === stumble.question ? allowed : good(req));
+  const leakyRole = (req) => (questionOf(req.prompt) === stumble.question ? `${allowed} ${byId.get(stumble.forbid[0]).fact}` : good(req));
+  const ok = await run(loadedChange, goodRole);
+  assert.equal(ok.observations.compound.rate, 1, JSON.stringify(ok.failures));
+  const bad = await run(loadedChange, leakyRole);
+  assert.ok(bad.observations.compound.rate < 1);
+  assert.match(bad.failures.join('\n'), /まとめて答える/);
+});
+
+test('REQ-015 ユーザー役の試験：選択肢の問いの forbid と、expect が空で forbid だけのまとめた質問（外側の EVAL（改善）4回目の [151]・[196]）', async () => {
+  const loadedChange = await loadPersona(path.join(PERSONAS, 'edl-change'));
+  const persona = loadedChange.persona;
+  const good = oracle(persona);
+  const lists = persona.userRoleTests.options.filter((o) => (o.forbid ?? []).includes('log-dbg'));
+  const summaries = persona.userRoleTests.compound.filter((c) => c.expect.length === 0);
+  const summary = summaries.find((c) => c.forbid.includes('log-dbg'));
+  assert.equal(lists.length, persona.userRoleTests.options.length, '決まりの一覧の問いには、すべて forbid に log-dbg がある');
+  assert.ok(summaries.length >= 2 && summary, 'edl-change に、forbid だけのまとめた質問（回の違う要約や流れの問い）が2つ以上ある');
+  const role = (listAnswer, summaryAnswer) => (req) => {
+    if (lists.some((o) => req.prompt.includes(o.question))) return listAnswer;
+    if (req.prompt.includes(summary.question)) return summaryAnswer;
+    if (summaries.some((c) => req.prompt.includes(c.question))) return 'ない';
+    return good(req);
+  };
+  const k15 = '番号を書く\n\nK-15 が古くなっています。デプロイできない・実機が応答しない・ログが取れないときは、止まらずにボードを1回 reboot してやり直し、それでもだめなら人に伝えて判断してもらいます。';
+  const ok = await run(loadedChange, role(k15, 'ない'));
+  assert.equal(ok.observations.options.rate, 1, JSON.stringify(ok.samples.options));
+  assert.equal(ok.observations.compound.rate, 1, JSON.stringify(ok.samples.compound));
+  // 4回目の答えそのもの：一覧の問いに書き足した決まり（DBG_LOG）を足した [152]、要約の問いに git pull を足した [197]
+  const run4List = `${k15}\n\nK-08 も今と違います。KX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出し、printf を直接使いません。`;
+  const run4Summary = '書く\n\n違うところが1つあります。\n\n- 「ログを足す → ビルド」の前に、ビルドの手順の中で git pull をしていることがスキルに書いてありますが、あれは決まりではなく、たまたまです。ソースが git で管理されていないときもあります。\n\nそれ以外は、記録のとおりです。';
+  const bad = await run(loadedChange, role(run4List, run4Summary));
+  assert.equal(bad.observations.options.rate, 0);
+  assert.deepEqual(bad.samples.options[0].forbidden, ['log-dbg']);
+  assert.equal(bad.observations.forbid.byKnowledge['log-dbg'], lists.length * REPS.options);
+  assert.equal(bad.observations.forbid.byKnowledge['cc-git-pull'], REPS.compound);
+  assert.match(bad.failures.join('\n'), /言わないはずのナレッジを話さない/);
+  assert.ok(bad.samples.compound.some((r) => r.q === summary.question && r.forbidden.join() === 'cc-git-pull'), JSON.stringify(bad.samples.compound));
+  assert.match(bad.failures.join('\n'), /選択肢で済ませない/);
+});
+
+test('REQ-015 ユーザー役の試験：言わないはずのナレッジ（forbid）は、漏らさないと同じく回数で見る。まとめた質問の答えの1回だけに当たっても、割合では合格の範囲でも落ちる（4回目の [197]）', async () => {
+  const loadedChange = await loadPersona(path.join(PERSONAS, 'edl-change'));
+  const persona = loadedChange.persona;
+  const good = oracle(persona);
+  const T = persona.userRoleTests;
+  const summaries = T.compound.filter((c) => c.expect.length === 0);
+  const at = T.compound.findIndex((c) => c.expect.length === 0 && c.forbid.includes('cc-git-pull') && c.forbid.includes('log-dbg'));
+  assert.ok(at >= 0, 'edl-change に、4回目の要約の問い [196] がある');
+  const k15 = '番号を書く\n\nK-15 が古くなっています。デプロイできない・実機が応答しない・ログが取れないときは、ボードを1回 reboot してやり直します。';
+  const run4Summary = '書く\n\n「ログを足す → ビルド」の前の git pull は決まりではなく、たまたまです。';
+  // 要約の問い [196] への答えの1回だけ、git pull を話す（ほかの答えは見本どおり）
+  const role = (leaks) => {
+    let n = 0;
+    return (req) => {
+      if (T.options.some((o) => req.prompt.includes(o.question))) return k15;
+      if (req.prompt.includes(T.compound[at].question)) {
+        n += 1;
+        return n <= leaks ? run4Summary : 'ない';
+      }
+      if (summaries.some((c) => req.prompt.includes(c.question))) return 'ない';
+      return good(req);
+    };
+  };
+  const once = await run(loadedChange, role(1));
+  const total = T.compound.length * REPS.compound;
+  assert.equal(once.observations.compound.total, total);
+  assert.equal(once.observations.compound.passed, total - 1);
+  // 割合だけなら合格（例：21 回中 1 回で 95%）
+  assert.ok(once.observations.compound.rate >= THRESHOLDS.minRate, String(once.observations.compound.rate));
+  assert.doesNotMatch(once.failures.join('\n'), /まとめて答える/);
+  // 回数で見るので落ちる
+  assert.equal(once.observations.forbid.count, 1);
+  assert.equal(once.observations.forbid.byKnowledge['cc-git-pull'], 1);
+  assert.equal(once.observations.forbid.byQuestion[`compound[${at}]`], 1);
+  assert.match(once.failures.join('\n'), new RegExp(`言わないはずのナレッジを話さない：.*1 回話した（compound\\[${at}\\] 1 回）`));
+  assert.deepEqual(once.samples.forbid.map((r) => r.forbidden), [['cc-git-pull']]);
+  // forbid のある質問への答えの数は、forbid のある compound と options の質問 × 回数
+  const withForbid = T.compound.filter((c) => c.forbid).length * REPS.compound + T.options.filter((o) => o.forbid).length * REPS.options;
+  assert.equal(once.observations.forbid.answers, withForbid);
+  // 漏れがなければ、forbid の観点では落ちない
+  const none = await run(loadedChange, role(0));
+  assert.equal(none.observations.forbid.count, 0);
+  assert.doesNotMatch(none.failures.join('\n'), /言わないはずのナレッジ/);
+  assert.deepEqual(Object.keys(none.observations.forbid.byQuestion).sort(), [...T.compound.map((c, i) => [c, `compound[${i}]`]), ...T.options.map((o, i) => [o, `options[${i}]`])].filter(([c]) => c.forbid).map(([, k]) => k).sort());
 });

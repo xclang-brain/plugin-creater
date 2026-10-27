@@ -10,7 +10,22 @@ import path from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { EXTENSION_DIR, TEMPLATE_EXTENSION_DIR, confirmArgs, internalSymbolsIn, knowledge, readyToConfirm, startForTest, tempDir, withRun, writeRealInput } from './helpers.mjs';
+import {
+  EXTENSION_DIR,
+  PLUGIN_KNOWLEDGE,
+  TEMPLATE_EXTENSION_DIR,
+  changeConfirmArgs,
+  confirmArgs,
+  internalSymbolsIn,
+  knowledge,
+  readyToConfirm,
+  readyToConfirmChange,
+  startChange,
+  startForTest,
+  tempDir,
+  withRun,
+  writeRealInput,
+} from './helpers.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -194,7 +209,10 @@ describe('クリエイターの画面のサーバー', () => {
       const asked = view.hearing.items.filter((i) => i.main && i.done).map((i) => [i.name, i.status]);
       assert.deepEqual(asked, [['作業の目的', '聞いた'], ['成果物', '保留'], ['いつもと違うとき', '決まりなし']]);
       assert.equal(view.hearing.items.find((i) => i.name === '成果物').holder, '田中さん');
-      assert.deepEqual(view.hearing.items.find((i) => i.name === '候補の確かめ'), { name: '候補の確かめ', status: '未着手', done: false, main: false, holder: null });
+      assert.deepEqual(view.hearing.items.find((i) => i.name === '候補の確かめ'), { name: '候補の確かめ', status: '未着手', done: false, main: false, skipped: false, holder: null });
+      // 作るときは、変えないので聞かない項目はない（今のプラグインを直すときだけ。REQ-056）
+      assert.deepEqual(view.hearing.skippedItems, []);
+      assert.equal(view.hearing.change, null);
 
       assert.deepEqual(view.hearing.knowledge.map((k) => [k.id, k.kind, k.item, k.text, k.source, k.quote]), [['K-01', 'それ以外', '作業の目的', '毎週の報告を楽にする', 'お話を聞いた答え', '楽にしたい']]);
       assert.deepEqual(view.hearing.candidates.map((k) => [k.id, k.text]), [['K-02', '候補の決まり']]);
@@ -511,6 +529,88 @@ describe('クリエイターの画面のサーバー', () => {
       await run.creator.shutdown();
       await assert.rejects(api(url, '/api/state'), /fetch failed/);
       await assert.rejects(api(sampleUrl, '/api/state'), /fetch failed/);
+    });
+  });
+});
+
+describe('今のプラグインを直すときの画面の状態', () => {
+  /** 直す前の確認の「変わること」に入れる、組み立ての下見（extract）の結果と、試せない本物の手順の文（BLUEPRINT 3章・C4 change-confirm.md） */
+  const EXTRACT_CHANGES = [
+    '共通の土台を今の版に上げます。上書きされるファイル：tests/run.py、com.github.copilot/extensions/edl-sample/core/lifecycle.mjs',
+    '形式を移したために読まれなくなり消すファイル：.github/plugin/plugin.json',
+    '土台と重なる機能（エージェントごとの思考の深さの設定）は、消さずに残します',
+    '本物の機器に送る手順そのものは試せません。試験では、手元の擬似の機器に送ります',
+  ];
+
+  test('REQ-056 REQ-043 「変えないので聞かない」項目は、まだ聞いていない項目とも聞いた項目とも分けて持つ。直すプラグインの要約もある', async () => {
+    await withRun(async (run) => {
+      const url = await openScreen(run);
+      const { folder } = await startChange(run);
+      await run.call('progress', { items: [{ item: '作業の目的', status: '変えないので聞かない', quote: '目的は今のまま' }, { item: '実行中に見たいこと', status: '変えないので聞かない', quote: '画面も今のまま' }, { item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
+      const view = await viewOf(url);
+      assert.deepEqual(view.hearing.change, { folder: fs.realpathSync(folder), name: 'edl-sample', version: '0.1.0', generated: true, wants: ['KX-200 のクロスコンパイルとデプロイの手順を組み込みたい'], carried: 5 });
+      assert.deepEqual(view.hearing.skippedItems, ['作業の目的', '実行中に見たいこと']);
+      assert.ok(!view.hearing.notAskedItems.includes('作業の目的'), 'まだ聞いていない項目に入らない');
+      assert.deepEqual(view.hearing.items.find((i) => i.name === '作業の目的'), { name: '作業の目的', status: '変えないので聞かない', done: true, main: true, skipped: true, holder: null });
+      assert.equal(view.hearing.items.find((i) => i.name === '進め方').skipped, false);
+      // 引き継いだ決まりは、確かめたいことに出る
+      assert.deepEqual(view.hearing.candidates.map((k) => [k.id, k.source]), PLUGIN_KNOWLEDGE.map((k) => [k.id, '既存のプラグインから読んで確かめた']));
+      assert.deepEqual(stringValues(view).flatMap((v) => internalSymbolsIn(v)), []);
+    });
+  });
+
+  test('REQ-057 REQ-044 直す前の確認の状態に、直すフォルダ、版（今と案）、引き継ぐことと変わること（下見の結果を含む）、足す・直す・外す決まり、元の番号を引き継いだ合格の条件がある', async () => {
+    await withRun(async (run) => {
+      const url = await openScreen(run);
+      const { folder } = await startChange(run);
+      await run.call('record', { knowledge: [{ id: 'K-05', text: '機器を1回 reboot し、だめなら人に伝える', quote: '今はこう' }] }); // K-06
+      await run.call('record', { knowledge: [{ id: 'K-03', status: '外した', quote: 'もう要らない' }] });
+      const added = await readyToConfirmChange(run, { carried: ['K-01', 'K-02', 'K-04'] }); // K-07
+      const ids = ['K-01', 'K-02', 'K-04', 'K-06', added];
+      const keep = ['ログを入れて原因を探す流れ', '引き継いだ決まり K-01、K-02、K-04'];
+      const change = ['クロスコンパイルとデプロイのルールのスキルを足す', ...EXTRACT_CHANGES];
+      await run.call('confirm', changeConfirmArgs(ids, { rebuild: { keep, change } }));
+      const c = (await viewOf(url)).confirmation;
+      assert.deepEqual(c.change, {
+        folder: fs.realpathSync(folder),
+        name: 'edl-sample',
+        version: { from: '0.1.0', to: '0.2.0' },
+        keep,
+        change,
+        added: [added],
+        replaced: [{ from: 'K-05', to: 'K-06' }],
+        removed: ['K-03'],
+      });
+      assert.deepEqual(c.rebuild, { keep, change });
+      assert.deepEqual(c.criteria.map((x) => [x.id, x.knowledge]), [['C-01', 'K-02'], ['C-02', 'K-04'], ['C-03', added]]);
+      assert.deepEqual(stringValues(c).flatMap((v) => internalSymbolsIn(v)), []);
+    });
+  });
+
+  test('REQ-043 REQ-044 直すときは、確認で足した決まりの出どころを「直す前の確認で足した」と示す（決まったこと・確かめたいこと・直す前の確認のどれも）', async () => {
+    await withRun(async (run) => {
+      const url = await openScreen(run);
+      await startChange(run);
+      const added = await readyToConfirmChange(run); // K-06
+      await run.call('record', { knowledge: [knowledge({ text: '確認で足した', source: '生成前の確認で足した', quote: '足したい' }), knowledge({ text: '確認で足した、まだ確かめていない決まり', source: '生成前の確認で足した', quote: '足したい', status: '候補' })] }); // K-07、K-08
+      let view = await viewOf(url);
+      assert.deepEqual(view.hearing.knowledge.filter((k) => k.id === 'K-07').map((k) => k.source), ['直す前の確認で足した']);
+      assert.deepEqual(view.hearing.candidates.map((k) => [k.id, k.source]), [['K-08', '直す前の確認で足した']]);
+      await run.call('record', { knowledge: [{ id: 'K-08', status: '外した', quote: '要らない' }] });
+      await run.call('confirm', changeConfirmArgs(['K-01', 'K-02', 'K-03', 'K-04', 'K-05', 'K-07', added]));
+      view = await viewOf(url);
+      assert.deepEqual(view.confirmation.knowledge.filter((k) => k.id === 'K-07').map((k) => k.source), ['直す前の確認で足した']);
+      assert.deepEqual(view.hearing.dropped.map((k) => [k.id, k.source]), [['K-08', '直す前の確認で足した']]);
+      assert.ok(!JSON.stringify(view).includes('作る前の確認'));
+    });
+  });
+
+  test('REQ-043 作るときの確認の状態には、直すときの欄がない', async () => {
+    await withRun(async (run) => {
+      const url = await openScreen(run);
+      await readyToConfirm(run);
+      await run.call('confirm', confirmArgs());
+      assert.equal('change' in (await viewOf(url)).confirmation, false);
     });
   });
 });

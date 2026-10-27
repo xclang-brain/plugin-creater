@@ -74,7 +74,7 @@ class Overall(Creator):
         report = cc.run_creator_checks(self.root)
         self.assertTrue(report.ok, [c.errors for c in report.checks if c.errors])
         ids = [c.id for c in report.checks]
-        self.assertEqual(["manifest", "mcp", "skills", "references", "agents", "layout", "symlinks", "skill-size", "idea-skill-size", "examples-version"], ids)
+        self.assertEqual(["manifest", "mcp", "skills", "references", "agents", "layout", "symlinks", "skill-size", "examples-version"], ids)
         self.assertEqual("creator", report.kind)
 
     def test_REQ_004_official_checks_of_the_template_apply_to_the_creator(self):
@@ -99,23 +99,6 @@ class Overall(Creator):
     def test_REQ_042_unknown_folder_is_a_usage_error(self):
         proc = subprocess.run([sys.executable, "-I", os.path.join(HERE, "check_creator.py"), os.path.join(self.root, "nothing")], capture_output=True)
         self.assertEqual(2, proc.returncode)
-
-
-class IdeaSkillSize(Creator):
-    """make-idea の SKILL.md の大きさ（アイデア創出の設計 7章）。make-idea がないクリエイターでは対象外"""
-
-    def test_without_make_idea_it_is_skipped(self):
-        check = self.checks()["idea-skill-size"]
-        self.assertEqual([], check.errors)
-        self.assertEqual("skipped", check.status)
-
-    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
-    def test_500_lines_pass_and_501_lines_fail(self):
-        head = "---\nname: make-idea\ndescription: アイデアを考えてと頼まれたときに使う。\n---\n"
-        self.write("skills/make-idea/SKILL.md", head + "行\n" * 500)
-        self.assertEqual([], self.problems("idea-skill-size"))
-        self.write("skills/make-idea/SKILL.md", head + "行\n" * 501)
-        self.assertFailsWith("idea-skill-size", "make-idea", "501 行")
 
 
 class SkillSize(Creator):
@@ -146,6 +129,34 @@ class SkillSize(Creator):
         self.assertEqual([], self.problems("skill-size"))
         self.skill(one_line_of(5001))
         self.assertFailsWith("skill-size", "5001 トークン", "o200k_base")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_every_skill_is_measured_and_named_in_the_reason(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "行\n" * 501)
+        problems = self.problems("skill-size")
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("change-plugin の SKILL.md", problems[0])
+        self.assertIn("501 行", problems[0])
+        one_line_of = lambda n: "hello" + " hello" * (n - 1)
+        self.write("skills/test-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "test-plugin") + one_line_of(5001))
+        self.assertFailsWith("skill-size", "test-plugin の SKILL.md", "5001 トークン")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_other_skills_within_the_limits_pass(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "行\n" * 500)
+        self.assertEqual([], self.problems("skill-size"))
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_make_plugin_is_still_required_when_other_skills_exist(self):
+        self.write("skills/change-plugin/SKILL.md", SKILL_HEAD.replace("make-plugin", "change-plugin") + "本文\n")
+        os.remove(self.path("skills/make-plugin/SKILL.md"))
+        self.assertFailsWith("skill-size", "skills/make-plugin/SKILL.md がない")
+
+    @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
+    def test_the_skills_of_this_repository_fit(self):
+        report = cc.run_creator_checks(cc.REPO)
+        size = {c.id: c for c in report.checks}["skill-size"]
+        self.assertEqual([], size.errors)
 
     @unittest.skipUnless(HAS_TIKTOKEN, "tiktoken のエンコーディングを使えない")
     def test_text_that_looks_like_a_special_token_can_be_counted(self):

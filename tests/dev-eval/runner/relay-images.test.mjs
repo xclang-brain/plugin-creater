@@ -5,7 +5,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -13,8 +12,12 @@ import { pathToFileURL } from 'node:url';
 import { launchBrowser } from '../../../skills/test-plugin/scripts/screen.mjs';
 import { answerQuestion, createHumanRelay, listQuestionIds } from './human-relay.mjs';
 import { captureLocalImages, findLocalSources } from './relay-images.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
-const tmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), `relay-images-${prefix}-`));
+// Playwright は、見つからない channel（chrome、msedge）を試したときに作った一時フォルダ（playwright-artifacts-*、playwright_chromiumdev_profile-*）を
+// 消さない。この試験のプロセスの一時フォルダの置き場所を、終わるときに消すフォルダにする（ブラウザーを起動する前に変える）
+process.env.TMPDIR = tempDir('relay-images-tmp');
+const tmp = (prefix) => tempDir(`relay-images-${prefix}`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 const isPng = (file) => fs.readFileSync(file).subarray(0, 4).equals(PNG);

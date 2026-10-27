@@ -8,11 +8,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { VERSION_PATTERN, compareVersions, criteriaRows, readPluginForChange } from './change.mjs';
 import { DRAFT_TASK_SUFFIX } from './constants.mjs';
 import { DEFAULT_PLUGIN_ROOT, createScreen, createUiLoader, listExamples } from './screen.mjs';
 import { DocTextError, documentText } from './doc-text.mjs';
 import { evalTaskSettingsProblems, settingLabels } from './eval-settings.mjs';
-import { Refusal, createHearing, taskFileHash } from './hearing.mjs';
+import { Refusal, confirmWord, createHearing, taskFileHash } from './hearing.mjs';
 import { createHooks } from './hooks.mjs';
 import { IssueError, fileIssue, runGh as defaultRunGh } from './issue.mjs';
 import { checkResultFile, createResultReader } from './results.mjs';
@@ -77,17 +78,32 @@ export function createCreator({
     return { ...(settings?.maxIterations === undefined ? {} : { maxIterations: settings.maxIterations }), task };
   }
 
+  /** 合否の基準の番号の元（直すときは、元のプラグインの task.json の対応。作るときは空。BLUEPRINT 4.4） */
+  const criteriaIdsNow = () => hearing.state?.change?.criteriaIds ?? {};
+
   function confirmationView() {
     const state = hearing.state;
     const c = state?.confirmation;
     if (!c) return null;
     const byId = new Map(state.knowledge.map((k) => [k.id, k]));
     const knowledge = c.knowledgeIds.map((id) => byId.get(id)).filter(Boolean);
-    const criteria = knowledge.filter((k) => k.kind === 'criterion').map((k, i) => ({ id: `C-${String(i + 1).padStart(2, '0')}`, text: k.text, knowledge: k.id }));
+    const criteria = criteriaRows(knowledge, criteriaIdsNow());
+    const changing = state.change
+      ? {
+          change: {
+            folder: state.change.folder,
+            name: state.change.name,
+            version: { from: state.change.version ?? null, to: c.version ?? null },
+            keep: c.rebuild?.keep ?? [],
+            change: c.rebuild?.change ?? [],
+            ...hearing.knowledgeChanges(c.knowledgeIds),
+          },
+        }
+      : {};
     return {
       at: c.at,
       behavior: c.behavior,
-      knowledge: knowledge.map(knowledgeRow),
+      knowledge: knowledge.map((k) => knowledgeRow(k, Boolean(state.change))),
       criteria,
       evalTasks: c.evalTasks.map((t) => ({
         prompt: t.prompt,
@@ -96,6 +112,7 @@ export function createCreator({
         settings: settingsView(t.settings, c.settingLabels),
       })),
       rebuild: c.rebuild ?? null,
+      ...changing,
       sampleUrl: sample.url,
     };
   }
@@ -129,11 +146,11 @@ export function createCreator({
     } catch (error) {
       throw new Refusal(errorMessage(error)); // 読めない理由（平易な日本語）を、そのままモデルに返す
     }
-    const criterionRows = knowledgeRows.filter((k) => k.kind === 'criterion');
-    if (criterionRows.length === 0) {
+    const criteria = criteriaRows(knowledgeRows, criteriaIdsNow());
+    if (criteria.length === 0) {
       throw new Refusal('種類が「合否の決め方」の仕事のやり方や決まりがありません。合格の条件は、種類が「合否の決め方」の仕事のやり方や決まりから作るので、合格の条件にするものを plugin-creator_record で種類「合否の決め方」にしてください。');
     }
-    const task = injectCriteria(draft, criterionRows);
+    const task = injectCriteria(draft, criteria);
     let ui;
     try {
       ui = await loadUi();
@@ -162,7 +179,7 @@ export function createCreator({
       }
     }
     try {
-      return { url: await sample.update(task), settingLabels: settingLabels(draft.settings) };
+      return { url: await sample.update(task), settingLabels: settingLabels(draft.settings), criteria };
     } catch (error) {
       throw new Refusal(`作業の画面の見本を開けません：${errorMessage(error)}`);
     }
@@ -232,9 +249,44 @@ export function createCreator({
       const strings = (v) => (Array.isArray(v) ? v.map(String).filter((s) => s.trim() !== '') : []);
       rebuild = { keep: strings(a.rebuild?.keep), change: strings(a.rebuild?.change) };
     }
-    // ナレッジの番号は、重なりを除き、番号の小さい順にそろえる。見本の基準の番号（C-01 から）と、生成のときに組み立てのスクリプトが付ける番号を、同じ並びにするため
+    if (a.version !== undefined && typeof a.version !== 'string') throw new Refusal('新しい版の案（version）は、0.2.0 のような文字で渡してください。');
+    // ナレッジの番号は、重なりを除き、番号の小さい順にそろえる。見本の基準の番号と、生成のときに組み立てのスクリプトが付ける番号を、同じ並びにするため
     const knowledgeIds = [...new Set(a.knowledgeIds.map((id) => String(id).trim()))].sort((x, y) => (Number(x.replace(/^\D+/, '')) || 0) - (Number(y.replace(/^\D+/, '')) || 0) || x.localeCompare(y));
-    return { knowledgeIds, behavior: text(a.behavior), taskPath: text(a.taskPath), evalTasks, rebuild };
+    return { knowledgeIds, behavior: text(a.behavior), taskPath: text(a.taskPath), evalTasks, rebuild, version: a.version === undefined ? null : a.version.trim() };
+  }
+
+  /**
+   * 直すときの、引き継ぐことと変わること・版の確かめ（REQ-057、D16）。作るときに版を渡されたら断る（版は直すときだけ）。
+   * 作り直しのときは、引き継ぐことと変わることが要る（REQ-035）。
+   */
+  function checkRebuildAndVersion(a) {
+    const changing = hearing.state.change;
+    if (!changing) {
+      if (hearing.state.rebuild && a.rebuild === null) throw new Refusal('作り直しのときは、引き継ぐことと変わること（rebuild）も知らせてください。');
+      if (a.version !== null) throw new Refusal('新しい版の案（version）は、今のプラグインを直すときだけ渡してください。');
+      return;
+    }
+    if (a.rebuild === null || a.rebuild.change.length === 0) {
+      throw new Refusal('直すときは、引き継ぐことと変わること（rebuild）も知らせてください。変わること（rebuild.change）は1件以上にしてください。');
+    }
+    if (a.version === null) throw new Refusal('直すときは、新しい版の案（version。例：0.2.0）も知らせてください。ユーザーがよいと答えた版にします。');
+    if (!VERSION_PATTERN.test(a.version)) throw new Refusal(`新しい版の案（version）は、0.2.0 のように、数を「.」で3つつないだ形で渡してください（今：「${a.version}」）。`);
+    const order = compareVersions(a.version, changing.version);
+    if (order !== null && order <= 0) throw new Refusal(`新しい版の案 ${a.version} は、今の版 ${changing.version} より大きくしてください。`);
+  }
+
+  /**
+   * 直すときは、変えたところを試す課題が1つ以上要る（REQ-061、決定11、D17）：引き継いだ課題と頼むときの言葉が違う課題がないと断る。
+   * 合格の条件は、引き継いだ合否の決め方の決まりでもよい（言っていない合否の決め方を作らせないため）。
+   */
+  function checkChangedTask(evalTasks) {
+    const changing = hearing.state.change;
+    if (!changing) return;
+    const flat = (v) => String(v).replace(/\s+/g, ' ').trim();
+    const carried = new Set((changing.evalPrompts ?? []).map(flat));
+    if (!evalTasks.some((t) => !carried.has(flat(t.prompt)))) {
+      throw new Refusal('直すときは、変えたところを試す、試しに動かして採点する試験の課題を1つ以上足してください。今のプラグインから引き継いだ課題と、頼むときの言葉（prompt）が同じ課題しかありません。');
+    }
   }
 
   async function confirm(args) {
@@ -244,9 +296,7 @@ export function createCreator({
     if (!normalized.split(path.sep).join('/').endsWith(`/${DRAFT_TASK_SUFFIX}`)) {
       throw new Refusal(`画面と合格の条件の設定の案は、作業フォルダの ${DRAFT_TASK_SUFFIX} に置いてください（今のパス：${a.taskPath}）。`);
     }
-    if (hearing.state.rebuild && a.rebuild === null) {
-      throw new Refusal('作り直しのときは、引き継ぐことと変わること（rebuild）も知らせてください。');
-    }
+    checkRebuildAndVersion(a);
     const rows = hearing.knowledgeByIds(a.knowledgeIds);
     const known = new Map(rows.map((k) => [k.id, k]));
     for (const task of a.evalTasks) {
@@ -261,11 +311,21 @@ export function createCreator({
     if (omitted.length) {
       throw new Refusal(`決まった仕事のやり方や決まりのすべてを、示す一覧（knowledgeIds）に入れてください。入っていないもの：${omitted.join('、')}`);
     }
+    checkChangedTask(a.evalTasks);
     // 示す案の中身の印。見本を作る前に取る（見本を作る間に案が変わっても、変わった側に倒れて、示し直しを求める）。生成に進めるときに、今の中身と比べる
     const taskHash = taskFileHash(normalized);
     const prepared = await prepareSample({ taskPath: normalized, knowledgeRows: rows, evalTasks: a.evalTasks });
-    hearing.commitConfirmation({ ...a, taskPath: normalized, taskHash, settingLabels: prepared.settingLabels });
-    return `作る前の確認で示すものを受け付けました。画面で見られます。作業の画面の見本：${prepared.url}`;
+    const { version, ...shown } = a;
+    hearing.commitConfirmation({
+      ...shown,
+      ...(hearing.state.change ? { version } : {}),
+      taskPath: normalized,
+      taskHash,
+      settingLabels: prepared.settingLabels,
+      // 合否の基準の番号（C 番号）。組み立ては、直すときにこれを確かめて使う（BLUEPRINT 4.4。作るときは読まない）
+      criteria: prepared.criteria.map(({ id, knowledge }) => ({ id, knowledge })),
+    });
+    return `${confirmWord(hearing.state)}で示すものを受け付けました。画面で見られます。作業の画面の見本：${prepared.url}`;
   }
 
   /** 止まっている見本を作り直す。再開（--continue）のあと、生成前の確認が残っているときのため。失敗しても黙る */
@@ -290,6 +350,31 @@ export function createCreator({
     return run;
   };
 
+  /** 直すフォルダを、作業フォルダから解決して実パスにする。ない・フォルダでないときは断る */
+  function changeFolder(value) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Refusal('直すプラグインのフォルダ（folder）を渡してください。作業フォルダからの相対パスか、絶対パスです。');
+    }
+    const given = path.resolve(workDir, value.trim());
+    let real;
+    try {
+      real = fs.realpathSync(given);
+    } catch {
+      throw new Refusal(`直すプラグインのフォルダ ${given} が見つかりません。場所を確かめてください。`);
+    }
+    if (!fs.statSync(real).isDirectory()) throw new Refusal(`${given} はフォルダではありません。プラグインのフォルダ（plugin.json のあるフォルダ）を示してください。`);
+    return real;
+  }
+
+  /** 変えたいこと：1件以上の文の一覧 */
+  function changeWants(value) {
+    const list = Array.isArray(value) ? value : [];
+    if (list.some((w) => typeof w !== 'string')) throw new Refusal('変えたいこと（wants）は、文の一覧で渡してください。');
+    const wants = list.map((w) => w.trim()).filter(Boolean);
+    if (wants.length === 0) throw new Refusal('変えたいこと（wants）を、1件以上の文の一覧で渡してください。');
+    return wants;
+  }
+
   const handlers = {
     async open() {
       let url;
@@ -303,7 +388,9 @@ export function createCreator({
       } catch (error) {
         warn(`画面の URL を記録できませんでした：${errorMessage(error)}`);
       }
-      return `plugin-creator の画面の用意ができました。次の URL をブラウザーで開いてください：${url}`;
+      // 2行目はモデルに向けた文にする。ユーザーに向けた文（「開いてください」）だけだと、もう示したと取り違え、URL をチャットに書かなかった（外側の EVAL〔改善〕の3回目）。
+      // 返り値は画面に1行で出る（hearing.md 2.5）ので、1行目は、チャットに写す URL の行にする。2行目は、写すのが1行目だけと分かるように「上の1行」と書く
+      return `plugin-creator の画面：${url}\n上の1行（plugin-creator の画面：…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。`;
     },
 
     async state(args) {
@@ -338,6 +425,14 @@ export function createCreator({
     record: serialize(async (args) => hearing.applyRecord(args)),
 
     confirm: serialize((args) => confirm(args)),
+
+    // 今のプラグインを直す記録を作る（REQ-052。git の確かめは組み立てのスクリプトの change-check で、これより前に済ませる）
+    change: serialize(async (args) => {
+      const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+      const folder = changeFolder(a.folder);
+      const wants = changeWants(a.wants);
+      return hearing.applyChange({ folder, wants, readPlugin: () => readPluginForChange(folder) });
+    }),
 
     async results(args) {
       const list = args?.paths;

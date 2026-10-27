@@ -14,10 +14,10 @@
 //        [--max-exchanges 60] [--exclude-first-candidate] [--stop-at-pillar <番号>] [--expect-resume] [--dry-run]
 //   --params        small は流れを短く通す小さな値、default は既定（スキルが assets/params.json を写す）、ほかはファイル
 //   --data-from     前の実行のデータの置き場所（知識・経験、パラメーター、回）を写してから始める（2回目の実行、続きの試験）
-//   --expect-knowledge  前の回の知識・経験を使ったかも採点する（REQ-061）
-//   --exclude-first-candidate  ユーザー役が、知識・経験の候補の1番を外す（外した候補が保存されないかを採点するため。REQ-060）
+//   --expect-knowledge  前の回の知識・経験を使ったかも採点する（REQ-072）
+//   --exclude-first-candidate  ユーザー役が、知識・経験の候補の1番を外す（外した候補が保存されないかを採点するため。REQ-071）
 //   --stop-at-pillar  回の今の柱がこの番号になったら、手番の終わりで会話を止める（続きの試験の前半。採点は「途中」で終わる）
-//   --expect-resume   続きの試験の後半。--data-from の回を続け、新しい回のフォルダを作らずに終えたかを採点する（REQ-064）
+//   --expect-resume   続きの試験の後半。--data-from の回を続け、新しい回のフォルダを作らずに終えたかを採点する（REQ-075）
 //   終了コード：0 最後まで動いて採点がすべて合格、1 採点に不合格がある・途中で止まった、2 始められなかった。
 //   進み具合は標準エラー出力と <out>/status.json に、結果は <out>/result.json と <out>/record.json に書く。
 
@@ -61,7 +61,7 @@ export const IDEA_USER_RULES = Object.freeze([
   'ふつうの人として、チャットの言葉で書く。この決まりのことは口に出さない。',
 ]);
 
-/** 外した候補が保存されないかを採点するときだけ足す決まり（REQ-060） */
+/** 外した候補が保存されないかを採点するときだけ足す決まり（REQ-071） */
 export const EXCLUDE_FIRST_RULE = '残したくない候補の番号を聞かれたら、上の決まりにかかわらず、1番を外すと答える（ほかに外すものがあれば足す）。理由は「1番は自分の業務には当てはまらない気がする」とする。';
 
 export function buildIdeaUserSystem(restriction, { excludeFirst = false } = {}) {

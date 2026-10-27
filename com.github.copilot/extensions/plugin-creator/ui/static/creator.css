@@ -113,3 +113,18 @@
 .knowledge-table td:nth-child(5) {
   min-width: 7.5rem;
 }
+
+/* 今のプラグインを直すとき：直すプラグインと変えたいこと（見出しの下） */
+.change-target {
+  margin: 0.5rem 0 0;
+}
+
+.change-target p {
+  margin: 0.15rem 0;
+}
+
+/* フォルダの場所などの長い文字は、狭い画面で折り返す */
+.change-target,
+#confirm-change {
+  overflow-wrap: anywhere;
+}

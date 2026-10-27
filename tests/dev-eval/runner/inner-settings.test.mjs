@@ -1,11 +1,11 @@
 // 画面の開始前の設定を、ユーザー役が決める流れ（inner-settings.mjs）。偽のユーザー役で確かめる。実際のモデルは使わない。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { choicesOf, decideSettings, describeSetting, normalizeSettingAnswer, notesField, previewInputs } from './inner-settings.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 const WEEK = { key: 'week', label: '対象の週', type: 'text', default: '', required: true, help: '週報を作る週を書きます（例：2026-W42）。' };
 const COUNT = { key: 'count', label: '項目の数', type: 'number', default: 5, required: false };
@@ -123,7 +123,7 @@ test('REQ-007 設定の欄がない（definitions が空）なら、ユーザー
 });
 
 test('REQ-007 渡したファイルの中身は先頭の数件・数百文字だけ質問に付ける。文字にできないファイルは場所だけ', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'settings-inputs-'));
+  const dir = tempDir('settings-inputs');
   fs.mkdirSync(path.join(dir, 'inputs'));
   fs.writeFileSync(path.join(dir, 'inputs', 'a.csv'), `担当,売上\n${'田中,100\n'.repeat(500)}`);
   fs.writeFileSync(path.join(dir, 'inputs', 'b.txt'), '短い');

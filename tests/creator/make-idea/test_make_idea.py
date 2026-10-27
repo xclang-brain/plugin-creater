@@ -1,10 +1,10 @@
 """アイデア創出スキル（make-idea）の形の試験（アイデア創出の設計 7章）。モデルは使わない。
 
-- 既定のパラメーター（skills/make-idea/assets/params.json）が、仕様書 REQ-062 の表と同じ名前・同じ既定の値で、値の扱いの決まりに合う。
-- 6つの柱の名前と順番が、憲章 第25条、仕様書 1章、SKILL.md で同じ（憲章 第25条3項。承認なしに変えない）。
+- 既定のパラメーター（skills/make-idea/assets/params.json）が、仕様書 REQ-073 の表と同じ名前・同じ既定の値で、値の扱いの決まりに合う。
+- 6つの柱の名前と順番が、憲章 第26条、仕様書 1章、SKILL.md で同じ（憲章 第26条3項。承認なしに変えない）。
 - 3つのエージェントの tools が設計どおり（読み手はファイルを読めない、検討役は Web を持たない、どれも skill を持たない）。
-- make-idea が、make-plugin・test-plugin の仕組み（plugin-creator_ のツール、読み取り役、作業エージェント）を使うよう書いていない（REQ-065）。
-- README に、データの置き場所と消し方がある（REQ-063）。
+- make-idea が、make-plugin・change-plugin・test-plugin の仕組み（plugin-creator_ のツール、読み取り役、作業エージェント）を使うよう書いていない（REQ-076）。
+- README に、データの置き場所と消し方がある（REQ-074）。
 - 手順のファイルが名指しするエージェントと知識・経験のファイルが、そろっている。
 - Claude Code 向けの置き換え（convert.py）で、エージェントのツールと本文の task の引数が置き換わる。
 
@@ -71,9 +71,9 @@ def params():
 
 
 def spec_param_rows():
-    """仕様書 REQ-062 の表の行：[(柱, パラメーター, 既定)]"""
+    """仕様書 REQ-073 の表の行：[(柱, パラメーター, 既定)]"""
     text = read(SPEC)
-    start = text.index("### REQ-062")
+    start = text.index("### REQ-073")
     end = text.index("\n### ", start + 1)
     rows = []
     for line in text[start:end].splitlines():
@@ -141,7 +141,7 @@ class Params(unittest.TestCase):
 class Pillars(unittest.TestCase):
     def test_constitution_article_25_has_the_six_pillars_in_order(self):
         text = read(CONSTITUTION)
-        part = text[text.index("### 第25条"):text.index("### 第26条")]
+        part = text[text.index("### 第26条"):text.index("### 第27条")]
         found = re.findall(r"^ {3,}\d\. (.+)$", part, re.M)   # 1項の下の入れ子の番号つきの行
         self.assertEqual(PILLARS, found)
 

@@ -1,0 +1,8 @@
+{"seq": 1, "up": "1.501000", "ev": "boot", "reason": "power-on", "activated": []}
+{"seq": 2, "up": "1.551000", "ev": "recv", "via": "http", "addr": "192.168.7.2", "name": "sensor.kximg", "size": 423896, "sha256": "5da4b616b57db2459cf630dbec427bcaa0975f9916a3c6f9b6f29f60bd84181a", "ok": true}
+{"seq": 3, "up": "1.571000", "ev": "cmd", "via": "console-http", "addr": "192.168.7.2", "line": "kxinstall /tmp/sensor.kximg"}
+{"seq": 4, "up": "1.771000", "ev": "install", "file": "/tmp/sensor.kximg", "ok": true, "name": "sensor", "size": 423864, "crc32": "0x0e445d18"}
+{"seq": 5, "up": "1.791000", "ev": "cmd", "via": "console-http", "addr": "192.168.7.2", "line": "reboot"}
+{"seq": 6, "up": "1.511000", "ev": "boot", "reason": "reboot", "activated": ["sensor"]}
+{"seq": 7, "up": "1.531000", "ev": "cmd", "via": "console-http", "addr": "192.168.7.2", "line": "kxapp run sensor"}
+{"seq": 8, "up": "1.831000", "ev": "run", "name": "sensor", "ok": true, "kind": "arm-static", "status": 0, "timeout": false, "isolate": "bwrap", "output_sha256": "d0631dbbba9384e28ec1c39270d5c41088749dddcdc6e46545afde385b205f71"}

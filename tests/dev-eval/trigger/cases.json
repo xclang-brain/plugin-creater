@@ -1,0 +1,18 @@
+{
+  "description": "呼ばれ方の試験の頼み（BLUEPRINT D27）。expect は、最初に呼んでよいクリエイターのスキル（どれか1つで合格）。空の一覧は、クリエイターのスキルをどれも呼ばないこと。",
+  "workspace": {
+    "sales-report/plugin.json": "{\n  \"$schema\": \"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json\",\n  \"name\": \"sales-report\",\n  \"version\": \"0.1.0\",\n  \"description\": \"売上の CSV から週報を作る。\"\n}\n",
+    "sales-report/skills/sales-report/SKILL.md": "---\nname: sales-report\ndescription: 売上の CSV から、部長に出す週報を作る。「売上の週報を作って」と頼まれたときに使う。\n---\n\n# sales-report\n\n売上の CSV を集計して、週報を作る。\n"
+  },
+  "cases": [
+    { "id": "add-skill", "request": "sales-report のプラグインに、デプロイのスキルを足したいです。", "expect": ["change-plugin"] },
+    { "id": "add-setting", "request": "sales-report のプラグインの作業の画面に、出力先のフォルダを選ぶ設定を足したいです。", "expect": ["change-plugin"] },
+    { "id": "split-workers", "request": "sales-report のプラグインの作業役を、集計する役と週報を書く役の2つに分けたいです。", "expect": ["change-plugin"] },
+    { "id": "remove-feature", "request": "sales-report のプラグインのグラフを作る機能は要らないので、消したいです。", "expect": ["change-plugin"] },
+    { "id": "rebuild-only", "request": "sales-report のプラグインを作り直したいです。", "expect": ["make-plugin", "change-plugin"] },
+    { "id": "make-new", "request": "毎週の週報を作る作業を、プラグインにしたいです。", "expect": ["make-plugin"] },
+    { "id": "retest", "request": "sales-report のプラグインを自分で直したので、試験し直してください。", "expect": ["test-plugin"] },
+    { "id": "do-the-work", "request": "今週の週報を書いてください。", "expect": [] },
+    { "id": "idea", "request": "組み込みのファームウェア開発で使えるプラグインのアイデアを考えてください。", "expect": ["make-idea"] }
+  ]
+}

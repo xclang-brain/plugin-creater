@@ -7,6 +7,7 @@ import * as realSdk from '@anthropic-ai/claude-agent-sdk';
 
 import { agentEnv, makeQueryOptions } from './isolation.mjs';
 import { firstUserText, guardSdk, lastToolResults, startFakeAnthropic, systemText } from './fake-anthropic.mjs';
+import { tempDir } from './temp-dirs.mjs';
 
 test('守り：偽の API の URL と違う接続先の query は、中身を読む前に断る。実際の SDK の query は呼ばれない', async (t) => {
   const api = await startFakeAnthropic(async () => ({ blocks: [{ type: 'text', text: 'ok' }] }));
@@ -43,7 +44,7 @@ test('守り：本物の Agent SDK でも、守りを通すと、偽のサーバ
   const api = await startFakeAnthropic(async () => ({ blocks: [{ type: 'text', text: '偽の応答' }] }));
   t.after(() => api.close());
   const sdk = guardSdk(realSdk, api);
-  const home = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'guard-home-'));
+  const home = tempDir('guard-home');
   const options = { cwd: home, model: 'claude-sonnet-5-5', maxTurns: 1, tools: [], settingSources: [], persistSession: false, env: agentEnv({ home, extra: { ANTHROPIC_API_KEY: 'fake-key', ANTHROPIC_BASE_URL: api.url, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }) };
   let text = '';
   for await (const m of sdk.query({ prompt: 'こんにちは', options })) if (m.type === 'result') text = m.result;

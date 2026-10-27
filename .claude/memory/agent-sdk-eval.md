@@ -38,6 +38,17 @@ Claude Code の Agent SDK（TypeScript 版 0.3.302、Claude Code 2.1.302）で�
 - Claude Code では、子のツールは親の `tools` に絞られない（Copilot CLI は絞る：[カスタムエージェント](custom-agents.md)）。
 - fork サブエージェントは、Claude Code 2.1.302 から既定でオンである（更新履歴）。`subagent_type` を省くか `fork` にすると fork が動き、`agent_type` が `fork` で届く見込みで、環境変数 `CLAUDE_CODE_FORK_SUBAGENT=0` で切れる。作業エージェントとして数えられなくなるなどの影響は、本物のモデルでは確かめていない。
 
+## サンドボックスの中から擬似の機器につなぐ（0.3.310、2026年10月の実測）
+
+改善・設計変更の試験で、組み込み機器の代わりの擬似の機器（Python のサーバーと qemu-arm）を、サンドボックスの外で動かしてつないだときに分かったこと。
+
+- Linux のサンドボックスの中のコマンドは、ホストの `127.0.0.1` に TCP で直接つなげない（Connection refused）。UDP（TFTP）も届かない。Unix ソケットは、既定では断られる。
+- サンドボックスのプロキシを通した HTTP なら届く。`sandbox.network.allowedDomains` に `localhost:<ポート>` を書き、`strictAllowlist: true` を合わせると、そのポートだけに届き、ほかの localhost のポートは断られる。書かないと、つなぐたびに許可の求め（`SandboxNetworkAccess`）が来る。
+- `allowLocalBinding` と `allowUnixSockets` は、Linux では効かない（公式ドキュメントと SDK の型定義の両方に書かれている）。
+- 機器の中身のフォルダは `filesystem.denyRead`・`denyWrite` に入れると、エージェントから見えず、書けない。機器はエージェントのサンドボックスの外で動くので、エージェントが作った実行ファイルは、機器の側でも bubblewrap の中で動かす（そうしないとサンドボックスを抜けられる）。
+- エージェントは、機器を使わずにその場で `qemu-arm` で実行ファイルを動かせる。機器に送ったかの採点は、機器の側の記録で行う。
+- 実装は `tests/dev-eval/device/`（kxemu.py、kxtool、kxdevice.mjs）にある。
+
 ## そのほか
 
 - 記録（トランスクリプト）は、`HOME` の下の `.claude/projects/` に残る。続きの会話（`resume`）には、同じ `HOME` を使う。
@@ -55,4 +66,5 @@ Claude Code の Agent SDK（TypeScript 版 0.3.302、Claude Code 2.1.302）で�
 - [Claude Agent SDK: Handle approvals and user input](https://code.claude.com/docs/en/agent-sdk/user-input)
 - [Claude Agent SDK: Use Claude Code features in the SDK](https://code.claude.com/docs/en/agent-sdk/claude-code-features)
 - [Claude Code: Sandboxing](https://code.claude.com/docs/en/sandboxing)
+- Claude Agent SDK 0.3.310 のサンドボックスの型定義（`allowLocalBinding`・`allowUnixSockets` は macOS だけ）
 - Claude Agent SDK 0.3.310（Claude Code 2.1.310）を、偽物の Anthropic API につないだ実測

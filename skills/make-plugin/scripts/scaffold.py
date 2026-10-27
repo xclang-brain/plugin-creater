@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """生成プラグインの組み立て（build）と、土台がひな形と同じかの確かめ（check-base）。
+今あるプラグインを直すとき（change-plugin）の、始める前の確かめ・取り出し・直す・試験の直しの見張り・コミットもする。
 
 使い方（標準出力には JSON を1つだけ出す）:
 
   python3 scaffold.py build --hearing <state.json> --work <作業フォルダ>/.plugin-creator-work --out <作業フォルダ>/<名前>
   python3 scaffold.py check-base --out <生成プラグインのフォルダ> [--restore]
+  python3 scaffold.py change-check --plugin <直すプラグインのフォルダ> --cwd <Copilot CLI を起動したフォルダ> [--hearing <state.json>]
+  python3 scaffold.py extract --plugin <直すプラグインのフォルダ> --work <作業フォルダ>/.plugin-creator-work [--hearing <state.json>]
+  python3 scaffold.py change --hearing <state.json> --work <作業フォルダ>/.plugin-creator-work --plugin <直すプラグインのフォルダ>
+  python3 scaffold.py change-guard --plugin <直すプラグインのフォルダ> --work <作業フォルダ>/.plugin-creator-work [--restore]
+  python3 scaffold.py commit --plugin <直すプラグインのフォルダ> --message <コミットの説明> [--work <作業フォルダ>/.plugin-creator-work]
 
 build がすること（creator-structure.md 2章・4.1、BLUEPRINT 8章・9章）
   1. 入力を確かめる。ヒアリングの記録の段階が「生成」で、承認の時刻があること（生成前の確認の関門。hearing.md 6.3）。
@@ -27,8 +33,32 @@ build がすること（creator-structure.md 2章・4.1、BLUEPRINT 8章・9章�
      途中まで作ったフォルダは消す（作業用の一時フォルダは、直して作り直せるよう残す）。
 
 check-base
-  土台のファイル（ひな形の extensions/_plugin_/ にあるもの。extension.mjs、adapter.mjs、core/、ui/）が、
+  土台のファイル（ひな形の extensions/_plugin_/ にあるもの。extension.mjs、adapter.mjs、core/、ui/）と、
+  試験の土台（tests/run.py、tests/stage1/、tests/stage2/adapter/・core/・ui/、tests/stage2/fake-*.mjs）が、
   ひな形と中身が同じかを比べ、違うファイルを示す。--restore で、ひな形から入れ直す（creator-structure.md 4.1）。
+  試験の土台は、違うファイルとないファイルだけを見る（作業ごとの試験のファイルが増えていても違いにしない）。
+
+change-check（読むだけ。REQ-053）
+  直すプラグインのフォルダが、マニフェストを持ち、起動したフォルダの中にあり、インストールやキャッシュの写しでなく、
+  git で管理され、コミットしていない変更がなく、マージなどの途中でないことを確かめる。
+
+extract（--work の中だけに書く。REQ-057）
+  直すプラグインの、git が管理するファイルから、build と同じ形の parts/ と draft/task.json を作る。
+  今のひな形で描き直した下見（preview/<名前>/）を元と比べ、下見に1段目の検査を当てて、結果を extract.json にも書く。
+  コミットしていない変更があれば断る。取り出したコミット（head）も結果に書く。
+
+change（REQ-058、REQ-059）
+  直す直前の確かめをやり直し、取り出した後にプラグインのフォルダが変わっていないこと、
+  決まりの番号と合否の基準の番号を確かめてから、--work の中に描き、
+  プラグインのフォルダのファイルを描いたものに入れ替える。変わったファイルの一覧を changed.json に残す。コミットはしない。
+
+change-guard
+  試験の直しの後、changed.json の一覧の外で変わったファイルを示す。--restore で、直す前（HEAD）に戻す。
+
+commit
+  プラグインのフォルダの中だけをコミットし、印のタグを付け直し、作業用の一時フォルダを消す。push はしない。
+  直す前に戻すコマンド（revert）も返す。直したコミットを打ち消して、プラグインのフォルダの中だけをコミットする形で、
+  ほかのフォルダで git add してある変更があっても動く。
 
 終了コード: 0 成功、1 断った・失敗した（違いが残っている）、2 使い方の誤り。
 Python 3.9 以上で動く。PyYAML と jsonschema がなくても動く（jsonschema があれば task.json の形も確かめる）。
@@ -100,6 +130,28 @@ TOOL_TOKENS = {"worker": "worker_extra_tools", "verifier": "verifier_extra_tools
 FALLBACK_GIT_NAME = "plugin-creator"
 FALLBACK_GIT_EMAIL = "plugin-creator@localhost"
 
+# ---- 今あるプラグインを直すとき（change-plugin）
+# マニフェストを探す場所と順（直下 → 以前の形式。BLUEPRINT 4.1）
+MANIFEST_PLACES = ("plugin.json", ".plugin/plugin.json", ".github/plugin/plugin.json", ".claude-plugin/plugin.json")
+LEGACY_MANIFESTS = MANIFEST_PLACES[1:]   # 以前の形式のマニフェスト。直すと読まれなくなるので消す
+# Agent Plugins 1.0.0 のマニフェストの項目（仕様 5.2）のうち、ひな形が書かないもの。直すときは元のマニフェストの値を引き継ぐ
+CARRIED_MANIFEST_KEYS = ("author", "homepage", "repository", "license", "keywords", "extensions")
+KNOWLEDGE_REL = "tests/knowledge.json"
+REMOVED_REL = "tests/knowledge-removed.json"   # 外した決まりの番号（REQ-058、BLUEPRINT 4.3）
+EXTRACT_JSON = "extract.json"
+CHANGED_JSON = "changed.json"
+TAG_BASE = "plugin-creator-generated"          # 印のタグ。直下でないプラグインは -<名前> を付ける（BLUEPRINT D9）
+VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+CRITERION_ID = re.compile(r"^C-[0-9]{2,}$")
+SLOT_LINE = re.compile(r"^\s*\{\{slot:([A-Za-z][A-Za-z0-9_.-]*)\}\}\s*$")
+TRACE_ROW = re.compile(r"^\|\s*REQ-([0-9]+)\s*\|")
+TASK_REQ_START = 101                            # 作業ごとの要件の番号の始まり（ひな形の仕様書 8章）
+LIST_LIMIT = 10                                 # 断る文に並べるファイルの数の上限
+# 試験の土台（BLUEPRINT D20）。違う・ないだけを見る
+TESTS_BASE_FILES = ("tests/run.py",)
+TESTS_BASE_DIRS = ("tests/stage1/", "tests/stage2/adapter/", "tests/stage2/core/", "tests/stage2/ui/")
+TESTS_BASE_PATTERN = re.compile(r"^tests/stage2/fake-[^/]*\.mjs$")
+
 
 class Refusal(Exception):
     """組み立てを断る。problems は、何が足りないかを書いた平易な日本語の文の一覧。"""
@@ -131,8 +183,24 @@ def is_inside(path: str, base: str) -> bool:
         return False
 
 
+def is_within(path: str, base: str) -> bool:
+    """path が base の中か、base そのもの。"""
+    return real(path) == real(base) or is_inside(path, base)
+
+
 def posix_rel(path: str, base: str) -> str:
     return os.path.relpath(path, base).replace(os.sep, "/")
+
+
+def shown_path(path: str) -> str:
+    """コマンドの例に入れるパス。空白などがあれば二重引用符で囲む。"""
+    return '"%s"' % path if re.search(r"[\s'\"$`;&|()<>*?]", path) else path
+
+
+def listed(items: List[str], limit: int = LIST_LIMIT) -> str:
+    """ファイルの一覧を、断る文に入れる形にする（多いときは先頭だけ）。"""
+    head = "、".join(items[:limit])
+    return head + ("ほか %d 件" % (len(items) - limit) if len(items) > limit else "")
 
 
 def json_text(data: Any) -> str:
@@ -233,6 +301,8 @@ def decided_knowledge(state: Dict[str, Any], problems: List[str]) -> List[Dict[s
         if not isinstance(item, str) or not item.strip():
             item = row.get("item") if isinstance(row.get("item"), str) else ""
         found.append({"id": ident, "kind": kind, "item": item, "text": text})
+        if row.get("replaces") is not None:   # 直すとき：中身を直して付け直した元の番号（BLUEPRINT 4.1）
+            found[-1]["replaces"] = row.get("replaces")
     return found
 
 
@@ -411,28 +481,28 @@ def load_manifest(work: str, problems: List[str]) -> Optional[Dict[str, Any]]:
     }
 
 
-_checks_module: Any = False   # False：まだ読んでいない、None：使えない
+_checks_modules: Dict[str, Any] = {}   # 場所 -> 読み込んだ検査（None：使えない）
 
 
-def load_checks() -> Any:
+def load_checks(path: Optional[str] = None) -> Any:
     """1段目の検査（ひな形の check_structure.py）を読み込む。task.json の形の誤りを、日本語の文で示すために使う。
     PyYAML か jsonschema がなければ None（組み立ての時点では、まだ試験の道具を入れていないことがある）。"""
-    global _checks_module
-    if _checks_module is not False:
-        return _checks_module
-    _checks_module = None
+    path = path or CHECKS_PATH
+    if path in _checks_modules:
+        return _checks_modules[path]
+    _checks_modules[path] = None
     try:
         import jsonschema  # noqa: F401
         import yaml  # noqa: F401
-        if not os.path.isfile(CHECKS_PATH):
+        if not os.path.isfile(path):
             return None
-        spec = importlib.util.spec_from_file_location("plugin_creator_check_structure", CHECKS_PATH)
+        spec = importlib.util.spec_from_file_location("plugin_creator_check_structure_%d" % len(_checks_modules), path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)   # 道具が古いときは SystemExit で止まる
-        _checks_module = module
+        _checks_modules[path] = module
     except (ImportError, Exception, SystemExit):
-        _checks_module = None
-    return _checks_module
+        _checks_modules[path] = None
+    return _checks_modules[path]
 
 
 def load_task(work: str, template: str, manifest: Optional[Dict[str, Any]], criteria: List[Dict[str, str]],
@@ -983,14 +1053,46 @@ def template_base(template: str) -> Tuple[str, Dict[str, str]]:
     return root, files
 
 
-def compare_base(out: str, template: str) -> Tuple[str, str, List[Dict[str, str]]]:
-    """生成プラグイン out の土台を、ひな形と比べる。(プラグインの名前, エクステンションのフォルダ, 違いの一覧)。
-    違い：{"file", "kind", "message"}。kind は changed（中身が違う）・missing（ない）・extra（ひな形にない）。"""
+def is_tests_base(rel: str) -> bool:
+    """rel（プラグインの根からの / 区切りの場所）が、試験の土台か（BLUEPRINT D20）。"""
+    return rel in TESTS_BASE_FILES or rel.startswith(TESTS_BASE_DIRS) or bool(TESTS_BASE_PATTERN.match(rel))
+
+
+def template_tests_base(template: str) -> Dict[str, str]:
+    """ひな形の試験の土台。{プラグインの根からの場所: 本当のパス}。"""
+    files: Dict[str, str] = {}
+    tests = os.path.join(template, "tests")
+    if not os.path.isdir(tests):
+        return files
+    ignore = make_ignore(template)
+    for directory, dirs, names in os.walk(tests):
+        skipped = ignore(directory, dirs + names)
+        dirs[:] = sorted(d for d in dirs if d not in skipped)
+        for n in sorted(names):
+            if n in skipped:
+                continue
+            path = os.path.join(directory, n)
+            rel = posix_rel(path, template)
+            if is_tests_base(rel):
+                files[rel] = path
+    return files
+
+
+def base_name(out: str) -> str:
+    """生成プラグインの plugin.json の name（土台のフォルダの名前）。読めなければ断る。"""
     problems: List[str] = []
     manifest = read_json(os.path.join(out, "plugin.json"), "plugin.json", problems)
     name = manifest.get("name") if isinstance(manifest, dict) else None
     if problems or not isinstance(name, str) or not name or "/" in name or "\\" in name or name in (".", ".."):
         raise Refusal(problems or ["plugin.json の name が読めないので、土台のフォルダ（com.github.copilot/extensions/<名前>/）を探せません。"])
+    return name
+
+
+def compare_base(out: str, template: str) -> Tuple[str, str, List[Dict[str, str]]]:
+    """生成プラグイン out の土台を、ひな形と比べる。(プラグインの名前, エクステンションのフォルダ, 違いの一覧)。
+    違い：{"file", "kind", "message"}。kind は changed（中身が違う）・missing（ない）・extra（ひな形にない）。
+    試験の土台（BLUEPRINT D20）は changed と missing だけを見る。"""
+    name = base_name(out)
     ext = os.path.join(out, *EXT_PARENT, name)
     if not os.path.isdir(ext):
         raise Refusal("土台のフォルダ %s がありません。plugin.json の name（%s）とフォルダの名前を合わせてください。" % (posix_rel(ext, out), name))
@@ -1018,6 +1120,13 @@ def compare_base(out: str, template: str) -> Tuple[str, str, List[Dict[str, str]
                 rel = posix_rel(os.path.join(directory, n), ext)
                 if rel not in expected:
                     add(rel, "extra", "ひな形にないファイルがあります")
+    # 試験の土台：違う・ないだけを見る（作業ごとの試験のファイルが足されていても違いにしない）
+    for rel, source in template_tests_base(template).items():
+        target = os.path.join(out, *rel.split("/"))
+        if not os.path.isfile(target):
+            differences.append({"file": rel, "kind": "missing", "message": "ひな形にある試験の土台のファイルがありません"})
+        elif read_bytes(source) != read_bytes(target):
+            differences.append({"file": rel, "kind": "changed", "message": "試験の土台の中身がひな形と違います"})
     differences.sort(key=lambda d: d["file"])
     return name, ext, differences
 
@@ -1025,8 +1134,15 @@ def compare_base(out: str, template: str) -> Tuple[str, str, List[Dict[str, str]
 def restore_base(ext: str, template: str, differences: List[Dict[str, str]], out: str) -> List[str]:
     """違うファイルをひな形から入れ直す。ひな形にないファイルは消す。入れ直したファイルの一覧を返す。"""
     _root, expected = template_base(template)
+    tests_base = template_tests_base(template)
     restored: List[str] = []
     for d in differences:
+        if d["file"] in tests_base:   # 試験の土台
+            target = os.path.join(out, *d["file"].split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(tests_base[d["file"]], target)
+            restored.append(d["file"])
+            continue
         rel = posix_rel(os.path.join(out, *d["file"].split("/")), ext)
         target = os.path.join(ext, *rel.split("/"))
         if d["kind"] == "extra":
@@ -1107,6 +1223,107 @@ def first_commit(out: str, plugin_name: str) -> str:
 
 # ---------------------------------------------------------------- build
 
+def prepare_parts(work: str, template: str, knowledge: List[Dict[str, str]], criteria: List[Dict[str, str]],
+                  confirmation: Optional[Dict[str, Any]], problems: List[str], warnings: List[str]) -> Dict[str, Any]:
+    """parts/（manifest.json、task.json、slots/、files/）を読んで確かめ、描くのに要るものをまとめる。
+    confirmation（生成前の確認・直す前の確認で示したもの）があれば、EVAL の課題をユーザーが確かめた課題と突き合わせる。
+    問題は problems に足す（ここでは断らない）。build と change と extract の下見で使う。"""
+    manifest = load_manifest(work, problems)
+    task = load_task(work, template, manifest, criteria, problems, warnings)
+    slots = load_slots(work, problems)
+    parts_files = list_parts_files(work, problems)
+    before = len(problems)
+    filled_eval, read_evals = prepare_eval(os.path.join(work, "parts", "files"), parts_files, criteria, problems, warnings)
+    if manifest is not None:
+        for item in manifest["eval_inputs"]:
+            if item["to"] in parts_files:
+                problems.append("EVAL の課題の入力 %s が、parts/files/ と manifest.json の eval_inputs の両方にあります。どちらか一方にしてください。" % item["to"])
+        if len(problems) == before and confirmation is not None:   # 読み取りの誤りがなければ、確かめた課題と突き合わせる
+            check_confirmed_evals(confirmation, read_evals, manifest["eval_inputs"], parts_files, problems)
+    return {"work": work, "manifest": manifest, "task": task, "slots": slots, "files": parts_files, "filled_eval": filled_eval,
+            "knowledge": knowledge, "knowledge_removed": None}
+
+
+def fixed_values(manifest: Dict[str, Any], marketplace_name: str, generated_date: str) -> Dict[str, str]:
+    """ひな形に入れる決まった値。"""
+    return {
+        "plugin_name": manifest["plugin_name"],
+        "plugin_description": manifest["plugin_description"],
+        "marketplace_name": marketplace_name,
+        "generated_date": generated_date,
+        "entry_skill_name": manifest["entry_name"],
+        "entry_skill_description": manifest["entry_description"],
+    }
+
+
+def render_parts(parts: Dict[str, Any], out: str, template: str, values: Dict[str, str], warnings: List[str]) -> None:
+    """ひな形を out（あるフォルダ）に写し、parts で埋める。土台がひな形と同じかも確かめる。git はしない。
+    断るときは Refusal を投げる（out の片付けは呼ぶ側がする）。"""
+    manifest, slots = parts["manifest"], parts["slots"]
+    plugin_name = manifest["plugin_name"]
+    problems: List[str] = []
+    shutil.copytree(template, out, ignore=make_ignore(template), dirs_exist_ok=True)
+
+    # _plugin_ と _entry_ の名前を変える
+    ext_parent = os.path.join(out, *EXT_PARENT)
+    for parent, old, new, label in ((ext_parent, EXT_PLACEHOLDER, plugin_name, "com.github.copilot/extensions/_plugin_/"),
+                                    (os.path.join(out, "skills"), ENTRY_PLACEHOLDER, manifest["entry_name"], "skills/_entry_/")):
+        if not os.path.isdir(os.path.join(parent, old)):
+            raise Refusal("ひな形に %s がありません（ひな形が足りません）。" % label)
+        os.rename(os.path.join(parent, old), os.path.join(parent, new))
+
+    # 作業エージェントごとに、worker.agent.md を元にしたファイルを作る
+    agents_dir = os.path.join(out, *AGENTS_REL.split("/"))
+    source = os.path.join(agents_dir, WORKER_FILE)
+    if not os.path.isfile(source):
+        raise Refusal("ひな形に %s/%s がありません（ひな形が足りません）。" % (AGENTS_REL, WORKER_FILE))
+    worker_text = read_bytes(source).decode("utf-8")
+    agents = [w["agent"] for w in manifest["workers"]]
+    for agent in agents:
+        write_text(os.path.join(agents_dir, agent + ".agent.md"), worker_copy(worker_text, agent))
+    if "worker" not in agents:
+        os.remove(source)
+
+    # 差し込み口を埋める：文、tools の作業ごとの分、決まった値の順
+    fill_template(out, plugin_name, slots, values, line_token_map(manifest), problems, warnings)
+    if problems:
+        raise Refusal(problems)
+
+    # 作業の定義とナレッジの一覧（直すときは、外した決まりの一覧も）
+    ext = os.path.join(ext_parent, plugin_name)
+    write_text(os.path.join(ext, "task.json"), json_text(parts["task"]))
+    write_text(os.path.join(out, "tests", "knowledge.json"),
+               json_text([{"id": r["id"], "kind": r["kind"], "item": r["item"], "text": r["text"]} for r in parts["knowledge"]]))
+    if parts.get("knowledge_removed"):
+        write_text(os.path.join(out, *REMOVED_REL.split("/")), json_text(parts["knowledge_removed"]))
+
+    # 作業エージェントが書いたファイルをそのまま足す。ひな形や組み立てのファイルは書き換えさせない
+    base = os.path.join(parts["work"], "parts", "files")
+    parts_files, filled_eval = parts["files"], parts["filled_eval"]
+    inputs = manifest["eval_inputs"]
+    collisions = [r for r in parts_files + [i["to"] for i in inputs] if os.path.lexists(os.path.join(out, *r.split("/")))]
+    if collisions:
+        raise Refusal(["作業エージェントが書いたファイル %s は、ひな形か組み立てが作るファイルと同じ場所です。"
+                       "ひな形のファイル（土台と文書、task.json、tests/knowledge.json など）は書き換えられません。置き場所を変えてください。" % r
+                       for r in collisions])
+    for rel in parts_files:
+        target = os.path.join(out, *rel.split("/"))
+        if rel in filled_eval:
+            write_text(target, filled_eval[rel])
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(base, *rel.split("/")), target)
+    for item in inputs:   # EVAL の課題の入力の実物
+        target = os.path.join(out, *item["to"].split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(item["from"], target)
+
+    # 土台がひな形と同じか
+    _name, _ext, differences = compare_base(out, template)
+    if differences:
+        raise Refusal(["組み立てた土台がひな形と違います（%s）。ひな形か組み立てのスクリプトの誤りです。" % "、".join(d["file"] for d in differences)])
+
+
 def build(hearing: str, work: str, out: str, template: Optional[str] = None, today: Optional[str] = None) -> Dict[str, Any]:
     """生成プラグインを組み立てる。断るときは Refusal を投げる。template と today は試験のために替えられる。"""
     hearing, work, out = os.path.abspath(hearing), os.path.abspath(work), os.path.abspath(out)
@@ -1118,99 +1335,28 @@ def build(hearing: str, work: str, out: str, template: Optional[str] = None, tod
     warnings: List[str] = []
     knowledge = decided_knowledge(state, problems)
     criteria = make_criteria(knowledge, problems)
-    manifest = load_manifest(work, problems)
-    task = load_task(work, template, manifest, criteria, problems, warnings)
-    slots = load_slots(work, problems)
-    parts_files = list_parts_files(work, problems)
-    before = len(problems)
-    filled_eval, read_evals = prepare_eval(os.path.join(work, "parts", "files"), parts_files, criteria, problems, warnings)
-    if manifest is not None:
-        for item in manifest["eval_inputs"]:
-            if item["to"] in parts_files:
-                problems.append("EVAL の課題の入力 %s が、parts/files/ と manifest.json の eval_inputs の両方にあります。どちらか一方にしてください。" % item["to"])
-        if len(problems) == before:   # eval.json や eval_inputs の読み取りの誤りがなければ、確かめた課題と突き合わせる
-            check_confirmed_evals(state["confirmation"], read_evals, manifest["eval_inputs"], parts_files, problems)
+    parts = prepare_parts(work, template, knowledge, criteria, state["confirmation"], problems, warnings)
+    manifest = parts["manifest"]
     check_output_path(work, out, problems)
-    if problems or manifest is None or task is None:
+    if problems or manifest is None or parts["task"] is None:
         raise Refusal(problems or ["組み立ての設定を読めませんでした。"])
 
     plugin_name = manifest["plugin_name"]
-    values = {
-        "plugin_name": plugin_name,
-        "plugin_description": manifest["plugin_description"],
-        "marketplace_name": plugin_name,     # 手元のフォルダのマーケットプレイスの名前は、プラグインの名前と同じにする
-        "generated_date": today,
-        "entry_skill_name": manifest["entry_name"],
-        "entry_skill_description": manifest["entry_description"],
-    }
+    # 手元のフォルダのマーケットプレイスの名前は、プラグインの名前と同じにする
+    values = fixed_values(manifest, plugin_name, today)
 
     try:
         os.mkdir(out)   # すでにあれば失敗する（今あるフォルダを、失敗のときに消さないため）
     except FileExistsError:
         raise Refusal("出力先 %s がすでにあります。別のフォルダの名前を指定してください。" % out)
     try:
-        shutil.copytree(template, out, ignore=make_ignore(template), dirs_exist_ok=True)
-
-        # _plugin_ と _entry_ の名前を変える
-        ext_parent = os.path.join(out, *EXT_PARENT)
-        for parent, old, new, label in ((ext_parent, EXT_PLACEHOLDER, plugin_name, "com.github.copilot/extensions/_plugin_/"),
-                                        (os.path.join(out, "skills"), ENTRY_PLACEHOLDER, manifest["entry_name"], "skills/_entry_/")):
-            if not os.path.isdir(os.path.join(parent, old)):
-                raise Refusal("ひな形に %s がありません（ひな形が足りません）。" % label)
-            os.rename(os.path.join(parent, old), os.path.join(parent, new))
-
-        # 作業エージェントごとに、worker.agent.md を元にしたファイルを作る
-        agents_dir = os.path.join(out, *AGENTS_REL.split("/"))
-        source = os.path.join(agents_dir, WORKER_FILE)
-        if not os.path.isfile(source):
-            raise Refusal("ひな形に %s/%s がありません（ひな形が足りません）。" % (AGENTS_REL, WORKER_FILE))
-        worker_text = read_bytes(source).decode("utf-8")
-        agents = [w["agent"] for w in manifest["workers"]]
-        for agent in agents:
-            write_text(os.path.join(agents_dir, agent + ".agent.md"), worker_copy(worker_text, agent))
-        if "worker" not in agents:
-            os.remove(source)
-
-        # 差し込み口を埋める：文、tools の作業ごとの分、決まった値の順
-        fill_template(out, plugin_name, slots, values, line_token_map(manifest), problems, warnings)
-        if problems:
-            raise Refusal(problems)
-
-        # 作業の定義とナレッジの一覧
-        ext = os.path.join(ext_parent, plugin_name)
-        write_text(os.path.join(ext, "task.json"), json_text(task))
-        write_text(os.path.join(out, "tests", "knowledge.json"),
-                   json_text([{"id": r["id"], "kind": r["kind"], "item": r["item"], "text": r["text"]} for r in knowledge]))
-
-        # 作業エージェントが書いたファイルをそのまま足す。ひな形や組み立てのファイルは書き換えさせない
-        base = os.path.join(work, "parts", "files")
-        inputs = manifest["eval_inputs"]
-        collisions = [r for r in parts_files + [i["to"] for i in inputs] if os.path.lexists(os.path.join(out, *r.split("/")))]
-        if collisions:
-            raise Refusal(["作業エージェントが書いたファイル %s は、ひな形か組み立てが作るファイルと同じ場所です。"
-                           "ひな形のファイル（土台と文書、task.json、tests/knowledge.json など）は書き換えられません。置き場所を変えてください。" % r
-                           for r in collisions])
-        for rel in parts_files:
-            target = os.path.join(out, *rel.split("/"))
-            if rel in filled_eval:
-                write_text(target, filled_eval[rel])
-            else:
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.copy2(os.path.join(base, *rel.split("/")), target)
-        for item in inputs:   # EVAL の課題の入力の実物
-            target = os.path.join(out, *item["to"].split("/"))
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copyfile(item["from"], target)
-
-        # 土台がひな形と同じか
-        _name, _ext, differences = compare_base(out, template)
-        if differences:
-            raise Refusal(["組み立てた土台がひな形と違います（%s）。ひな形か組み立てのスクリプトの誤りです。" % "、".join(d["file"] for d in differences)])
-
+        render_parts(parts, out, template, values, warnings)
         commit = first_commit(out, plugin_name)
     except BaseException:
         shutil.rmtree(out, ignore_errors=True)   # 途中まで作ったフォルダは消す（作業用の一時フォルダは残す）
         raise
+    agents = [w["agent"] for w in manifest["workers"]]
+    inputs = manifest["eval_inputs"]
 
     removed = True
     try:
@@ -1236,6 +1382,1254 @@ def build(hearing: str, work: str, out: str, template: Optional[str] = None, tod
     }
 
 
+# ---------------------------------------------------------------- 今あるプラグインを直す：共通の部品
+# 設計：wip の BLUEPRINT 5章 C2（creator-structure.md 3.4 に移す）。ファイルの場所は、すべてプラグインのフォルダからの / 区切りの場所。
+
+def git_z(args: List[str], cwd: str) -> List[str]:
+    """-z で区切った git の出力を、空でない要素の一覧にする。"""
+    return [p for p in git_ok(args, cwd).split("\0") if p]
+
+
+def tracked_entries(plugin: str) -> Tuple[List[str], List[str]]:
+    """プラグインのフォルダの中で、git が管理するもの（作業用の一時フォルダを除く）。(ファイル, サブモジュール)。
+    サブモジュールはファイルでないので、取り出しも入れ替えもせず、そのまま残す。"""
+    files: Set[str] = set()
+    modules: Set[str] = set()
+    for entry in git_z(["ls-files", "-z", "--stage", "--", ".", ":(exclude)%s" % WORK_NAME], plugin):
+        meta, _tab, path = entry.partition("\t")   # <mode> <object> <stage>\t<場所>
+        (modules if meta.startswith("160000 ") else files).add(path)
+    return sorted(files), sorted(modules)
+
+
+def tracked_files(plugin: str) -> List[str]:
+    """プラグインのフォルダの中で、git が管理するファイル（作業用の一時フォルダとサブモジュールを除く）。"""
+    return tracked_entries(plugin)[0]
+
+
+def add_paths(plugin: str) -> List[str]:
+    """プラグインのフォルダの変更を git add -A するときの場所（作業用の一時フォルダを除く）。
+    作業用の一時フォルダが .gitignore で外されているのに、それを除く指定を渡すと、git add はステージしたうえで
+    失敗の終了コードを返す（git 2.43 で確かめた）。外されたものは add -A でも入らないので、そのときは除く指定を渡さない。"""
+    if git(["check-ignore", "-q", "--", WORK_NAME], plugin).returncode == 0:
+        return ["."]
+    return [".", ":(exclude)%s" % WORK_NAME]
+
+
+def read_manifest(plugin: str, problems: List[str]) -> Optional[Dict[str, Any]]:
+    """マニフェストを、決まった順に探して読む。{"rel", "name", "version", "description", "carried"}。
+    carried は、ひな形が書かない項目（repository など）の元の値（元の順）。"""
+    for rel in MANIFEST_PLACES:
+        path = os.path.join(plugin, *rel.split("/"))
+        if not os.path.isfile(path):
+            continue
+        data = read_json(path, "マニフェスト（%s）" % rel, problems)
+        if data is None:
+            return None
+        name = data.get("name") if isinstance(data, dict) else None
+        if not isinstance(name, str) or not name.strip() or "/" in name or "\\" in name or name in (".", ".."):
+            problems.append("マニフェスト（%s）の name が読めません（今は %s）。プラグインの名前を書いてください。" % (rel, show(name)))
+            return None
+        version = data.get("version")
+        description = data.get("description")
+        return {"rel": rel, "name": name, "version": version if isinstance(version, str) else None,
+                "description": description if isinstance(description, str) else "",
+                "carried": {k: v for k, v in data.items() if k in CARRIED_MANIFEST_KEYS}}
+    problems.append("%s に、プラグインのマニフェスト（%s のどれか）がありません。プラグインのフォルダを示してください。"
+                    % (plugin, "、".join(MANIFEST_PLACES)))
+    return None
+
+
+def plugin_kind(plugin: str, name: str, problems: List[str]) -> Optional[bool]:
+    """クリエイターが作った生成プラグインか（BLUEPRINT D29）。tests/knowledge.json と
+    com.github.copilot/extensions/<name>/task.json の両方があれば生成プラグイン。あるのに読めなければ problems に足す。"""
+    before = len(problems)
+    knowledge = os.path.join(plugin, *KNOWLEDGE_REL.split("/"))
+    task = os.path.join(plugin, *EXT_PARENT, name, "task.json")
+    has_knowledge, has_task = os.path.isfile(knowledge), os.path.isfile(task)
+    if has_knowledge:
+        data = read_json(knowledge, "決まりの一覧（%s）" % KNOWLEDGE_REL, problems)
+        if data is not None and not isinstance(data, list):
+            problems.append("決まりの一覧（%s）の形が違います（一覧ではありません）。" % KNOWLEDGE_REL)
+    if has_task:
+        data = read_json(task, "作業の定義（%s）" % posix_rel(task, plugin), problems)
+        if data is not None and not isinstance(data, dict):
+            problems.append("作業の定義（%s）の形が違います（項目の集まりではありません）。" % posix_rel(task, plugin))
+    removed = os.path.join(plugin, *REMOVED_REL.split("/"))
+    if has_knowledge and has_task and os.path.isfile(removed):
+        data = read_json(removed, "外した決まりの一覧（%s）" % REMOVED_REL, problems)
+        if data is not None and not isinstance(data, list):
+            problems.append("外した決まりの一覧（%s）の形が違います（一覧ではありません）。" % REMOVED_REL)
+    if len(problems) > before:
+        problems.append("壊れたファイルを直してコミットしてから、もう一度頼んでください。")
+        return None
+    return has_knowledge and has_task
+
+
+def tag_name(prefix: str, name: str) -> str:
+    """印のタグの名前（BLUEPRINT D9）。リポジトリの直下のプラグインは plugin-creator-generated、
+    サブフォルダのプラグインは plugin-creator-generated-<plugin.json の name>。"""
+    return TAG_BASE if not prefix.strip("/") else "%s-%s" % (TAG_BASE, name)
+
+
+def copy_places(hearing: Optional[str]) -> List[Tuple[str, str]]:
+    """Copilot CLI がインストールやマーケットプレイスのために持つ写しの場所（BLUEPRINT D39）。[(場所, 種類)]。"""
+    homes = [os.environ.get("COPILOT_HOME") or os.path.join(os.path.expanduser("~"), ".copilot")]
+    if hearing:   # <COPILOT_HOME>/plugin-data/plugin-creator/hearings/<セッション>/state.json の5つ上
+        home = os.path.abspath(hearing)
+        for _ in range(5):
+            home = os.path.dirname(home)
+        homes.append(home)
+    places = [(os.path.join(home, "installed-plugins"), "installed") for home in homes]
+    cache = os.environ.get("COPILOT_CACHE_HOME")
+    if not cache:
+        if sys.platform == "darwin":
+            cache = os.path.join(os.path.expanduser("~"), "Library", "Caches", "copilot")
+        elif os.name == "nt":
+            cache = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local"), "copilot")
+        else:
+            cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "copilot")
+    places.append((cache, "cache"))   # COPILOT_CACHE_HOME のときは、その下の copilot も中に入る
+    return places
+
+
+def ignore_rules(template: str) -> List[str]:
+    """ひな形の .gitignore の行（末尾の / を除く）と、作業用の一時フォルダ。"""
+    rules = [WORK_NAME]
+    try:
+        with open(os.path.join(template, ".gitignore"), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith(("#", "!")):
+            rules.append(line.strip("/"))
+    return rules
+
+
+def ignored_by_template(rel: str, rules: List[str]) -> bool:
+    """rel（.gitignore で外されたファイルかフォルダ）が、ひな形の .gitignore の行に当たるか。
+    / を含む行はプラグインのフォルダからの前方一致、含まない行はどの深さのフォルダの名前とも一致。"""
+    path = rel.strip("/")
+    parts = path.split("/")
+    for rule in rules:
+        if "/" in rule:
+            if path == rule or path.startswith(rule + "/"):
+                return True
+        elif rule in parts:
+            return True
+    return False
+
+
+def status_paths(plugin: str, prefix: str) -> List[str]:
+    """プラグインのフォルダの中の、コミットしていない変更（作業用の一時フォルダを除く）。プラグインのフォルダからの場所。"""
+    raw = git_ok(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".", ":(exclude)%s" % WORK_NAME], plugin)
+    fields = raw.split("\0")
+    paths: List[str] = []
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        paths.append(path)
+        if "R" in code or "C" in code:   # 名前を変えた・写したもの：次の欄が元の場所
+            if index < len(fields) and fields[index]:
+                paths.append(fields[index])
+            index += 1
+    out: List[str] = []
+    for path in paths:   # git status はリポジトリの根からの場所を出すので、プラグインのフォルダからの場所にする
+        rel = path[len(prefix):] if prefix and path.startswith(prefix) else path
+        if rel not in out:
+            out.append(rel)
+    return sorted(out)
+
+
+def commit_command(plugin: str) -> str:
+    """断る文で示す、プラグインのフォルダの中だけをコミットするコマンド（作業用の一時フォルダを除く）。"""
+    shown = shown_path(plugin)
+    paths = " ".join(p if p == "." else "'%s'" % p for p in add_paths(plugin))
+    return "`git -C %s add -A -- %s && git -C %s commit -m \"直す前の状態\"`" % (shown, paths, shown)
+
+
+def uncommitted(plugin: str, prefix: str) -> Optional[str]:
+    """プラグインのフォルダの中に、コミットしていない変更があれば、断る文。"""
+    changed = status_paths(plugin, prefix)
+    if not changed:
+        return None
+    return ("%s に、まだコミットしていない変更があります（%s）。%s でコミットするか、要らない変更を消してから、もう一度頼んでください。"
+            % (plugin, listed(changed), commit_command(plugin)))
+
+
+def in_the_middle(plugin: str) -> List[str]:
+    """マージ・リベース・チェリーピック・リバートの途中なら、その名前の一覧（BLUEPRINT D21）。"""
+    names = [("MERGE_HEAD", "マージ"), ("rebase-merge", "リベース"), ("rebase-apply", "リベース"),
+             ("CHERRY_PICK_HEAD", "チェリーピック"), ("REVERT_HEAD", "リバート")]
+    args = ["rev-parse"]
+    for name, _label in names:
+        args += ["--git-path", name]
+    places = git_ok(args, plugin).splitlines()
+    found: List[str] = []
+    for (name, label), place in zip(names, places):
+        if os.path.exists(os.path.join(plugin, place)) and label not in found:
+            found.append(label)
+    return found
+
+
+def git_place(plugin: str) -> Tuple[str, str]:
+    """(リポジトリの根, プラグインのフォルダのリポジトリの中の場所〔末尾に /。直下なら空〕)。git のリポジトリの外なら断る。"""
+    done = git(["rev-parse", "--show-toplevel", "--show-prefix"], plugin)
+    if done.returncode != 0:
+        raise Refusal("%s は git のリポジトリの中にありません。直す前の状態に git で戻せるよう、"
+                      "`git -C %s init && git -C %s add -A && git -C %s commit -m \"直す前の状態\"` で git のリポジトリにしてコミットしてから、"
+                      "もう一度頼んでください。" % ((plugin,) + (shown_path(plugin),) * 3))
+    lines = done.stdout.split("\n")
+    return lines[0].strip(), (lines[1].strip() if len(lines) > 1 else "")
+
+
+# ---------------------------------------------------------------- change-check（始める前の確かめ。REQ-053）
+
+def change_check(plugin: str, cwd: str, hearing: Optional[str] = None, template: Optional[str] = None) -> Dict[str, Any]:
+    """直すプラグインのフォルダを確かめる。読むだけで、何も書かない。満たさなければ、直し方を書いた文で断る。"""
+    template = template or DEFAULT_TEMPLATE
+    plugin, cwd = os.path.abspath(plugin), os.path.abspath(cwd)
+    if not os.path.isdir(plugin):
+        raise Refusal("直すプラグインのフォルダ %s がありません。プラグインのフォルダの場所を確かめて、もう一度頼んでください。" % plugin)
+    if not os.path.isdir(cwd):
+        raise Refusal("Copilot CLI を起動したフォルダ %s がありません（--cwd）。" % cwd)
+    shown = shown_path(plugin)
+    problems: List[str] = []
+    # ① マニフェスト ② 起動したフォルダの中 ③ 写しでない
+    manifest = read_manifest(plugin, problems)
+    if not is_within(plugin, cwd):
+        problems.append("このプラグインのフォルダ（%s）は、Copilot CLI を起動したフォルダ（%s）の外にあります。"
+                        "`cd %s` で移ってから `copilot` で起動し直し（プラグインのフォルダを含むフォルダで起動してもかまいません）、"
+                        "もう一度頼んでください。" % (plugin, cwd, shown))
+    for place, kind in copy_places(hearing):
+        if is_within(plugin, place):
+            what = "インストール" if kind == "installed" else "マーケットプレイス"
+            problems.append("このフォルダ（%s）は、Copilot CLI が%sのために持っているプラグインの写しです（%s の中）。"
+                            "写しを直しても、Copilot CLI がプラグインを更新すると消えます。元のリポジトリを手元に取ってきて"
+                            "（例：`git clone <リポジトリの URL>`）、そのフォルダを示してください。" % (plugin, what, place))
+            break
+    if problems or manifest is None:
+        raise Refusal(problems)
+    generated = plugin_kind(plugin, manifest["name"], problems)
+    if generated is None:
+        raise Refusal(problems)
+    # ④ git のリポジトリの中
+    repo_root, prefix = git_place(plugin)
+    # ⑤ git で管理されている
+    commit_hint = commit_command(plugin)
+    if git(["check-ignore", "-q", "--", "."], plugin).returncode == 0:
+        problems.append("このフォルダ（%s）は、.gitignore で git の管理から外されています。.gitignore から外し、%s でコミットしてから、"
+                        "もう一度頼んでください。" % (plugin, commit_hint))
+    elif git(["ls-files", "--error-unmatch", "--", manifest["rel"]], plugin).returncode != 0:
+        problems.append("このフォルダ（%s）のマニフェスト（%s）が git で管理されていません。%s でコミットしてから、もう一度頼んでください。"
+                        % (plugin, manifest["rel"], commit_hint))
+    else:
+        rules = ignore_rules(template)
+        ignored = git_z(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", "."], plugin)
+        outside = [p for p in ignored if not ignored_by_template(p, rules)]
+        if outside:
+            problems.append("このフォルダ（%s）に、.gitignore で git の管理から外されたファイルがあります（%s）。直すときは .gitignore が"
+                            "ひな形のものに替わるので、これらがコミットに入ったり消えたりします。要らないものは消し、要るものは .gitignore から外して"
+                            "%s でコミットしてから、もう一度頼んでください。" % (plugin, listed(outside), commit_hint))
+    # ⑥ コミットしていない変更がない（フォルダの中だけ）
+    message = uncommitted(plugin, prefix)
+    if message:
+        problems.append(message)
+    # ⑦ マージなどの途中でない
+    middle = in_the_middle(plugin)
+    if middle:
+        problems.append("%s のリポジトリは、%sの途中です。`git -C %s status` で確かめ、終えるか取りやめて（例：`git -C %s merge --abort`）から、"
+                        "もう一度頼んでください。" % (plugin, "・".join(middle), shown, shown))
+    if problems:
+        raise Refusal(problems)
+    name = manifest["name"]
+    return {"ok": True, "plugin": real(plugin), "repo_root": repo_root, "prefix": prefix, "manifest": manifest["rel"],
+            "name": name, "version": manifest["version"], "generated": generated, "tag": tag_name(prefix, name)}
+
+
+# ---------------------------------------------------------------- 取り出し（extract）
+
+def frontmatter_values(text: str) -> Dict[str, Any]:
+    """先頭のフロントマターを読む。PyYAML がなければ、`キー: 値` と、`キー:` の下の `- 値` だけを読む。"""
+    span = frontmatter_span(text.replace("\r\n", "\n"))
+    if not span:
+        return {}
+    head = text.replace("\r\n", "\n")[span[0]:span[1]]
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(head)
+        except Exception:   # 読めないフロントマターは、何もないものとして扱う
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def scalar(value: str) -> str:
+        if value.startswith('"'):
+            try:
+                return json.loads(value)
+            except ValueError:
+                return value.strip('"')
+        if len(value) >= 2 and value[0] == value[-1] == "'":
+            return value[1:-1].replace("''", "'")
+        return value
+
+    data: Dict[str, Any] = {}
+    key = None
+    for line in head.split("\n"):
+        m = re.match(r"^([A-Za-z_][\w-]*):[ \t]*(.*?)[ \t]*$", line)
+        if m:
+            key = m.group(1)
+            data[key] = scalar(m.group(2)) if m.group(2) else []
+            continue
+        m = re.match(r"^[ \t]+-[ \t]+(.*?)[ \t]*$", line)
+        if m and key is not None and isinstance(data.get(key), list):
+            data[key].append(scalar(m.group(1)))
+    return data
+
+
+def read_text(path: str) -> Optional[str]:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def skill_name(folder: str) -> str:
+    """スキルの名前：SKILL.md の name、なければフォルダの名前。"""
+    text = read_text(os.path.join(folder, "SKILL.md")) or ""
+    name = frontmatter_values(text).get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else os.path.basename(os.path.normpath(folder))
+
+
+def plugin_skills(root: str, rels: List[str]) -> Dict[str, str]:
+    """プラグインの skills/<フォルダ>/SKILL.md から、{スキルの名前: skills/<フォルダ>}。"""
+    found: Dict[str, str] = {}
+    for rel in rels:
+        parts = rel.split("/")
+        if len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md":
+            folder = "skills/" + parts[1]
+            found[skill_name(os.path.join(root, "skills", parts[1]))] = folder
+            found.setdefault(parts[1], folder)
+    return found
+
+
+def imported_skills(state: Dict[str, Any], work_folder: str, plugin: str, problems: List[str]) -> List[Dict[str, str]]:
+    """示されたスキル（BLUEPRINT D28）：記録の資産のうち、場所が SKILL.md のあるフォルダか SKILL.md そのもの。
+    資産のファイルが SKILL.md のあるフォルダの下にあるのに、そのフォルダが資産にないとき、
+    示されたスキルのフォルダが直すプラグインのフォルダの中にあるとき（D35）は、problems に足す。"""
+    locations: List[str] = []
+    for asset in state.get("assets") or []:
+        place = asset.get("location") if isinstance(asset, dict) else None
+        if not isinstance(place, str) or not place.strip():
+            continue
+        place = os.path.expanduser(place.strip())
+        path = os.path.normpath(place if os.path.isabs(place) else os.path.join(work_folder, place))
+        if os.path.exists(path):
+            locations.append(path)
+    folders: Dict[str, str] = {}
+    for path in locations:
+        if os.path.isdir(path) and os.path.isfile(os.path.join(path, "SKILL.md")):
+            folders.setdefault(real(path), path)
+        elif os.path.basename(path) == "SKILL.md" and os.path.isfile(path):
+            folders.setdefault(real(os.path.dirname(path)), os.path.dirname(path))
+    for path in locations:
+        if is_within(path, plugin):   # プラグインのファイル（引き継ぐもの）は、示されたスキルの漏れを見ない
+            continue
+        folder = path if os.path.isdir(path) else os.path.dirname(path)
+        while True:
+            if os.path.isfile(os.path.join(folder, "SKILL.md")):
+                if real(folder) not in folders:
+                    problems.append("資産 %s は、スキルのフォルダ %s の中のファイルですが、そのスキルのフォルダが資産に記録されていません。"
+                                    "示されたスキルは、SKILL.md のあるフォルダの絶対パスを資産に記録してください"
+                                    "（名前の重なりを確かめるのに使います）。" % (path, folder))
+                    folders.setdefault(real(folder), folder)   # 同じフォルダを2回言わない
+                break
+            parent = os.path.dirname(folder)
+            if parent == folder:
+                break
+            folder = parent
+    skills: List[Dict[str, str]] = []
+    for key in sorted(folders):
+        folder = folders[key]
+        if is_within(folder, plugin):
+            problems.append("示されたスキルのフォルダ %s は、直すプラグインのフォルダ（%s）の中にあります。直すとプラグインのファイルを入れ替えるので、"
+                            "示されたスキルの中身を変えないことを守れません。プラグインのフォルダの外にあるスキルを示してもらうか、"
+                            "プラグインのスキルなら資産から外してください（プラグインの一部として引き継ぎます）。" % (folder, plugin))
+            continue
+        skills.append({"folder": folder, "name": skill_name(folder)})
+    return skills
+
+
+def name_conflicts(skills: List[Dict[str, str]], plugin_names: Dict[str, str]) -> List[Dict[str, str]]:
+    """示されたスキルの名前と、プラグインのスキルの名前の重なり（REQ-055、BLUEPRINT D35）。"""
+    return [{"name": s["name"], "user_skill": s["folder"], "plugin_skill": plugin_names[s["name"]]}
+            for s in skills if s["name"] in plugin_names]
+
+
+def template_places(template: str, name: str, entry: Optional[str], agents: List[str]) -> Set[str]:
+    """ひな形と組み立てが作るファイルの場所（描き直すと書き換わる場所）。
+    entry が None なら入口のスキルの場所を、agents が空なら作業エージェントの場所を入れない（名前がまだ決まっていないとき）。"""
+    places: Set[str] = set()
+    ignore = make_ignore(template)
+    ext_from = "%s/%s/" % ("/".join(EXT_PARENT), EXT_PLACEHOLDER)
+    ext_to = "%s/%s/" % ("/".join(EXT_PARENT), name)
+    for directory, dirs, names in os.walk(template):
+        skipped = ignore(directory, dirs + names)
+        dirs[:] = [d for d in dirs if d not in skipped]
+        for n in names:
+            if n in skipped:
+                continue
+            rel = posix_rel(os.path.join(directory, n), template)
+            if rel.startswith(ext_from):
+                rel = ext_to + rel[len(ext_from):]
+            elif rel.startswith("skills/%s/" % ENTRY_PLACEHOLDER):
+                if entry is None:
+                    continue
+                rel = "skills/%s/" % entry + rel[len("skills/%s/" % ENTRY_PLACEHOLDER):]
+            places.add(rel)
+    if "worker" not in agents:
+        places.discard("%s/%s" % (AGENTS_REL, WORKER_FILE))
+    places.update("%s/%s.agent.md" % (AGENTS_REL, agent) for agent in agents)
+    places.update({ext_to + "task.json", KNOWLEDGE_REL, REMOVED_REL})
+    return places
+
+
+def base_folders(template: str, name: str) -> Tuple[str, ...]:
+    """土台のフォルダ（エクステンションの core/、ui/ など）の、プラグインの中の場所。中のファイルは、ひな形にないものも土台。"""
+    root = os.path.join(template, *EXT_PARENT, EXT_PLACEHOLDER)
+    if not os.path.isdir(root):
+        return ()
+    return tuple("%s/%s/%s/" % ("/".join(EXT_PARENT), name, d) for d in sorted(os.listdir(root))
+                 if os.path.isdir(os.path.join(root, d)) and d not in SKIP_NAMES)
+
+
+def template_tools(template_text: str, rel: str, values: Dict[str, str]) -> List[str]:
+    """ひな形のエージェントの定義の tools（作業ごとの分を除く）。"""
+    text = apply_values(template_text, rel, values)
+    text = re.sub(r"(?m)^[ \t]*\{\{(?:%s)\}\}[ \t]*\n" % "|".join(TOOL_TOKENS.values()), "", text)
+    tools = frontmatter_values(text).get("tools")
+    return [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+
+
+def extra_tools_of(plugin: str, rel: str, template_text: str, values: Dict[str, str]) -> List[str]:
+    """元のエージェントの定義の tools から、ひな形の tools を引いたもの。"""
+    tools = frontmatter_values(read_text(os.path.join(plugin, *rel.split("/"))) or "").get("tools")
+    have = [t for t in tools if isinstance(t, str)] if isinstance(tools, list) else []
+    base = template_tools(template_text, rel, values)
+    return [t for t in have if t not in base]
+
+
+def find_line(lines: List[str], text: Optional[str], start: int, nth: int = 1) -> Optional[int]:
+    """start から数えて nth 番目に text と同じ行（行末の空白は見ない）の場所。"""
+    if text is None:
+        return None
+    want = text.rstrip()
+    for index in range(max(start, 0), len(lines)):
+        if lines[index].rstrip() == want:
+            nth -= 1
+            if nth <= 0:
+                return index
+    return None
+
+
+def trimmed(lines: List[str]) -> str:
+    """前後の空の行を除いて、つなぐ。"""
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    while lines and not lines[-1].strip():
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def extract_slots(plugin: str, template: str, values: Dict[str, str], layout: Dict[str, Any],
+                  warnings: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """元の生成プラグインから、差し込み口の文を取り出す（目印による取り出し。BLUEPRINT 5章 C2）。
+    目印は、ひな形に決まった値を入れた文で、差し込み口の行のすぐ前とすぐ後の空でない行。
+    すぐ後の目印が元のプラグインにないときは、その目印が ## の見出しなら次の ## の見出しまでを取り、
+    見出しでなければ取り出さない（古いひな形の文を差し込み口の文と見分けられないため）。
+    task-trace は、追跡の表の行のうち要件の番号が REQ-101 以上の行。(文, {差し込み口: "found" か "missing"})。"""
+    texts: Dict[str, str] = {}
+    status: Dict[str, str] = {}
+    tokens = line_token_map(layout)
+    ignore = make_ignore(template)
+    pairs: List[Tuple[str, str]] = []   # (元のプラグインの場所, ひな形の文)
+    for directory, dirs, names in os.walk(template):
+        skipped = ignore(directory, dirs + names)
+        dirs[:] = sorted(d for d in dirs if d not in skipped)
+        for n in sorted(names):
+            if n in skipped:
+                continue
+            rel = posix_rel(os.path.join(directory, n), template)
+            text = read_text(os.path.join(directory, n))
+            if text is None or "{{slot:" not in text:
+                continue
+            if rel == "%s/%s" % (AGENTS_REL, WORKER_FILE):
+                pairs += [("%s/%s.agent.md" % (AGENTS_REL, w["agent"]), worker_copy(text, w["agent"])) for w in layout["workers"]]
+            else:
+                pairs.append((rel.replace("skills/%s/" % ENTRY_PLACEHOLDER, "skills/%s/" % layout["entry_name"])
+                              .replace("/%s/" % EXT_PLACEHOLDER, "/%s/" % layout["plugin_name"]), text))
+    for rel, text in pairs:
+        text = apply_values(apply_line_tokens(text, tokens.get(rel, {}), set()), rel, values)
+        lines = text.split("\n")
+        have = read_text(os.path.join(plugin, *rel.split("/")))
+        mine = have.split("\n") if have is not None else None
+        pos = 0      # 元のプラグインで、前の差し込み口の後の目印の場所
+        t_from = 0   # ひな形で、同じ目印の場所
+        for index, line in enumerate(lines):
+            m = SLOT_LINE.match(line)
+            if not m:
+                continue
+            slot = m.group(1)
+            status[slot] = "missing"
+            if mine is None:
+                continue
+            if slot == "task-trace":   # 表の続き：作業ごとの要件（REQ-101 以上）の行
+                heading = next((lines[j] for j in range(index - 1, -1, -1) if lines[j].startswith("## ")), None)
+                start = find_line(mine, heading, 0) or 0
+                rows = [r for r in mine[start:] if TRACE_ROW.match(r) and int(TRACE_ROW.match(r).group(1)) >= TASK_REQ_START]
+                body = "\n".join(rows)
+            else:
+                before_at = next((j for j in range(index - 1, -1, -1) if lines[j].strip() and not SLOT_LINE.match(lines[j])), None)
+                after_at = next((j for j in range(index + 1, len(lines)) if lines[j].strip() and not SLOT_LINE.match(lines[j])), None)
+                before = lines[before_at] if before_at is not None else None
+                after = lines[after_at] if after_at is not None else None
+                if before is None:
+                    first: Optional[int] = -1
+                else:   # 同じ行が前にもある（例：フロントマターの ---）ときは、同じ何番目のものを目印にする
+                    nth = sum(1 for j in range(t_from, index) if lines[j].rstrip() == before.rstrip())
+                    first = find_line(mine, before, pos, nth)
+                if first is None:
+                    warnings.append("差し込み口 %s の前の目印（%s の「%s」）が元のプラグインに見つからないので、取り出せませんでした。"
+                                    "parts/slots/%s.md を書いてください。" % (slot, rel, clip(before or ""), slot))
+                    continue
+                last = len(mine) if after is None else find_line(mine, after, first + 1)
+                if last is None and after is not None and after.startswith("## "):   # 後の見出しの名前が変わった：次の ## の見出しまで
+                    last = next((k for k in range(first + 1, len(mine)) if mine[k].startswith("## ")), len(mine))
+                if last is None:
+                    warnings.append("差し込み口 %s の後の目印（%s の「%s」）が元のプラグインに見つからないので、取り出せませんでした。"
+                                    "parts/slots/%s.md を書いてください。" % (slot, rel, clip(after or ""), slot))
+                    continue
+                body = trimmed(mine[first + 1:last])
+                pos = last
+                t_from = after_at if after_at is not None else len(lines)
+            if body.strip():
+                texts[slot] = body
+                status[slot] = "found"
+    return texts, status
+
+
+def constitution_date(plugin: str) -> Optional[str]:
+    """憲章の変更履歴の 1.0.0 の行の日付。"""
+    text = read_text(os.path.join(plugin, "docs", "constitution.md")) or ""
+    m = re.search(r"(?m)^\|\s*1\.0\.0\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|", text)
+    return m.group(1) if m else None
+
+
+def marketplace_of(plugin: str, name: str) -> str:
+    data = None
+    try:
+        with open(os.path.join(plugin, ".github", "plugin", "marketplace.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass
+    value = data.get("name") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value.strip() else name
+
+
+def finish_manifest(root: str, version: Optional[str], carried: Dict[str, Any]) -> None:
+    """描いた plugin.json の version を置き換え（ひな形は 0.1.0 の決め打ち）、元のマニフェストの、
+    ひな形が書かない項目（repository など。CARRIED_MANIFEST_KEYS）を引き継ぐ。"""
+    if not version and not carried:
+        return
+    path = os.path.join(root, "plugin.json")
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if version:
+        data["version"] = version
+    data.update(carried)
+    write_text(path, json_text(data))
+
+
+def walk_files(root: str) -> List[str]:
+    found: List[str] = []
+    for directory, dirs, names in os.walk(root):
+        dirs[:] = sorted(dirs)
+        found += [posix_rel(os.path.join(directory, n), root) for n in sorted(names)]
+    return sorted(found)
+
+
+def line_changes(old: bytes, new: bytes) -> Tuple[int, int]:
+    """足した行と消した行の数。文字でないファイルは (0, 0)。"""
+    import difflib
+    try:
+        if b"\0" in old or b"\0" in new:
+            return 0, 0
+        a, b = old.decode("utf-8").splitlines(), new.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return 0, 0
+    plus = minus = 0
+    for line in difflib.unified_diff(a, b, lineterm="", n=0):
+        if line.startswith("+") and not line.startswith("+++"):
+            plus += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            minus += 1
+    return plus, minus
+
+
+def compare_trees(plugin: str, tracked: List[str], preview: str) -> Dict[str, Any]:
+    """元のプラグイン（git が管理するファイル）と下見の違い。"""
+    drawn = set(walk_files(preview))
+    have = set(tracked)
+    changed = []
+    for rel in sorted(drawn & have):
+        old_path = os.path.join(plugin, *rel.split("/"))
+        if not os.path.isfile(old_path):
+            changed.append({"file": rel, "plus": 0, "minus": 0})
+            continue
+        old, new = read_bytes(old_path), read_bytes(os.path.join(preview, *rel.split("/")))
+        if old != new:
+            plus, minus = line_changes(old, new)
+            changed.append({"file": rel, "plus": plus, "minus": minus})
+    return {"added": sorted(drawn - have), "removed": sorted(have - drawn), "changed": changed}
+
+
+def preview_stage1(preview: str, template: str, warnings: List[str]) -> List[str]:
+    """下見に1段目の検査（ひな形の check_structure.py）を当て、落ちるところの文を返す。"""
+    checks = load_checks(os.path.join(template, "tests", "stage1", "check_structure.py"))
+    if checks is None:
+        warnings.append("PyYAML か jsonschema が入っていない（または、ひな形に1段目の検査がない）ので、下見に1段目の検査を当てませんでした。")
+        return []
+    try:
+        report = checks.run_checks(preview, "generated")
+    except Exception as e:   # 検査が止まっても、取り出しは続ける
+        warnings.append("下見の1段目の検査が途中で止まりました（%s: %s）。" % (type(e).__name__, e))
+        return []
+    return ["%s：%s" % (c.title, m) for c in report.checks for m in c.errors]
+
+
+def copy_into_parts(plugin: str, work: str, rels: List[str]) -> None:
+    base = os.path.join(work, "parts", "files")
+    for rel in rels:
+        target = os.path.join(base, *rel.split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(os.path.join(plugin, *rel.split("/")), target)
+
+
+def split_files(plugin: str, tracked: List[str], places: Set[str], bases: Tuple[str, ...],
+                warnings: List[str]) -> Tuple[List[str], List[str], List[str]]:
+    """git が管理するファイルを (parts/files に入れるもの, ひな形と重なるもの, 消すもの) に分ける。
+    消すもの：以前の形式のマニフェストと、ふつうのファイルでないもの（シンボリックリンクなど）。"""
+    keep: List[str] = []
+    overlap: List[str] = []
+    gone: List[str] = []
+    for rel in tracked:
+        path = os.path.join(plugin, *rel.split("/"))
+        if rel in LEGACY_MANIFESTS:
+            gone.append(rel)
+        elif os.path.islink(path) or not os.path.isfile(path):
+            gone.append(rel)
+            warnings.append("%s はふつうのファイルではない（シンボリックリンクなど）ので、直したプラグインには入りません。" % rel)
+        elif rel in places or rel.startswith(bases):
+            overlap.append(rel)
+        else:
+            keep.append(rel)
+    return keep, overlap, gone
+
+
+def original_records(plugin: str, name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """元の生成プラグインの (決まりの一覧, 外した決まりの一覧, 作業の定義)。plugin_kind で読めることは確かめてある。"""
+    def load(rel: str, empty: Any) -> Any:
+        path = os.path.join(plugin, *rel.split("/"))
+        if not os.path.isfile(path):
+            return empty
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    knowledge = [r for r in load(KNOWLEDGE_REL, []) if isinstance(r, dict)]
+    removed = [r for r in load(REMOVED_REL, []) if isinstance(r, dict)]
+    task = load("%s/%s/task.json" % ("/".join(EXT_PARENT), name), {})
+    return knowledge, removed, task
+
+
+def original_criteria(task: Dict[str, Any]) -> List[Dict[str, str]]:
+    return [{"id": c["id"], "text": c.get("text", ""), "knowledge": c["knowledge"]} for c in task.get("criteria") or []
+            if isinstance(c, dict) and isinstance(c.get("id"), str) and isinstance(c.get("knowledge"), str)]
+
+
+def entry_skill_of(plugin: str, name: str, tracked: List[str]) -> Optional[str]:
+    """入口のスキル：本文に <name>_open を書いているスキル（ひな形の入口のスキルの最後の節）。フォルダの名前を返す。"""
+    found = [rel.split("/")[1] for rel in tracked
+             if re.match(r"^skills/[^/]+/SKILL\.md$", rel) and "%s_open" % name in (read_text(os.path.join(plugin, *rel.split("/"))) or "")]
+    if not found:
+        return None
+    return name if name in found else found[0]
+
+
+def extract(plugin: str, work: str, hearing: Optional[str] = None, template: Optional[str] = None,
+            today: Optional[str] = None) -> Dict[str, Any]:
+    """直すプラグインから parts/・draft/task.json・preview/・extract.json を作る。--work の中だけに書く。"""
+    template = template or DEFAULT_TEMPLATE
+    today = today or datetime.date.today().isoformat()
+    plugin, work = os.path.abspath(plugin), os.path.abspath(work)
+    if os.path.basename(os.path.normpath(work)) != WORK_NAME:
+        raise Refusal("--work は、作業フォルダの中の %s にしてください（今は %s）。" % (WORK_NAME, work))
+    if not os.path.isdir(plugin):
+        raise Refusal("直すプラグインのフォルダ %s がありません。" % plugin)
+    problems: List[str] = []
+    warnings: List[str] = []
+    manifest = read_manifest(plugin, problems)
+    if manifest is None:
+        raise Refusal(problems)
+    name = manifest["name"]
+    generated = plugin_kind(plugin, name, problems)
+    if generated is None:
+        raise Refusal(problems)
+    _root, prefix = git_place(plugin)
+    # コミットした中身だけを取り出す（コミットしていない変更を取り出すと、後で消した変更を change が書き戻すため）
+    message = uncommitted(plugin, prefix)
+    if message:
+        raise Refusal(message)
+    head = git_ok(["rev-parse", "HEAD"], plugin).strip()   # change が、取り出した後の変更を見つけるのに使う
+    tracked, modules = tracked_entries(plugin)
+    for rel in modules:
+        warnings.append("%s は git のサブモジュールなので、取り出さず、直すときもそのまま残します。" % rel)
+
+    conflicts: List[Dict[str, str]] = []
+    if hearing:
+        state = read_json(os.path.abspath(hearing), "ヒアリングの記録（%s）" % hearing, problems)
+        if isinstance(state, dict):
+            skills = imported_skills(state, os.path.dirname(work), plugin, problems)
+            conflicts = name_conflicts(skills, plugin_skills(plugin, tracked))
+        elif state is not None:
+            problems.append("ヒアリングの記録（%s）の形が違います（項目の集まりではありません）。" % hearing)
+        if problems:
+            raise Refusal(problems)
+
+    # 前の取り出しの残りを片付けてから書く
+    os.makedirs(work, exist_ok=True)
+    for sub in ("parts", "draft", "preview", "stage"):
+        shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
+    for leftover in (EXTRACT_JSON, CHANGED_JSON):
+        if os.path.isfile(os.path.join(work, leftover)):
+            os.remove(os.path.join(work, leftover))
+    os.makedirs(os.path.join(work, "parts", "files"))
+
+    if generated:
+        result = extract_generated(plugin, work, template, manifest, tracked, today, warnings)
+    else:
+        # 入口のスキルと作業エージェントの名前は、まだ決まっていない（メインが parts/manifest.json に書く）。
+        # その場所のファイルは消す一覧に入れずに parts/files に残し、選んだ名前と重なれば change が断る（render_parts の重なりの確かめ）
+        places = template_places(template, name, None, [])
+        keep, overlap, gone = split_files(plugin, tracked, places, base_folders(template, name), warnings)
+        copy_into_parts(plugin, work, keep)
+        result = {"ok": True, "generated": False, "slots": {}, "files": len(keep), "delete": sorted(overlap + gone),
+                  "base": {"added": [], "removed": [], "changed": []}, "stage1": []}
+    result.update({"plugin": real(plugin), "head": head, "name_conflicts": conflicts, "warnings": warnings})
+    write_text(os.path.join(work, EXTRACT_JSON), json_text(result))
+    return result
+
+
+def extract_generated(plugin: str, work: str, template: str, manifest: Dict[str, Any], tracked: List[str], today: str,
+                      warnings: List[str]) -> Dict[str, Any]:
+    """生成プラグインから、差し込み口の文・作業ごとのファイル・組み立ての設定・作業の定義を取り出し、下見を描いて比べる。"""
+    name = manifest["name"]
+    knowledge, removed, task = original_records(plugin, name)
+    workers = [{"agent": w["agent"], "label": w.get("label")} for w in task.get("workers") or []
+               if isinstance(w, dict) and isinstance(w.get("agent"), str)]
+    entry = entry_skill_of(plugin, name, tracked)
+    entry_meta: Dict[str, Any] = {}
+    if entry is None:
+        warnings.append("入口のスキル（本文に %s_open を書いているスキル）が見つかりません。parts/manifest.json の entry_skill を書いてください。" % name)
+    else:
+        entry_meta = frontmatter_values(read_text(os.path.join(plugin, "skills", entry, "SKILL.md")) or "")
+    date = constitution_date(plugin)
+    if date is None:
+        date = today
+        warnings.append("憲章（docs/constitution.md）の変更履歴に 1.0.0 の行が見つからないので、作った日を今日（%s）にしました。" % today)
+    values = {
+        "plugin_name": name,
+        "plugin_description": manifest["description"],
+        "marketplace_name": marketplace_of(plugin, name),
+        "generated_date": date,
+        "entry_skill_name": entry_meta.get("name") if isinstance(entry_meta.get("name"), str) else (entry or name),
+        "entry_skill_description": entry_meta.get("description") if isinstance(entry_meta.get("description"), str) else "",
+    }
+
+    # 組み立ての設定：作業エージェントの一覧は task.json、ツールの作業ごとの分は、元の tools からひな形の tools を引いたもの
+    agents_dir = os.path.join(template, *AGENTS_REL.split("/"))
+    worker_text = read_text(os.path.join(agents_dir, WORKER_FILE)) or ""
+    for w in workers:
+        rel = "%s/%s.agent.md" % (AGENTS_REL, w["agent"])
+        w["extra_tools"] = extra_tools_of(plugin, rel, worker_copy(worker_text, w["agent"]), values)
+    verifier_rel = "%s/verifier.agent.md" % AGENTS_REL
+    verifier_tools = extra_tools_of(plugin, verifier_rel, read_text(os.path.join(agents_dir, "verifier.agent.md")) or "", values)
+    parts_manifest: Dict[str, Any] = {"plugin_name": name, "plugin_description": manifest["description"]}
+    if entry is not None:
+        parts_manifest["entry_skill"] = {"name": values["entry_skill_name"], "description": values["entry_skill_description"]}
+    parts_manifest.update({"workers": workers, "verifier": {"extra_tools": verifier_tools}, "orchestrator": {"extra_tools": []}})
+    write_text(os.path.join(work, "parts", "manifest.json"), json_text(parts_manifest))
+
+    # 作業の定義（基準は、確かめた決まりから組み立てが書くので除く）
+    draft = {k: v for k, v in task.items() if k != "criteria"}
+    write_text(os.path.join(work, "parts", "task.json"), json_text(draft))
+    write_text(os.path.join(work, "draft", "task.json"), json_text(draft))
+
+    # 差し込み口の文
+    layout = {"plugin_name": name, "entry_name": entry or name, "workers": workers, "verifier_tools": verifier_tools}
+    slots, status = extract_slots(plugin, template, values, layout, warnings)
+    for slot, text in slots.items():
+        write_text(os.path.join(work, "parts", "slots", slot + ".md"), text + "\n")
+
+    # 作業ごとのファイル：git が管理するファイルのうち、ひな形と組み立てが作る場所でないもの
+    places = template_places(template, name, entry or name, [w["agent"] for w in workers])
+    keep, _overlap, gone = split_files(plugin, tracked, places, base_folders(template, name), warnings)
+    copy_into_parts(plugin, work, keep)
+    for rel in keep:   # 試験の土台のフォルダにある、ひな形にないファイルは、作業ごとの試験として残す（確認で示す）
+        if is_tests_base(rel):
+            warnings.append("%s は、ひな形にない試験の土台のフォルダのファイルなので、作業ごとの試験として残します。" % rel)
+
+    # 下見：今のひな形で、変えずに描き直す（版は元のまま）
+    preview_problems: List[str] = []
+    preview_warnings: List[str] = []
+    rows = [{"id": r.get("id"), "kind": r.get("kind"), "item": r.get("item"), "text": r.get("text")} for r in knowledge]
+    parts = prepare_parts(work, template, rows, original_criteria(task), None, preview_problems, preview_warnings)
+    parts["knowledge_removed"] = removed
+    preview = os.path.join(work, "preview", name)
+    base = {"added": [], "removed": [], "changed": []}
+    stage1 = ["組み立て：%s" % p for p in preview_problems]
+    if parts["manifest"] is not None and parts["task"] is not None:
+        os.makedirs(preview)
+        try:
+            render_parts(parts, preview, template, fixed_values(parts["manifest"], values["marketplace_name"], date), preview_warnings)
+            finish_manifest(preview, manifest["version"], manifest["carried"])
+        except Refusal as e:
+            stage1 += ["組み立て：%s" % p for p in e.problems]
+            warnings.append("下見を描けませんでした。1段目の結果（stage1）の「組み立て」の問題を直してください。")
+            shutil.rmtree(preview, ignore_errors=True)
+        else:
+            base = compare_trees(plugin, tracked, preview)
+            stage1 += preview_stage1(preview, template, warnings)
+    else:
+        warnings.append("下見を描けませんでした。1段目の結果（stage1）の「組み立て」の問題を直してください。")
+    return {"ok": True, "generated": True, "slots": status, "files": len(keep), "delete": sorted(gone),
+            "base": base, "stage1": stage1}
+
+
+# ---------------------------------------------------------------- 直す（change）
+
+def knowledge_number(ident: str) -> int:
+    return int(ident.split("-", 1)[1])
+
+
+def reconcile_knowledge(original: List[Dict[str, Any]], removed: List[Dict[str, Any]], decided: List[Dict[str, Any]],
+                        problems: List[str]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """決まりの番号を合わせる（REQ-058、BLUEPRINT 4.2）。O＝元の一覧、R＝元の外した一覧、S＝記録の決まった行。
+    (書く決まりの一覧, 書く外した決まりの一覧, 要約 {kept, added, replaced, removed})。"""
+    o_rows = {r["id"]: r for r in original if isinstance(r.get("id"), str) and KNOWLEDGE_ID.match(r["id"])}
+    r_ids = {r["id"] for r in removed if isinstance(r.get("id"), str) and KNOWLEDGE_ID.match(r["id"])}
+    used = max([knowledge_number(i) for i in list(o_rows) + list(r_ids)], default=0)
+    s_rows = {r["id"]: r for r in decided}
+    kept: List[str] = []
+    for oid, o in o_rows.items():   # ① 元の番号は、同じ中身で残るか、外れるか
+        s = s_rows.get(oid)
+        if s is None:
+            continue
+        if (s["kind"], s["item"], s["text"]) != (o.get("kind"), o.get("item"), o.get("text")):
+            problems.append("決まり %s の中身（種類・項目・文）が、元の決まりの一覧（%s）と違うのに、同じ番号のままです。"
+                            "中身を直した決まりは、元の番号を外して新しい番号にしてください（REQ-058）。" % (oid, KNOWLEDGE_REL))
+        else:
+            kept.append(oid)
+    for sid in s_rows:   # ② 新しい番号は、これまでに使ったどの番号よりも後
+        if sid in o_rows:
+            continue
+        if sid in r_ids:
+            problems.append("決まり %s の番号は、前に外した番号です。外した番号は、ほかの決まりに使えません（REQ-058）。" % sid)
+        elif knowledge_number(sid) <= used:
+            problems.append("新しい決まり %s の番号が、これまでに使った番号（外した番号を含めて K-%02d まで）より後になっていません（REQ-058）。" % (sid, used))
+    replaced_by: Dict[str, str] = {}
+    for sid, s in s_rows.items():   # ③ 付け直した元の番号は、元の一覧にあって、今回外すもの
+        source = s.get("replaces")
+        if source is None:
+            continue
+        if not isinstance(source, str) or source not in o_rows or source in s_rows or sid in o_rows:
+            problems.append("決まり %s が付け直した元の番号 %s が、元の決まりの一覧にないか、今回も残っています。" % (sid, show(source)))
+        elif source in replaced_by:
+            problems.append("元の決まり %s を、2つの決まり（%s と %s）が付け直しています。" % (source, replaced_by[source], sid))
+        else:
+            replaced_by[source] = sid
+    rows = sorted(s_rows.values(), key=lambda r: knowledge_number(r["id"]))
+    gone = [oid for oid in o_rows if oid not in s_rows]
+    removed_rows = [dict(r) for r in removed]
+    for oid in gone:   # ④ 外した一覧は、前のものに今回外したものを足す
+        row = {"id": oid, "kind": o_rows[oid].get("kind"), "item": o_rows[oid].get("item"), "text": o_rows[oid].get("text")}
+        if oid in replaced_by:
+            row["replacedBy"] = replaced_by[oid]
+        removed_rows.append(row)
+    summary = {
+        "kept": kept,
+        "added": [r["id"] for r in rows if r["id"] not in o_rows and r["id"] not in replaced_by.values()],
+        "replaced": [{"from": source, "to": sid} for source, sid in sorted(replaced_by.items(), key=lambda p: knowledge_number(p[0]))],
+        "removed": [oid for oid in gone if oid not in replaced_by],
+    }
+    return rows, removed_rows, summary
+
+
+def confirmed_criteria(confirmation: Dict[str, Any], decided: List[Dict[str, Any]], original: List[Dict[str, str]],
+                       problems: List[str]) -> List[Dict[str, str]]:
+    """直す前の確認の合否の基準の番号（confirmation.criteria。BLUEPRINT 4.4）を確かめて、作業の定義の基準にする。"""
+    entries = confirmation.get("criteria")
+    by_knowledge = {r["id"]: r for r in decided if r["kind"] == "criterion"}
+    if not by_knowledge:
+        problems.append("ヒアリングの記録に、状態が「決まった」の合否の決め方のナレッジが1件もありません。"
+                        "作業の定義の合否の基準は、これをもとに作るので、1件以上が要ります。")
+        return []
+    if not isinstance(entries, list) or not entries:
+        problems.append("ヒアリングの記録に、直す前の確認で示した合否の基準の番号（confirmation.criteria）がありません。")
+        return []
+    old_ids = {c["knowledge"]: c["id"] for c in original}
+    taken = {c["id"] for c in original}
+    seen_ids: Set[str] = set()
+    seen_knowledge: Set[str] = set()
+    criteria: List[Dict[str, str]] = []
+    for number, entry in enumerate(entries, 1):
+        where = "直す前の確認の合否の基準（%d 番目）" % number
+        cid = entry.get("id") if isinstance(entry, dict) else None
+        kid = entry.get("knowledge") if isinstance(entry, dict) else None
+        if not isinstance(cid, str) or not CRITERION_ID.match(cid):
+            problems.append("%sの番号 %s が C-数字（2桁以上）の形ではありません。" % (where, show(cid)))
+            continue
+        if cid in seen_ids:
+            problems.append("%sの番号 %s が重なっています。" % (where, cid))
+            continue
+        if not isinstance(kid, str) or kid not in by_knowledge:
+            problems.append("%s（%s）の決まり %s は、決まった合否の決め方の決まりではありません。" % (where, cid, show(kid)))
+            continue
+        if kid in seen_knowledge:
+            problems.append("%s（%s）の決まり %s が、ほかの基準と重なっています。" % (where, cid, kid))
+            continue
+        if kid in old_ids and cid != old_ids[kid]:
+            problems.append("引き継いだ基準（決まり %s）の番号が、元の作業の定義（%s）と違います（確認：%s）。引き継いだ基準は元の番号のままにしてください。"
+                            % (kid, old_ids[kid], cid))
+            continue
+        if kid not in old_ids and cid in taken:
+            problems.append("新しい基準（決まり %s）の番号 %s が、元の作業の定義の基準の番号と重なっています。元の番号の続きにしてください。" % (kid, cid))
+            continue
+        seen_ids.add(cid)
+        seen_knowledge.add(kid)
+        criteria.append({"id": cid, "text": by_knowledge[kid]["text"], "knowledge": kid})
+    lost = [k for k in by_knowledge if k not in seen_knowledge and all(
+        not (isinstance(e, dict) and e.get("knowledge") == k) for e in entries)]
+    if lost:
+        problems.append("決まった合否の決め方の決まり %s が、直す前の確認の合否の基準（confirmation.criteria）にありません。" % "、".join(lost))
+    return criteria
+
+
+def version_problem(current: Optional[str], new: Any) -> Optional[str]:
+    """新しい版の確かめ（BLUEPRINT D16）。"""
+    if not isinstance(new, str) or not VERSION_RE.match(new):
+        return "ヒアリングの記録に、直す前の確認でよいと答えた版（confirmation.version。例：0.2.0）がありません。"
+    if isinstance(current, str) and VERSION_RE.match(current):
+        if tuple(int(n) for n in VERSION_RE.match(new).groups()) <= tuple(int(n) for n in VERSION_RE.match(current).groups()):
+            return "新しい版 %s が、今の版 %s より大きくありません。" % (new, current)
+    return None
+
+
+def remove_empty_parents(path: str, stop: str) -> None:
+    parent = os.path.dirname(path)
+    while is_inside(parent, stop):
+        try:
+            os.rmdir(parent)
+        except OSError:
+            break
+        parent = os.path.dirname(parent)
+
+
+def roll_back(plugin: str) -> None:
+    """入れ替えの途中で失敗したとき、プラグインのフォルダを HEAD の中身に戻す（外されたファイルと作業用の一時フォルダには触れない）。"""
+    git(["checkout", "HEAD", "--", "."], plugin)
+    git(["clean", "-fdq", "--", ".", ":(exclude)%s" % WORK_NAME], plugin)
+
+
+def exec_bits(path: str) -> int:
+    return os.stat(path).st_mode & 0o111 if os.name != "nt" else 0
+
+
+def name_overlaps(manifest: Dict[str, Any], parts_files: List[str]) -> List[str]:
+    """入口のスキルのフォルダと作業エージェントの定義の場所に、parts/files のファイルがあれば、断る文。
+    作っていないプラグインでは、extract がその場所のファイルを消さずに残す（名前は後で決まるため）。"""
+    problems: List[str] = []
+    entry = manifest["entry_name"]
+    inside = [r for r in parts_files if r.startswith("skills/%s/" % entry)]
+    if inside:
+        problems.append("入口のスキル %s のフォルダ（skills/%s/）に、parts/files のファイル（%s）が重なります。元のプラグインのスキルなら、"
+                        "入口のスキルに別の名前を付けてください（parts/manifest.json の entry_skill の name）。" % (entry, entry, listed(inside)))
+    for worker in manifest["workers"]:
+        rel = "%s/%s.agent.md" % (AGENTS_REL, worker["agent"])
+        if rel in parts_files:
+            problems.append("作業エージェント %s の定義の場所（%s）に、parts/files の同じ場所のファイルが重なります。元のプラグインのエージェントなら、"
+                            "作業エージェントに別の名前を付けてください（parts/manifest.json と作業の定義の workers）。" % (worker["agent"], rel))
+    return problems
+
+
+def change(hearing: str, work: str, plugin: str, template: Optional[str] = None, today: Optional[str] = None) -> Dict[str, Any]:
+    """直す内容で描き、プラグインのフォルダのファイルを入れ替える。コミットはしない。断るときは Refusal を投げる。"""
+    template = template or DEFAULT_TEMPLATE
+    today = today or datetime.date.today().isoformat()
+    hearing, work, plugin = os.path.abspath(hearing), os.path.abspath(work), os.path.abspath(plugin)
+
+    # ① 関門
+    state = load_state(hearing)
+    info = state.get("change")
+    if not isinstance(info, dict):
+        raise Refusal("ヒアリングの記録に、直すプラグインの記録（change）がありません。今のプラグインを直す流れで始めてから、直してください。")
+    if os.path.basename(os.path.normpath(work)) != WORK_NAME:
+        raise Refusal("--work は、作業フォルダの中の %s にしてください（今は %s）。" % (WORK_NAME, work))
+    folder = info.get("folder")
+    if not isinstance(folder, str) or real(folder) != real(plugin):
+        raise Refusal("ヒアリングの記録の直すフォルダ（%s）と、--plugin（%s）が違います。" % (show(folder), plugin))
+    confirmation = state["confirmation"]
+    problems: List[str] = []
+    warnings: List[str] = []
+    extracted = read_json(os.path.join(work, EXTRACT_JSON), "取り出しの結果（%s/%s）" % (WORK_NAME, EXTRACT_JSON), problems)
+    if problems:
+        raise Refusal(problems + ["先に extract で取り出してください。"])
+    if not isinstance(extracted, dict) or extracted.get("generated") != info.get("generated"):
+        raise Refusal("ヒアリングの記録と取り出しの結果で、クリエイターが作ったプラグインかの見分けが違います（記録：%s／取り出し：%s）。"
+                      "もう一度 extract で取り出してから、確かめ直してください。"
+                      % (show(info.get("generated")), show(extracted.get("generated") if isinstance(extracted, dict) else None)))
+    if extracted.get("plugin") != real(plugin) or not re.match(r"^[0-9a-f]{7,64}$", str(extracted.get("head"))):
+        raise Refusal("取り出しの結果（%s/%s）は、このプラグインのフォルダ（%s）から取り出したものではありません。"
+                      "もう一度 extract で取り出してから、確かめ直してください。" % (WORK_NAME, EXTRACT_JSON, plugin))
+
+    # ② 直す直前の確かめ（起動したフォルダは、作業用の一時フォルダの親）
+    checked = change_check(plugin, os.path.dirname(work), hearing, template)
+    name, generated = checked["name"], checked["generated"]
+    if generated != info.get("generated"):
+        raise Refusal("プラグインのフォルダの中身が、取り出したときと変わっています（クリエイターが作ったプラグインかの見分けが違います）。"
+                      "もう一度 extract で取り出してから、確かめ直してください。")
+    # 取り出した後のコミットで、プラグインのフォルダが変わっていない（変わっていれば、取り出した部品が古く、その変更を消してしまう）
+    same = git(["diff", "--quiet", "--no-ext-diff", extracted["head"], "HEAD", "--", ".", ":(exclude)%s" % WORK_NAME], plugin)
+    if same.returncode != 0:
+        raise Refusal("取り出した後に、プラグインのフォルダ（%s）の中身が変わるコミットがありました（取り出したとき：%s／今：%s）。"
+                      "取り出した部品は古いので、このまま直すと、その変更を消してしまいます。もう一度 extract で取り出してから、確かめ直してください。"
+                      % (plugin, extracted["head"][:12], git_ok(["rev-parse", "--short=12", "HEAD"], plugin).strip()))
+    version = confirmation.get("version")
+    message = version_problem(checked["version"], version)
+    if message:
+        problems.append(message)
+
+    # ③ 決まりの番号と合否の基準の番号
+    original, removed, task = original_records(plugin, name) if generated else ([], [], {})
+    if generated:   # 決まりの一覧が、取り込んだとき（記録の change.carried）から変わっていない
+        now_ids = sorted(str(r.get("id")) for r in original)
+        carried = info.get("carried")
+        then_ids = sorted(str(i) for i in carried) if isinstance(carried, list) else None
+        if now_ids != then_ids:
+            raise Refusal("決まりの一覧（%s）が、直す流れを始めて取り込んだときから変わっています（取り込んだとき：%s／今：%s）。"
+                          "取り込んだときの一覧で確かめた内容で直すと、その後の変更を消してしまうので、直せません。"
+                          "今のプラグインを直す流れを、始めからやり直してください。"
+                          % (KNOWLEDGE_REL, "、".join(then_ids) if then_ids else "なし", "、".join(now_ids) or "なし"))
+    decided = decided_knowledge(state, problems)
+    rows, removed_rows, summary = reconcile_knowledge(original, removed, decided, problems)
+    criteria = confirmed_criteria(confirmation, decided, original_criteria(task), problems)
+
+    # ④ parts の確かめ
+    parts = prepare_parts(work, template, rows, criteria, confirmation, problems, warnings)
+    parts["knowledge_removed"] = removed_rows
+    manifest = parts["manifest"]
+    if manifest is not None and manifest["plugin_name"] != name:
+        problems.append("parts/manifest.json の plugin_name（%s）が、直すプラグインの名前（%s）と違います。名前は変えられません。"
+                        % (manifest["plugin_name"], name))
+    if manifest is not None:   # 選んだ入口のスキルと作業エージェントの名前が、引き継ぐファイル（元のスキルやエージェント）と重ならない
+        problems += name_overlaps(manifest, parts["files"])
+    # ⑤ 示されたスキル（記録の漏れ、プラグインの中のスキル）
+    skills = imported_skills(state, os.path.dirname(work), checked["plugin"], problems)
+    if problems or manifest is None or parts["task"] is None:
+        raise Refusal(problems or ["組み立ての設定を読めませんでした。"])
+
+    # ⑥ 作業用の一時フォルダの中に描く
+    stage_root = os.path.join(work, "stage")
+    stage = os.path.join(stage_root, name)
+    shutil.rmtree(stage_root, ignore_errors=True)
+    os.makedirs(stage)
+    date = constitution_date(plugin) if generated else None
+    values = fixed_values(manifest, marketplace_of(plugin, name) if generated else name, date or today)
+    try:
+        render_parts(parts, stage, template, values, warnings)
+        finish_manifest(stage, version, (read_manifest(plugin, []) or {}).get("carried", {}))   # 読めることは change_check で確かめてある
+        drawn = walk_files(stage)
+        conflicts = name_conflicts(skills, plugin_skills(stage, drawn))   # ⑤ 名前の重なり（最後の守り）
+        if conflicts:
+            raise Refusal(["足すスキル %s（%s）の名前が、示されたスキル（%s）の名前と同じです。同じ名前だと、示されたスキルが読み込まれている"
+                           "作業フォルダで、プラグインのスキルが使われません。parts の %s のフォルダの名前と SKILL.md の name を、別の名前にしてください。"
+                           % (c["name"], c["plugin_skill"], c["user_skill"], c["plugin_skill"]) for c in conflicts])
+    except BaseException:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+
+    # ⑦ 入れ替え：管理されているファイルのうち描いたものにないものを消し、描いたものを写す
+    head = git_ok(["rev-parse", "HEAD"], plugin).strip()
+    tracked = tracked_files(plugin)
+    have, want = set(tracked), set(drawn)
+    added = sorted(want - have)
+    gone = sorted(have - want)
+    changed = []
+    for rel in sorted(want & have):
+        old, new = os.path.join(plugin, *rel.split("/")), os.path.join(stage, *rel.split("/"))
+        if os.path.islink(old) or not os.path.isfile(old) or read_bytes(old) != read_bytes(new) or exec_bits(old) != exec_bits(new):
+            changed.append(rel)
+    try:
+        for rel in gone:
+            path = os.path.join(plugin, *rel.split("/"))
+            os.remove(path)
+            remove_empty_parents(path, plugin)
+        for rel in added + changed:
+            target = os.path.join(plugin, *rel.split("/"))
+            if os.path.islink(target):
+                os.remove(target)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(os.path.join(stage, *rel.split("/")), target)
+    except BaseException as e:
+        roll_back(plugin)
+        shutil.rmtree(stage_root, ignore_errors=True)
+        if isinstance(e, Exception):
+            raise Refusal("プラグインのフォルダのファイルを入れ替える途中で失敗したので、直す前の状態に戻しました（%s: %s）。"
+                          "原因を取り除いてから、もう一度 change を動かしてください。" % (type(e).__name__, e))
+        raise
+
+    # ⑧ 変わったファイルの一覧を残す
+    files = sorted(set(added) | set(changed) | set(gone))
+    write_text(os.path.join(work, CHANGED_JSON), json_text({"plugin": checked["plugin"], "head": head, "files": files}))
+    shutil.rmtree(stage_root, ignore_errors=True)
+    return {
+        "ok": True,
+        "plugin": checked["plugin"],
+        "version": {"from": checked["version"], "to": version},
+        "added": added,
+        "removed": gone,
+        "changed": changed,
+        "knowledge": summary,
+        "criteria": [{"id": c["id"], "knowledge": c["knowledge"]} for c in criteria],
+        "warnings": warnings,
+    }
+
+
+# ---------------------------------------------------------------- 試験の直しの見張り（change-guard）
+
+def change_guard(plugin: str, work: str, restore: bool = False) -> Dict[str, Any]:
+    """changed.json の一覧の外で変わったファイルを示す（BLUEPRINT D19）。restore なら HEAD に戻す。"""
+    plugin, work = os.path.abspath(plugin), os.path.abspath(work)
+    problems: List[str] = []
+    data = read_json(os.path.join(work, CHANGED_JSON), "描き直しで変わったファイルの一覧（%s/%s）" % (WORK_NAME, CHANGED_JSON), problems)
+    if problems:
+        raise Refusal(problems + ["change で直した後に使ってください。"])
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+        raise Refusal("描き直しで変わったファイルの一覧（%s/%s）の形が違います。" % (WORK_NAME, CHANGED_JSON))
+    if not os.path.isdir(plugin):
+        raise Refusal("直すプラグインのフォルダ %s がありません。" % plugin)
+    _root, prefix = git_place(plugin)
+    allowed = set(files)
+    unexpected = [p for p in status_paths(plugin, prefix) if p not in allowed]
+    restored: List[str] = []
+    remaining = unexpected
+    if restore and unexpected:
+        for rel in unexpected:
+            if git(["cat-file", "-e", "HEAD:./%s" % rel], plugin).returncode == 0:   # 管理されている：HEAD に戻す
+                git_ok(["--literal-pathspecs", "checkout", "HEAD", "--", rel], plugin)
+            else:   # 管理されていない：消す
+                git(["--literal-pathspecs", "rm", "-q", "--cached", "--ignore-unmatch", "--", rel], plugin)
+                path = os.path.join(plugin, *rel.split("/"))
+                if os.path.islink(path) or os.path.isfile(path):
+                    os.remove(path)
+                    remove_empty_parents(path, plugin)
+            restored.append(rel)
+        remaining = [p for p in status_paths(plugin, prefix) if p not in allowed]
+    return {"ok": not remaining, "unexpected": unexpected, "restored": restored}
+
+
+# ---------------------------------------------------------------- コミット（commit）
+
+def undo_command(plugin: str, name: str, commit: str) -> str:
+    """直す前に戻すコマンド（REQ-059、REQ-060）。直したコミットを打ち消し、プラグインのフォルダの中だけをコミットする。
+    --no-commit を付けるのは、付けないと、ほかのフォルダで git add してある変更があると断るためである（git 2.43 で確かめた）。
+    打ち消すのは直したコミットだけなので、後からのコミットは残る。コミットしていない変更が直したファイルにあれば断る。
+    && は、Windows PowerShell 5.1 では使えない（何も動かずに誤りになる）。PowerShell 7、cmd.exe、sh では使える。"""
+    shown = shown_path(plugin)
+    what = "%s の変更を戻した" % name if NAME_RE.fullmatch(name) else "直した変更を戻した"
+    return ('git -C %s revert --no-commit %s && git -C %s commit -m "plugin-creator: %s" -- .'
+            % (shown, commit, shown, what))
+
+
+def commit_change(plugin: str, message: str, work: Optional[str] = None) -> Dict[str, Any]:
+    """プラグインのフォルダの中だけをコミットし、印のタグを付け直し、作業用の一時フォルダを消す。push はしない。"""
+    plugin = os.path.abspath(plugin)
+    if not os.path.isdir(plugin):
+        raise Refusal("直すプラグインのフォルダ %s がありません。" % plugin)
+    if not message.strip():
+        raise Refusal("コミットの説明（--message）が空です。")
+    if work is not None:
+        work = os.path.abspath(work)
+        if os.path.basename(os.path.normpath(work)) != WORK_NAME or is_within(plugin, work):
+            raise Refusal("--work は、作業フォルダの中の %s にしてください（今は %s）。" % (WORK_NAME, work))
+    problems: List[str] = []
+    manifest = read_manifest(plugin, problems)
+    if manifest is None:
+        raise Refusal(problems)
+    _root, prefix = git_place(plugin)
+    warnings: List[str] = []
+    exclude = ":(exclude)%s" % WORK_NAME
+    git_ok(["add", "-A", "--"] + add_paths(plugin), plugin)
+    staged = git(["diff", "--cached", "--quiet", "--", "."], plugin)
+    if staged.returncode not in (0, 1):
+        raise Refusal("git diff に失敗しました：%s" % (staged.stderr or staged.stdout).strip())
+    commit_id = undo = None
+    if staged.returncode == 1:
+        # 署名も、コミット前のフック（--no-verify）も使わない。ほかのフォルダで git add 済みの変更は入れない（パスを付けたコミット）
+        command = ["-c", "commit.gpgsign=false"]
+        if not git(["config", "user.name"], plugin).stdout.strip() or not git(["config", "user.email"], plugin).stdout.strip():
+            command += ["-c", "user.name=%s" % FALLBACK_GIT_NAME, "-c", "user.email=%s" % FALLBACK_GIT_EMAIL]
+        git_ok(command + ["commit", "-q", "--no-verify", "-m", message, "--", ".", exclude], plugin)
+        commit_id = git_ok(["rev-parse", "HEAD"], plugin).strip()
+        parent = git(["rev-parse", "-q", "--verify", commit_id + "^"], plugin)
+        if parent.returncode == 0:   # 最初のコミットを打ち消すと、プラグインのフォルダがなくなる
+            undo = undo_command(plugin, manifest["name"], commit_id)
+    else:
+        warnings.append("コミットする変更がありませんでした。")
+    tag: Optional[str] = tag_name(prefix, manifest["name"])
+    try:   # 署名を求める設定でも、署名しない軽いタグにする（署名つきのタグは説明の入力を待つため）
+        tagged = git(["-c", "tag.gpgSign=false", "tag", "-f", tag], plugin)
+        reason = (tagged.stderr or tagged.stdout).strip() if tagged.returncode != 0 else None
+    except Refusal as e:   # 時間切れなど
+        reason = "、".join(p.rstrip("。") for p in e.problems)
+    if reason is not None:   # BLUEPRINT D40：コミットは残し、タグなしで進める
+        warnings.append("印のタグ %s を付けられませんでした（%s）。コミットは残っています。" % (tag, reason))
+        tag = None
+    removed = False
+    if work is not None and os.path.lexists(work):
+        try:
+            shutil.rmtree(work)
+            removed = True
+        except OSError as e:
+            warnings.append("作業用の一時フォルダ（%s）を消せませんでした（%s）。手で消してください。" % (work, e))
+    return {
+        "ok": True,
+        "commit": commit_id,
+        "tag": tag,
+        "revert": undo,
+        "work_folder_removed": removed,
+        "warnings": warnings,
+    }
+
+
 # ---------------------------------------------------------------- 入口
 
 def emit(result: Dict[str, Any]) -> None:
@@ -1245,7 +2639,8 @@ def emit(result: Dict[str, Any]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="生成プラグインの組み立てと、土台の確かめ。結果は標準出力に JSON で出す。")
+    parser = argparse.ArgumentParser(description="生成プラグインの組み立てと、土台の確かめ。今あるプラグインを直すときの確かめ・取り出し・直す・コミットもする。"
+                                                 "結果は標準出力に JSON で出す。")
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build", help="生成プラグインを組み立てる")
     b.add_argument("--hearing", required=True, help="ヒアリングの記録 state.json のパス")
@@ -1254,12 +2649,42 @@ def main(argv: Optional[List[str]] = None) -> int:
     c = sub.add_parser("check-base", help="土台のファイルがひな形と同じかを確かめる")
     c.add_argument("--out", required=True, help="生成プラグインのフォルダ")
     c.add_argument("--restore", action="store_true", help="違うファイルをひな形から入れ直す")
+    k = sub.add_parser("change-check", help="直すプラグインのフォルダを、直す前に確かめる（読むだけ）")
+    k.add_argument("--plugin", required=True, help="直すプラグインのフォルダ")
+    k.add_argument("--cwd", required=True, help="Copilot CLI を起動したフォルダ")
+    k.add_argument("--hearing", help="ヒアリングの記録 state.json のパス（Copilot CLI の設定フォルダを知るのに使う）")
+    e = sub.add_parser("extract", help="直すプラグインから parts/ を取り出し、今のひな形で描いた下見と比べる")
+    e.add_argument("--plugin", required=True, help="直すプラグインのフォルダ")
+    e.add_argument("--work", required=True, help="作業用の一時フォルダ <作業フォルダ>/.plugin-creator-work")
+    e.add_argument("--hearing", help="ヒアリングの記録 state.json のパス（示されたスキルとの名前の重なりを確かめる）")
+    g = sub.add_parser("change", help="直す内容で描き、プラグインのフォルダのファイルを入れ替える（コミットしない）")
+    g.add_argument("--hearing", required=True, help="ヒアリングの記録 state.json のパス")
+    g.add_argument("--work", required=True, help="作業用の一時フォルダ <作業フォルダ>/.plugin-creator-work")
+    g.add_argument("--plugin", required=True, help="直すプラグインのフォルダ")
+    d = sub.add_parser("change-guard", help="描き直しで変えたファイルのほかに、変わったファイルがないかを見る")
+    d.add_argument("--plugin", required=True, help="直すプラグインのフォルダ")
+    d.add_argument("--work", required=True, help="作業用の一時フォルダ <作業フォルダ>/.plugin-creator-work")
+    d.add_argument("--restore", action="store_true", help="一覧の外で変わったファイルを、直す前（HEAD）に戻す")
+    m = sub.add_parser("commit", help="プラグインのフォルダの中だけをコミットし、印のタグを付ける（push しない）")
+    m.add_argument("--plugin", required=True, help="直すプラグインのフォルダ")
+    m.add_argument("--message", required=True, help="コミットの説明")
+    m.add_argument("--work", help="消す作業用の一時フォルダ <作業フォルダ>/.plugin-creator-work")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
             result = build(args.hearing, args.work, args.out)
-        else:
+        elif args.command == "check-base":
             result = check_base(args.out, args.restore)
+        elif args.command == "change-check":
+            result = change_check(args.plugin, args.cwd, args.hearing)
+        elif args.command == "extract":
+            result = extract(args.plugin, args.work, args.hearing)
+        elif args.command == "change":
+            result = change(args.hearing, args.work, args.plugin)
+        elif args.command == "change-guard":
+            result = change_guard(args.plugin, args.work, args.restore)
+        else:
+            result = commit_change(args.plugin, args.message, args.work)
     except Refusal as e:
         emit({"ok": False, "problems": e.problems})
         return 1

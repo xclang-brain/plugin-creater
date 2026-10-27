@@ -5,7 +5,7 @@
 //   one-plugin-generated          生成プラグインが 1 つできた
 //   stage1 / stage2               1・2段目の試験に通る（REQ-039）
 //   embedded:<ナレッジ>           ナレッジが組み込まれた（markers.embedded にすべて当たる）。聞かれないと話さないナレッジを含む
-//   not-embedded:<ナレッジ>       「違う」「たまたま」の決まりが入っていない（markers.excluded に 1 つも当たらない。REQ-017）
+//   not-embedded:<ナレッジ>       「違う」「たまたま」の決まりが入っていない（markers.excluded に 1 つも当たらない。REQ-017。1・2段目の試験のコードは見ない）
 //   task:<ナレッジ>               EVAL の課題と合否の基準が、ナレッジの言葉を含む（markers.task にすべて当たる。REQ-038）
 //   input-files-in-repo           role が input の示すファイルが、同じ中身で生成プラグインに入っている（REQ-038）
 //   inner-deliverable             内側の EVAL の結果（プラグインありのスコアが基準以上）
@@ -13,21 +13,29 @@
 //   no-generation-before-approval 承認の前に生成しなかった（REQ-020）
 //   hurry-options                 急ぐ合図の後に、残りの項目と 3 つの進め方を示す問いがある（REQ-015）
 //   first-run                     まだやったことのない作業で、想定の 1 回をたどった（REQ-016）
+//   screen-url-shown              画面を開くツール（open）の返り値の URL を、最初の問いより前にチャットの文で示した（REQ-043。腕 with だけ。
+//                                 画面を開くツールは、クリエイターのエクステンションの代わりの部品が、腕 with にだけ出すため）
 //   main-model                    メインのエージェントが、指定のモデルで動いた（REQ-045。腕 with だけ）
 //   worker-model                  作業エージェントが、費用の低いモデルで動いた（REQ-046。腕 with で、生成プラグインができたときだけ）
 // 採点とは別に、設計書（testing.md 6.5）が「記録する」とした数を数える（countRecorded。合否には入れない）：
-//   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか。
+//   問いの数、1 回の質問のツールの呼び出しの問いの欄の数、保留の項目と AI の判断の数、記録のツールが断った回数とその後に直したか、
+//   英語の覚え書きのようなチャットの文の数、最初の問いより前にこれからの流れを示したか。
+// 画面の URL の観点（gradeScreenUrlShown）は、改善の採点（outer-grade-change.mjs）も使う。
 // 合格に求めること（6.5 の表）：思考力の高いモデルは「上のすべて」、Claude Haiku 5.5 は all-items-heard と no-generation-before-approval の 2 点。
 // 開発者が答えたとき（answerer が human。testing.md 6.7）：ナレッジの一覧（persona.knowledge）が空なので、ナレッジにもとづく観点は出ない。
 //   ユーザー役の誤りは確かめず、会話例の候補にしない。内側の EVAL の結果は、呼ぶ側が渡さない（点数に入れず、別に示す）。
 // 採点しない観点（notGraded。続きから始めた実行で、前の会話を確かに読み直せなかったときなど）は、grades に入れず、理由を notGraded に残す。
-//   点数と合否には入らない。
+//   点数と合否には入らない。ディスクがいっぱいで止まった観点（1・2段目の不合格がすべてディスクの誤り、内側の EVAL を始めなかったなど）も、
+//   環境で止まったとして採点しない（environmentNotGraded。notGraded の項目に environment: true を付ける。改善の採点も同じ）。
+//   環境で止まった観点があるか、クリエイターのツールの結果にディスクの誤りが出た回は、environment を付ける（environmentOf。結果の要約で、
+//   比べる数に入れない。outer.mjs の summarizeAll）。
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { ITEMS } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
+import { diskErrorResults } from './disk.mjs';
 import { INSTRUCTION_WORDS } from './user-role.mjs';
 
 // ---- 決まった値 -------------------------------------------------------------------------------------
@@ -116,6 +124,13 @@ export function personaFileHashes(personaFiles) {
 
 const isInputCopy = (rel) => /(^|\/)tests\/eval\/[^/]+\/inputs\//.test(rel);
 
+/**
+ * 生成プラグイン（直したプラグイン）の1・2段目の試験のコード（rel はプラグインの根からの相対）。作業するエージェントが作業のときに読まないので、
+ * 入ってはいけない書き方（markers.excluded）の証拠にしない。正しい決まりを確かめる否定の試験（「前のアドレスには応答しない」）が、
+ * 古い書き方の文字を持つためである（testing.md 6.5、外側の EVAL〔改善〕3回目）。作る流れ（scopes）と直す流れ（outer-grade-change.mjs）で同じものを使う
+ */
+export const isTestCode = (rel) => /^tests\/stage[12]\//.test(rel);
+
 /** 見る範囲（personas/FORMAT.md 2.2 の markers）。入力のファイルの写しは、組み込みの証拠にしない */
 export function scopes(generatedFiles, personaFileList) {
   const inputHashes = new Set(personaFileList.map((f) => f.sha256));
@@ -127,8 +142,8 @@ export function scopes(generatedFiles, personaFileList) {
   return {
     // 組み込み：ナレッジの一覧そのもの（tests/knowledge.json）は、ナレッジが記録されただけの印なので、証拠にしない
     embedded: texts((rel) => rel !== KNOWLEDGE_LIST),
-    // 入ってはいけないもの：一覧も含める（外したナレッジは一覧に入らないはずなので、入っていれば誤り）
-    excluded: texts(() => true),
+    // 入ってはいけないもの：一覧も含める（外したナレッジは一覧に入らないはずなので、入っていれば誤り）。1・2段目の試験のコードは含めない（isTestCode）
+    excluded: texts((rel) => !isTestCode(rel)),
     // EVAL の課題と合否の基準のファイル
     task: generatedFiles
       .filter((f) => f.text !== null && !isInputCopy(f.rel) && (/(^|\/)tests\/eval\/[^/]+\/eval\.json$/.test(f.rel) || /(^|\/)task\.json$/.test(f.rel)))
@@ -137,25 +152,95 @@ export function scopes(generatedFiles, personaFileList) {
   };
 }
 
+/**
+ * 環境で止まったので採点しない観点（id → 理由）。ディスクがいっぱいで止まったものは、生成プラグインやクリエイターの誤りではないので、
+ * 点数と合否に入れない（testing.md 6.5）。outer-run.mjs の runGeneratedStages と runOuterOnce が印を付ける。
+ *   - 1・2段目の段階の不合格がすべてディスクの誤り（ENOSPC・EIO。印 diskErrorsOnly）なら、その段階
+ *   - 1・2段目の入口（tests/run.py）が結果を出せずに落ち、その理由がディスクの誤り（印 diskError）なら、1・2段目の両方。
+ *     道具が足りなくて止まったときなど、ほかの理由で動かせなかったときは、これまでどおり不合格にする
+ *   - 内側の EVAL が、ディスクの空きが足りずに始めなかった（inner.code が disk_low）なら、inner-deliverable
+ * 外側の EVAL〔改善〕3回目では、ディスクがいっぱいで 2段目の 78 件が ENOSPC で落ち、空きのある場所では 486 件すべて合格した
+ */
+export function environmentNotGraded(stages, inner = null) {
+  const out = {};
+  const full = '環境で止まった（ディスクがいっぱい）';
+  if (stages?.skipped) {
+    if (stages.diskError) for (const id of ['stage1', 'stage2']) out[id] = `${full}：1・2段目の入口がディスクの誤りで落ちた（${stages.reason ?? ''}）。点数と合否に入れない`;
+  } else {
+    for (const [id, n] of [['stage1', 1], ['stage2', 2]]) {
+      const stage = stages?.[id];
+      if (stage?.diskErrorsOnly) out[id] = `${full}：${n}段目の不合格 ${stage.counts?.failed ?? stage.failures?.length} 件が、すべて ENOSPC か EIO。点数と合否に入れない`;
+    }
+  }
+  if (inner?.code === 'disk_low') out['inner-deliverable'] = `${full}：ディスクの空きが足りず、内側の EVAL を始めなかった。点数と合否に入れない`;
+  return out;
+}
+
+/**
+ * 環境（ディスクがいっぱい）の影響を受けた回か。環境で採点しなかった観点（skipped の environment）があるか、クリエイター（とそのサブ
+ * エージェント）のツールの結果にディスクの誤りが出た（disk.mjs の diskErrorResults）なら、影響を受けたとする。採点した観点の数が
+ * ほかの回と違ううえ、クリエイターの振る舞いも変わる（3回目では、Chromium を入れられずに理由を調べ続け、最後の報告も変わった）ので、
+ * 結果の要約で、平均点・合格の数・あり・なしの差に入れず、別に数える（testing.md 6.5）。影響がなければ null
+ * @returns {null|{ notGraded: string[], toolResults: number[] }} toolResults はディスクの誤りが出たツールの結果の番号（seq）
+ */
+export function environmentOf({ items, skipped }) {
+  const notGraded = skipped.filter((g) => g.environment).map((g) => g.id);
+  const toolResults = diskErrorResults(items);
+  return notGraded.length || toolResults.length ? { notGraded, toolResults } : null;
+}
+
+/** 合否（verdict）に足す印：採点しなかった観点（notGraded）か、環境の影響（environment）があれば partial */
+export function partialOf(skipped, env) {
+  if (!skipped.length && !env) return {};
+  return { partial: true, ...(skipped.length ? { notGraded: skipped.map((g) => g.id) } : {}), ...(env ? { environment: true } : {}) };
+}
+
 // ---- 会話の記録から ---------------------------------------------------------------------------------------
 
-/** 会話の記録（items）から、問いと答えの組を取り出す */
+/**
+ * 会話の記録（items）から、問いと答えの組を取り出す。
+ * shown は、この答えより前にクリエイターがユーザーに示した、この問いの外の文である。前の答えの後のチャットの文（creator.text）と、
+ * 同じ質問のツールの呼び出しのほかの問い（見出し・問い・選択肢）。1 回の呼び出しの問いは、ユーザーに同時に見えるため（testing.md 6.3）
+ */
 export function exchangesOf(items) {
-  return items
-    .filter((i) => i.kind === 'user.answer')
-    .map((i) => ({
-      seq: i.seq,
-      index: i.index,
-      via: i.via,
-      question: i.question,
-      header: i.header ?? '',
-      choices: i.choices ?? [],
-      answer: i.answer,
-      signal: Boolean(i.signal),
-    }));
+  // 質問のツールの 1 回の呼び出しの問い：続けて記録された、group が同じ creator.question（間には答えだけが入る）
+  const callOf = new Map();
+  let call = null;
+  for (const i of items) {
+    if (i.kind === 'creator.question') {
+      if (!call || i.group === undefined || call[0].group !== i.group) call = [];
+      call.push(i);
+      callOf.set(i, call);
+    } else if (['creator.text', 'creator.question-text', 'user.request'].includes(i.kind)) call = null;
+  }
+  const out = [];
+  let texts = [];
+  let lastQuestion = null;
+  for (const i of items) {
+    if (i.kind === 'creator.text') texts.push(String(i.text ?? ''));
+    else if (i.kind === 'creator.question') lastQuestion = i;
+    else if (i.kind === 'user.answer') {
+      const others = i.via === 'AskUserQuestion' && lastQuestion ? callOf.get(lastQuestion).filter((q) => q !== lastQuestion) : [];
+      out.push({
+        seq: i.seq,
+        index: i.index,
+        via: i.via,
+        question: i.question,
+        header: i.header ?? '',
+        choices: i.choices ?? [],
+        answer: i.answer,
+        signal: Boolean(i.signal),
+        shown: [...texts, ...others.map((q) => promptTextOf({ header: q.header ?? '', question: q.question, choices: q.options }))].join('\n'),
+      });
+      texts = [];
+    }
+  }
+  return out;
 }
 
 const questionTextOf = (e) => `${e.header} ${e.question}`.trim();
+/** クリエイターが示した問いのすべて（見出し・問い・選択肢の名前と説明） */
+const promptTextOf = (e) => [questionTextOf(e), ...(e.choices ?? []).map((c) => `${c.label ?? ''} ${c.description ?? ''}`)].join(' ');
 
 /** 記録のツールの呼び出しと結果を組にする */
 export function pairToolEvents(toolEvents) {
@@ -171,21 +256,71 @@ export function pairToolEvents(toolEvents) {
 
 const succeeded = (pair) => pair.result !== null && pair.result.isError === false;
 
+/** 最初の問い（質問のツールの問いか、文章の問い）。なければ undefined */
+const firstQuestionOf = (items) => items.find((i) => i.kind === 'creator.question' || i.kind === 'creator.question-text');
+
+/** 文の中の URL（日本語の閉じかっこと句読点の前で切る） */
+const URL_IN_TEXT = /https?:\/\/[^\s"'<>`）」』\]。、]+/;
+
+/**
+ * クリエイターの画面の URL を、最初の問いより前に、チャットの文で示したか（REQ-043「対話が始まると、チャットに URL が示される」）。
+ * URL は、最初の問いより前に成功した、画面を開くツール（open）の返り値の URL。ツールの返り値はユーザーに見えないので、
+ * その後から最初の問い（質問のツールの問いか、文章の問い）までの、クリエイターのチャットの文（creator.text）にあるかで見る。
+ * 最初の問いの前の文（問いのまとまりの前の文）も、ここに入る。
+ */
+export function gradeScreenUrlShown({ items, toolEvents }) {
+  const first = firstQuestionOf(items);
+  const beforeFirst = (seq) => first === undefined || seq < first.seq;
+  const open = pairToolEvents(toolEvents).find((p) => p.call.tool === 'open' && succeeded(p) && beforeFirst(p.call.seq));
+  if (!open) return { ok: false, detail: '最初の問いより前に、画面を開くツール（open）が成功していない' };
+  const url = URL_IN_TEXT.exec(String(open.result.result ?? ''))?.[0];
+  if (!url) return { ok: false, detail: '画面を開くツール（open）の返り値に URL がない' };
+  const shown = items.find((i) => i.kind === 'creator.text' && i.seq > open.call.seq && beforeFirst(i.seq) && String(i.text ?? '').includes(url));
+  return {
+    ok: Boolean(shown),
+    detail: shown ? '最初の問いより前に、画面の URL をチャットの文で示した' : '画面を開くツールの返り値の URL が、最初の問いより前のチャットの文にない（ツールの返り値はユーザーに見えない）',
+  };
+}
+
 // ---- ナレッジごとの記録 ---------------------------------------------------------------------------------------
+
+/**
+ * 聞かれずに話した最初の答え（ユーザー役の誤り。FORMAT.md 5章）。なければ null。隠すべきナレッジを、その話題でない質問
+ * （見出しと問いが markers.asked に当たらない）に答えて話し、そのナレッジがまだ会話に出ていなかった答えである（testing.md 6.3）。
+ * 出たとは、前の答えが markers.answered に当たった（ユーザーが話した）か、この答えより前にクリエイターが示した文（この問いと前の問いの
+ * 見出し・問い・選択肢、exchangesOf の shown）が markers.answered に当たったこと。前に話した決まりや、クリエイターが示した決まりを
+ * くり返しただけの答えは、人として自然で、隠していたことを漏らしたのではないため。前の問いが asked に当たっただけでは、出たにしない
+ * （asked は問いの話題を広めに見る言葉なので、当たった後の会話のすべての漏れを見落とすため）。
+ * 最初に出たところで決まるので、ナレッジごとに 1 つだけになる。
+ * markers.leak は大まかな質問への答えを見る言葉（ユーザー役の試験用）で、自分から話すほかのナレッジの文にも出うるので、ここでは使わない
+ */
+function firstUnprompted(markers, exchanges) {
+  const m = markers ?? {};
+  for (const e of exchanges) {
+    // クリエイターが先に示した：この答えから後は、出たナレッジのくり返し
+    if (matchesAny(m.answered, promptTextOf(e)) || matchesAny(m.answered, e.shown ?? '')) return null;
+    // ユーザーが初めて話した：聞かれた問いへの答えなら漏れではなく、聞かれていない問いへの答えなら漏れ
+    if (matchesAny(m.answered, e.answer)) return matchesAny(m.asked, questionTextOf(e)) ? null : e;
+  }
+  return null;
+}
 
 /**
  * ナレッジごとに、聞いたか・答えたか・組み込まれたか（testing.md 6.3）。
  * 正しくない型の見分けは、最後に会話を読んで確かめる。
+ * exchanges は exchangesOf の形（index・header・question・choices・answer、あれば shown）で、会話の順に並べる（exchangesOf は記録の順）。
+ * leakedAt は、聞かれずに話した最初の答えの index（firstUnprompted）。ナレッジごとに 1 つで、漏れていないか、index のない exchanges では null。
  */
 export function knowledgeTrace({ persona, exchanges, scope }) {
   return persona.knowledge.map((k) => {
     const m = k.markers ?? {};
     const asked = exchanges.some((e) => matchesAny(m.asked, questionTextOf(e)));
     const answered = exchanges.some((e) => matchesAny(m.answered, e.answer));
-    // 聞かれずに話した：隠すべきナレッジを、その話題でない質問に答えて話した（ユーザー役の誤り。FORMAT.md 5章）。
-    // markers.leak は大まかな質問への答えを見る言葉（ユーザー役の試験用）で、自分から話すほかのナレッジの文にも出うるので、ここでは使わない
-    const unprompted = !k.volunteer && exchanges.some((e) => matchesAny(m.answered, e.answer) && !matchesAny(m.asked, questionTextOf(e)));
+    // 聞かれずに話した：隠すべきナレッジを、その話題でない質問に答えて、まだ会話に出ていないのに話した（firstUnprompted）
+    const leakedAnswer = k.volunteer ? null : firstUnprompted(m, exchanges);
+    const unprompted = leakedAnswer !== null;
     const leaked = unprompted;
+    const leakedAt = leakedAnswer?.index ?? null;
     const embedded = toList(m.embedded).length ? matchesAll(m.embedded, scope.embedded) : null;
     const excludedHit = toList(m.excluded).length ? matchesAny(m.excluded, scope.excluded) : null;
     const taskIncluded = toList(m.task).length ? matchesAll(m.task, scope.task) : null;
@@ -208,15 +343,16 @@ export function knowledgeTrace({ persona, exchanges, scope }) {
       taskIncluded,
       unprompted,
       leaked,
+      leakedAt,
       verdict,
     };
   });
 }
 
-/** ユーザー役の誤り（6.6 の会話例の選び方で除く）：聞かれていないのに隠すべきナレッジを話した、自分への指示のことを話した */
+/** ユーザー役の誤り（6.6 の会話例の選び方で除く）：聞かれていないのに隠すべきナレッジを話した（最初の答えの index つき）、自分への指示のことを話した */
 export function userRoleFaults({ exchanges, trace }) {
   const faults = [];
-  for (const t of trace) if (t.leaked) faults.push({ kind: 'leaked', knowledge: t.id });
+  for (const t of trace) if (t.leaked) faults.push({ kind: 'leaked', knowledge: t.id, ...(Number.isInteger(t.leakedAt) ? { answerIndex: t.leakedAt } : {}) });
   for (const e of exchanges) {
     const hit = INSTRUCTION_WORDS.exec(e.answer);
     if (hit) faults.push({ kind: 'instruction-words', answerIndex: e.index, match: hit[0] });
@@ -311,6 +447,47 @@ export function gradeFirstRun({ persona, exchanges, toolEvents }) {
 // ---- 記録する数（testing.md 6.5） -------------------------------------------------------------------------
 
 const REFUSAL_SAMPLES = 5;
+const NON_JAPANESE_SAMPLES = 5;
+/** 日本語の字（ひらがな・カタカナ・漢字） */
+const JAPANESE_CHAR = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+/** 英語の覚え書きを見るときに除くところ：コードの区切り（``` と `…`）の中と URL */
+const stripCodeAndUrls = (text) => String(text ?? '')
+  .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+  .replace(/`[^`\n]*`/g, ' ')
+  .replace(/https?:\/\/[^\s"'<>`）」』\]。、]+/g, ' ');
+/** かぎ括弧と引用符の中（英語の覚え書きの中に引いた日本語の問いや、日本語の文の中に引いた機器の出力など） */
+const QUOTED = /「[^」\n]*」|『[^』\n]*』|"[^"\n]*"|“[^”\n]*”/g;
+/** 英単語（字だけ。数字・点・下線・スラッシュ・ハイフンでつながったファイル名や番号の一部は数えない）が、空白だけを挟んで3つ以上続く */
+const ENGLISH_WORD = String.raw`(?<![\w./-])[A-Za-z][A-Za-z'’]*(?![\w/-]|\.\w)`;
+const ENGLISH_RUN = new RegExp(String.raw`${ENGLISH_WORD}(?:[ \t]+${ENGLISH_WORD}){2,}`);
+
+/**
+ * 英語の覚え書きのようなチャットの文か（testing.md 6.5）。コードの区切りの中と URL、かぎ括弧と引用符の中を除いて、
+ * (1) 日本語の字がなく、英字がある（「Now run tests.」「K-25 next.」「Ask "ほかにありますか" first.」）か、
+ * (2) 英単語が空白を挟んで3つ以上続く（「Next: いつもと違うとき, including K-25 in different form.」）。
+ * URL だけの文とコードだけの文は数えない。日本語の文の中のファイル名の並び（main.c, sensor_avg.c, …）は (2) に当たらない。
+ * 日本語の文の中に引いた機器の出力（「not installed (pending: reboot to activate)」と出ます。）も (2) に当たらない（外側の EVAL〔改善〕2回目の [524]）
+ */
+export function isEnglishNote(text) {
+  const unquoted = stripCodeAndUrls(text).replace(QUOTED, ' ');
+  return (!JAPANESE_CHAR.test(unquoted) && /[A-Za-z]/.test(unquoted)) || ENGLISH_RUN.test(unquoted);
+}
+
+/** 段階を並べた矢印 */
+const FLOW_ARROW = /→|⇒|->/g;
+/** 番号付きの行（「1. 」「2) 」など） */
+const NUMBERED_LINE = /^[ \t]*\d+[.)．）][ \t]*\S/gm;
+
+/**
+ * これからの流れを示した文か（testing.md 6.5）：段階を並べた矢印が2つ以上か、番号付きの行が3つ以上ある。
+ * 作る流れ（make-plugin の start.md の3）と直す流れ（plugin-creator_change の返り値。change-start.md の7で書く）の流れの文は、どちらも「これから、次の順に…。A → B → …」の形。
+ * 言い方（「これから」など）は見ない。最初の問いより前の文は、ほぼ画面の URL と流れだけで、言い方の条件は誤ったヒットをほとんど防がず、
+ * 例と違う言い方の流れを見落とすだけのため
+ */
+export function isFlowText(text) {
+  const s = String(text ?? '');
+  return (s.match(FLOW_ARROW) ?? []).length >= 2 || (s.match(NUMBERED_LINE) ?? []).length >= 3;
+}
 
 /**
  * 設計書が「記録する」とした数を、会話の記録から数える。採点の合否には入れない。
@@ -321,6 +498,10 @@ const REFUSAL_SAMPLES = 5;
  *   aiDecisions      出どころが「AI の判断（ユーザーが任せた）」のナレッジの数（外したものを除く）
  *   recordRefusals   記録のツール（progress・record・confirm）が断った回数と、その後に同じツールが成功した（直した）回数。
  *                    断りは、ツールの結果が失敗（resultType: 'failure'。MCP では isError）で返ったもの
+ *   nonJapaneseTexts クリエイターのチャットの文（creator.text）のうち、英語の覚え書きのような文（isEnglishNote）の数と例。
+ *                    ユーザーに向けた文は日本語で書くので、英語の覚え書きや内部の番号だけの文がチャットに出たかを見る（合否には入れない）
+ *   flowShown        最初の問いより前のクリエイターのチャットの文（creator.text）に、これからの流れ（isFlowText）を示したか と、その文の seq。
+ *                    作る流れと直す流れの両方で数える（外側の EVAL〔改善〕2回目は、URL だけを示して流れを示さなかった）
  * @param {{ items: Array, toolEvents: Array, state: object|null }} args
  */
 export function countRecorded({ items = [], toolEvents = [], state = null }) {
@@ -344,6 +525,10 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
   const refusedTotal = Object.values(byTool).reduce((n, t) => n + t.refused, 0);
   const fixedTotal = Object.values(byTool).reduce((n, t) => n + t.fixed, 0);
 
+  const nonJapanese = items.filter((i) => i.kind === 'creator.text' && isEnglishNote(i.text));
+  const first = firstQuestionOf(items);
+  const flow = items.find((i) => i.kind === 'creator.text' && (first === undefined || i.seq < first.seq) && isFlowText(i.text));
+
   const pendingItems = ITEMS.filter((i) => state?.items?.[i.key]?.status === 'pending').map((i) => i.name);
   const aiDecisions = (state?.knowledge ?? []).filter((k) => k.source === 'ai_decision' && k.status !== 'dropped').length;
   return {
@@ -352,6 +537,8 @@ export function countRecorded({ items = [], toolEvents = [], state = null }) {
     pending: { count: pendingItems.length, items: pendingItems },
     aiDecisions: { count: aiDecisions },
     recordRefusals: { total: refusedTotal, fixed: fixedTotal, unfixed: refusedTotal - fixedTotal, byTool, samples },
+    nonJapaneseTexts: { count: nonJapanese.length, samples: nonJapanese.slice(0, NON_JAPANESE_SAMPLES).map((i) => ({ seq: i.seq, text: String(i.text).trim().slice(0, 80) })) },
+    flowShown: { shown: Boolean(flow), seq: flow?.seq ?? null },
   };
 }
 
@@ -414,7 +601,7 @@ export function gradeModels({ use, generatedCount }) {
  * @param {number} args.generatedCount 見つけた生成プラグインの数
  * @param {Array|null} args.generatedFiles 生成プラグインのファイル（1 つできたとき）
  * @param {object|null} args.stages 1・2段目の結果 { stage1: { ok }, stage2: { ok }, skipped?, reason? }
- * @param {object|null} args.inner 内側の EVAL の結果（withScore）。なければ採点に入れない
+ * @param {object|null} args.inner 内側の EVAL の結果（withScore）。なければ採点に入れない。code が disk_low なら、環境で止まったとして採点しない
  * @param {Array} args.userSignals 急ぐ合図の位置 [{ answerIndex }]
  * @param {object|null} args.modelUse 動いたモデル { requested, main, subagents: [{ type, models }], lowCost }。腕 with で渡すと REQ-045・REQ-046 を採点する
  * @param {string} args.model クリエイターのモデルの ID
@@ -425,8 +612,10 @@ export function gradeModels({ use, generatedCount }) {
 export function gradeOuter({ persona, personaFiles, items, toolEvents, state, generatedCount, generatedFiles, stages, inner, userSignals = [], modelUse = null, model, arm = 'with', answerer = 'user-role', notGraded = {} }) {
   const grades = [];
   const skipped = [];
+  const environment = environmentNotGraded(stages, inner);
   const add = (id, ok, detail, req) => {
-    if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
+    if (Object.hasOwn(environment, id)) skipped.push({ id, reason: environment[id], environment: true, ...(req ? { req } : {}) });
+    else if (Object.hasOwn(notGraded, id)) skipped.push({ id, reason: notGraded[id], ...(req ? { req } : {}) });
     else grades.push({ id, ok: Boolean(ok), detail: detail ?? '', ...(req ? { req } : {}) });
   };
   const exchanges = exchangesOf(items);
@@ -460,6 +649,10 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
 
   if (inner) add('inner-deliverable', (inner.withScore ?? 0) >= INNER_PASS_SCORE, `プラグインありのスコア ${inner.withScore}`, 'REQ-041');
 
+  if (arm === 'with') {
+    const url = gradeScreenUrlShown({ items, toolEvents });
+    add('screen-url-shown', url.ok, url.detail, 'REQ-043');
+  }
   if (arm !== 'without') {
     const heard = gradeAllItemsHeard({ state, items, toolEvents });
     add('all-items-heard', heard.ok, heard.detail, 'REQ-015');
@@ -481,17 +674,19 @@ export function gradeOuter({ persona, personaFiles, items, toolEvents, state, ge
   const required = isHaiku ? HAIKU_REQUIRED.filter((id) => grades.some((g) => g.id === id)) : grades.map((g) => g.id);
   const failedRequired = grades.filter((g) => required.includes(g.id) && !g.ok).map((g) => g.id);
   const score = grades.length ? grades.filter((g) => g.ok).length / grades.length : 0;
+  const env = environmentOf({ items, skipped });
   return {
     grades,
     score,
     trace,
     faults,
     counts: countRecorded({ items, toolEvents, state }),
-    // 採点しなかった観点があるときは、合否が一部の観点だけのものだと分かるように、partial と、その観点を付ける
-    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...(skipped.length ? { partial: true, notGraded: skipped.map((g) => g.id) } : {}) },
+    // 採点しなかった観点があるか、環境（ディスクがいっぱい）の影響を受けた回は、合否がふだんの回と同じ重みでないと分かるように、partial を付ける
+    verdict: { model, required, ok: failedRequired.length === 0, failed: failedRequired, ...partialOf(skipped, env) },
     // 会話例の候補（6.6）：採点の観点にすべて合格し、ユーザー役の誤りがない。最後は全文を読んで確かめる
-    // 開発者が答えた会話は、会話例にしない（6.6）
-    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0,
+    // 開発者が答えた会話と、環境の影響を受けた会話は、会話例にしない（6.6）
+    exampleCandidate: !human && !isHaiku && failedRequired.length === 0 && faults.length === 0 && skipped.length === 0 && env === null,
     ...(skipped.length ? { notGraded: skipped } : {}),
+    ...(env ? { environment: env } : {}),
   };
 }

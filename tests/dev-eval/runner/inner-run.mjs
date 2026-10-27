@@ -8,6 +8,11 @@
 //      終わった理由が出るまで見て、結果を読む（C3 の screen.mjs。開発の試験とユーザーの試験で同じものを使う）。
 //   4. 成果物を採点する（C3 の grade.mjs。生成プラグインの検証エージェントの合否は使わない。モデルで判定する基準は Agent SDK で判定する）。
 // なしの流れ：プラグインを何も読み込まず、同じ課題を渡す。
+// 単体の流れ（standalone。REQ-062、REQ-055）：プラグインを読み込むが、つなぎ口（画面と記録のツール）を使わない。課題（模擬ユーザーの
+// inner/standalone.json）を渡し、メインのエージェントの手番が終わったら採点する。入口のスキルを使ったか・統括を始めたか・画面を開くツールを
+// 呼んだかを記録に残す。
+// 擬似の機器（startDevice。testing.md 7章）を渡すと、この実行のために機器を起動し、試すエージェント（メインと統括）の PATH の先頭に
+// 機器の道具を置き、サンドボックスの通信を機器の口だけにして、機器の中身を見せない。採点の前に、機器の記録を作業フォルダの .device/ に写す。
 // どちらも、メインのエージェントがチャットで返事や答えを求めて手番を終えたら、ユーザー役が人の代わりに返事をする（7章）。
 // ありで、統括が人の判断を求めて手番を終えたとき（人の判断待ち。生成プラグインの設計書 4.15）は、Copilot CLI がメインのエージェントに
 // 知らせるのと同じく、メインのエージェントの会話を続けて知らせ、チャットに出た質問にユーザー役が答える。メインのエージェントが答えを
@@ -21,9 +26,10 @@ import path from 'node:path';
 import { gradeRun } from '../../../skills/test-plugin/scripts/grade.mjs';
 import { findScreenUrl } from '../../../skills/test-plugin/scripts/screen.mjs';
 import { prepareWorkDir } from '../../../skills/test-plugin/scripts/tasks.mjs';
+import { removeAgentCache } from './disk.mjs';
 import { createInnerAdapter, summarizeMessage } from './inner-adapter.mjs';
 import { decideSettings, notesField, previewInputs } from './inner-settings.mjs';
-import { makeQueryOptions, usageLimitPrefixes } from './isolation.mjs';
+import { makeQueryOptions, SANDBOX_NETWORK_TOOL, usageLimitPrefixes } from './isolation.mjs';
 import { modelMapOf, readConversionReport, toClaudeModelId } from './model-map.mjs';
 
 export const DEFAULTS = Object.freeze({
@@ -33,8 +39,19 @@ export const DEFAULTS = Object.freeze({
   mainMaxTurns: 80,
 });
 
+/** 腕：with＝プラグインありで画面を使う、without＝プラグインなし、standalone＝プラグインを読み込むが画面と記録のツールを使わない */
+export const ARMS = Object.freeze(['with', 'without', 'standalone']);
+
+/**
+ * 擬似の機器を、OS のサンドボックスなしで使ったときの警告。通信と中身の制限はサンドボックスの設定なので効かず、断った通信の求め（networkRefused）も
+ * 出ない。機器の記録を「本物の機器やほかの宛先に何も送られない」ことの裏付けにしないため、記録に残す
+ */
+export const DEVICE_UNFENCED_WARNING = '擬似の機器の通信と中身の制限が効いていない（OS のサンドボックスなしで動かしたため。エージェントは機器の口のほかにも通信でき、機器の中身も読める。断った通信の求めの記録も出ない）';
+
 /** 画面の欄の id の規則（ui/static/render.js の fieldId）。モデルの選択は model-<役割> の欄である */
 const MODEL_ROLES = ['orchestrator', 'worker', 'verifier'];
+/** 試すメインのエージェントのホーム（実行のフォルダの中） */
+const MAIN_HOME = 'home-main';
 
 const REQUEST_ENDINGS =
   /(教えてください|お知らせください|知らせてください|お聞かせください|聞かせてください|ご指定ください|指定してください|選んでください|答えてください|入力してください|ご連絡ください|お願いします|お願いいたします|いかがでしょうか|でしょうか)[。.！!]*\s*$/;
@@ -97,9 +114,57 @@ function ensureDir(dir) {
 }
 
 /**
+ * 入口のスキル（画面を開くツールを呼ぶスキル）のフォルダの名前。変換レポートで、画面を開くツール（open）を使う skills/<名前>/SKILL.md から決める
+ * （生成プラグインの1段目の standalone の検査と同じ見分け方）。見つからなければ、プラグインの名前
+ */
+export function entrySkillsOf(report) {
+  const found = new Set();
+  for (const t of report?.extension_tools ?? []) {
+    if (t?.tool !== 'open') continue;
+    for (const where of [t.where].flat()) {
+      const m = /^skills\/([^/]+)\/SKILL\.md$/.exec(String(where ?? ''));
+      if (m) found.add(m[1]);
+    }
+  }
+  return found.size ? [...found].sort() : [report?.plugin].filter(Boolean);
+}
+
+/**
+ * 単体の流れ（standalone）の動きの確かめ（点数には入れない）。入口のスキルを使わず、画面を開くツールを呼ばず、統括を始めずに終えたか（REQ-062）。
+ * 単体の流れでは、つなぎ口を使わないので、画面を開くツールは出していない。入口のスキルから始めたか（ほんとうの使い方で、いちばん起きやすい誤り）は
+ * entry-skill-not-used で見る。
+ * @param {{ pluginName: string, serverName: string|null, mainTools: string[], agentTypes: string[], skillsUsed?: string[], entrySkills?: string[] }} args
+ *   agentTypes は、その実行で始まったエージェントの種類。skillsUsed は、メインのエージェントが呼んだスキル。entrySkills は、入口のスキルのフォルダの名前
+ */
+export function standaloneChecks({ pluginName, serverName, mainTools, agentTypes, skillsUsed = [], entrySkills = [pluginName] }) {
+  const openNames = new Set([`${pluginName}_open`, ...(serverName ? [`mcp__${serverName}__open`] : [])]);
+  const openCalled = mainTools.some((name) => openNames.has(name));
+  const orchestratorStarted = agentTypes.some((type) => /(^|:)orchestrator$/.test(String(type ?? '')));
+  const entryNames = new Set(entrySkills.flatMap((skill) => [skill, `${pluginName}:${skill}`]));
+  const entrySkillUsed = skillsUsed.some((skill) => entryNames.has(skill));
+  return {
+    openCalled,
+    orchestratorStarted,
+    entrySkillUsed,
+    checks: [
+      { id: 'entry-skill-not-used', ok: !entrySkillUsed, detail: `入口のスキル（${[...entryNames].join('・')}）を使わなかったか（呼んだスキル：${skillsUsed.join('、') || 'なし'}）` },
+      { id: 'open-not-called', ok: !openCalled, detail: `画面を開くツール（${[...openNames].join('・')}）を呼ばなかったか` },
+      { id: 'orchestrator-not-started', ok: !orchestratorStarted, detail: `統括エージェントを始めなかったか（始まったエージェント：${agentTypes.join('、') || 'なし'}）` },
+    ],
+  };
+}
+
+/** 擬似の機器を使う実行の、試すエージェントの環境変数。機器の道具のフォルダを PATH の先頭に足す */
+export function deviceEnv(envExtra, device, base = process.env) {
+  if (!device) return envExtra;
+  const rest = envExtra.PATH ?? base.PATH ?? '';
+  return { ...envExtra, ...device.env, PATH: rest ? `${device.binDir}${path.delimiter}${rest}` : device.binDir };
+}
+
+/**
  * 実行1回。
  * @param {object} o
- * @param {'with'|'without'} o.arm
+ * @param {'with'|'without'|'standalone'} o.arm
  * @param {{ id: string, dir: string, json: object }} o.task tasks.mjs の課題の形（dir は eval.json のあるフォルダ。入力はそこからの相対）
  * @param {string} o.runDir この実行の記録の置き場所（作る）
  * @param {{ query: Function }} o.sdk Agent SDK
@@ -107,7 +172,9 @@ function ensureDir(dir) {
  * @param {Function} [o.judge] モデルで判定する関数（grade.mjs の judge）
  * @param {object} [o.screen] createScreen() の入れ物（ありのとき。ブラウザーは使い回す）
  * @param {string} [o.pluginRoot] Copilot CLI 向けの生成プラグイン（ありのとき）
- * @param {string} [o.convertedRoot] 置き換えた版（ありのとき）
+ * @param {string} [o.convertedRoot] 置き換えた版（ありと単体のとき）
+ * @param {Function} [o.startDevice] 擬似の機器を起動する関数（tests/dev-eval/device/kxdevice.mjs の startDevice の形）。渡すと、この実行のために
+ *   <runDir>/device に機器を起動し、終わったら止める
  * @param {object} [o.taskSettings] 画面の作業ごとの設定に使う値（{ key: 値 }。ユーザー役が決めた値と課題の settings.task を上書きする）
  * @param {object} [o.models] 画面で選ぶモデル { orchestrator?, worker?, verifier? }（Copilot の名前）。省くと画面の既定のまま
  * @param {object} [o.envExtra] 試すエージェントの環境変数に足すもの
@@ -115,12 +182,29 @@ function ensureDir(dir) {
  * @param {AbortSignal} [o.signal]
  */
 export async function runInnerArm(o) {
+  if (!ARMS.includes(o.arm)) throw new Error(`arm は ${ARMS.join('・')} のどれかです：${o.arm}`);
+  if (o.arm === 'with' && (!o.pluginRoot || !o.convertedRoot || !o.screen)) throw new Error('ありの実行には pluginRoot・convertedRoot・screen が要ります。');
+  if (o.arm === 'standalone' && !o.convertedRoot) throw new Error('単体の実行には convertedRoot が要ります。');
+  // 擬似の機器は、この実行のどの終わり方でも止める
+  const holder = { device: null };
+  try {
+    return await runArm(o, holder);
+  } finally {
+    await holder.device?.stop();
+    // 試すエージェントと、統括・作業・検証のエージェント（inner-adapter.mjs の home-<id>）が入れたもの（.cache/ms-playwright の
+    // Chromium など）は、実行ごとにたまるので残さない（testing.md 5章）
+    if (o.runDir && fs.existsSync(o.runDir)) {
+      for (const name of fs.readdirSync(o.runDir)) if (name.startsWith('home-')) removeAgentCache(path.join(o.runDir, name));
+    }
+  }
+}
+
+async function runArm(o, holder) {
   const {
-    arm, task, runDir, sdk, userRole, judge, screen, pluginRoot, convertedRoot, models, taskSettings = {}, envExtra = {}, sandbox = false, signal,
+    arm, task, runDir, sdk, userRole, judge, screen, pluginRoot, convertedRoot, models, taskSettings = {}, sandbox = false, signal, startDevice,
     model = DEFAULTS.model, timeoutMs = DEFAULTS.timeoutMs, maxReplies = DEFAULTS.maxReplies, mainMaxTurns = DEFAULTS.mainMaxTurns, pollMs,
   } = o;
-  if (arm !== 'with' && arm !== 'without') throw new Error(`arm は with か without です：${arm}`);
-  if (arm === 'with' && (!pluginRoot || !convertedRoot || !screen)) throw new Error('ありの実行には pluginRoot・convertedRoot・screen が要ります。');
+  const plugged = arm === 'with' || arm === 'standalone';
 
   ensureDir(runDir);
   const eventsFile = path.join(runDir, 'events.jsonl');
@@ -128,13 +212,35 @@ export async function runInnerArm(o) {
   const startedAt = Date.now();
   // 作業フォルダ（試されるエージェントの cwd）は、記録の置き場所と分ける。採点のときに、記録が成果物に混ざらないようにするため
   const { workDir, inputs } = prepareWorkDir({ task, dir: path.join(runDir, 'work') });
-  const homeDir = ensureDir(path.join(runDir, 'home-main'));
+  const homeDir = ensureDir(path.join(runDir, MAIN_HOME));
 
   const result = {
-    arm, task: task.id, status: 'completed', reason: null, runDir, workDir, url: null, replies: 0, history: [], skillsUsed: [], mainTools: [],
+    arm, task: task.id, status: 'completed', reason: null, runDir, workDir, url: null, replies: 0, history: [], skillsUsed: [], mainTools: [], mainAgents: [],
     main: { sessionId: null, turns: 0, costUsd: 0, results: [] }, screen: null, finalState: null, agents: [], orchestratorRuns: [],
-    checks: [], grading: null, refused: [], subagentModels: {}, limitHit: null, settings: [], humanWaits: 0,
+    checks: [], grading: null, refused: [], subagentModels: {}, limitHit: null, settings: [], humanWaits: 0, warnings: [],
   };
+  const refused = [];
+
+  // ---- 擬似の機器 ----------------------------------------------------------------------------------
+  let device = null;
+  if (startDevice) {
+    const stateDir = path.join(runDir, 'device'); // 作業フォルダの外。サンドボックスから見えない・書けない
+    try {
+      device = await startDevice({ stateDir });
+      holder.device = device;
+    } catch (error) {
+      result.status = 'error';
+      result.reason = `擬似の機器を起動できませんでした：${error?.message ?? error}`;
+      result.device = { stateDir, error: String(error?.message ?? error) };
+      fs.writeFileSync(path.join(runDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
+      return result;
+    }
+    // fenced：試すエージェントのサンドボックスで、機器の口のほかへの通信と、機器の中身の読み書きを止めたか。サンドボックスなしでは止まらない
+    result.device = { stateDir, binDir: device.binDir, env: device.env, network: device.sandboxNetwork, isolate: device.ready?.isolate ?? null, fenced: Boolean(sandbox), records: null };
+    if (!sandbox) result.warnings.push(DEVICE_UNFENCED_WARNING);
+  }
+  const envExtra = deviceEnv(o.envExtra ?? {}, device);
+  const fence = device ? { sandboxNetwork: device.sandboxNetwork, sandboxFilesystem: device.sandboxFilesystem, denyNetwork: true } : {};
   // 人の判断待ちの知らせ（下の notifyMain）は、メインのエージェントの最初の手番が終わってから、1つずつ順に行う
   let mainDone = Promise.resolve();
   let notifyChain = Promise.resolve();
@@ -150,7 +256,7 @@ export async function runInnerArm(o) {
   let reportInfo = null;
   if (arm === 'with') {
     reportInfo = readConversionReport(convertedRoot);
-    adapter = await createInnerAdapter({ sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra, mainModel: model, sandbox, record, onOrchestratorTurnEnd });
+    adapter = await createInnerAdapter({ sdk, pluginRoot, convertedRoot, workDir, runDir, envExtra, mainModel: model, sandbox, ...fence, refused, record, onOrchestratorTurnEnd });
     const names = adapter.checkToolNames();
     if (names.missing.length > 0) {
       result.status = 'error';
@@ -160,9 +266,9 @@ export async function runInnerArm(o) {
     }
   }
 
-  const rules = arm === 'with' ? readRules(convertedRoot) : '';
+  if (arm === 'standalone') reportInfo = readConversionReport(convertedRoot);
+  const rules = plugged ? readRules(convertedRoot) : '';
   const history = [];
-  const refused = [];
   const abort = new AbortController();
   const onOuterAbort = () => abort.abort();
   signal?.addEventListener('abort', onOuterAbort, { once: true });
@@ -209,8 +315,8 @@ export async function runInnerArm(o) {
   async function runMainTurn(prompt, resume) {
     const parts = adapter?.mainParts();
     const options = makeQueryOptions({
-      cwd: workDir, home: homeDir, model, plugins: arm === 'with' ? [convertedRoot] : [], mcpServers: parts?.mcpServers, mcpTools: parts?.mcpTools ?? [],
-      systemPromptAppend: rules || undefined, sandbox, onQuestion: answerQuestions, refused, envExtra, maxTurns: mainMaxTurns, resume, abortController: abort,
+      cwd: workDir, home: homeDir, model, plugins: plugged ? [convertedRoot] : [], mcpServers: parts?.mcpServers, mcpTools: parts?.mcpTools ?? [],
+      systemPromptAppend: rules || undefined, sandbox, ...fence, onQuestion: answerQuestions, refused, envExtra, maxTurns: mainMaxTurns, resume, abortController: abort,
     });
     const query = sdk.query({ prompt, options });
     currentQuery = query;
@@ -242,6 +348,7 @@ export async function runInnerArm(o) {
             } else if (block.type === 'tool_use') {
               result.mainTools.push(block.name);
               if (block.name === 'Skill') result.skillsUsed.push(String(block.input?.skill ?? ''));
+              if (block.name === 'Agent' || block.name === 'Task') result.mainAgents.push(String(block.input?.subagent_type ?? ''));
             }
           }
         } else if (m.type === 'result') {
@@ -273,8 +380,8 @@ export async function runInnerArm(o) {
           return;
         }
         if (abort.signal.aborted) return;
-        // ありで URL が出たあとは、人が画面を操作する。チャットの返事は要らない
-        if (result.url) return;
+        // ありで URL が出たあとは、人が画面を操作する。チャットの返事は要らない（単体の流れでは画面を使わないので、続ける）
+        if (result.url && arm !== 'standalone') return;
         if (!asksForReply(turn.finalText) || result.replies >= maxReplies) return;
         // 手番の最後の文は問いそのもの。それより前に書いた文だけを、前の文として渡す
         const notes = takeNotes().filter((note) => note !== turn.finalText.trim());
@@ -432,7 +539,7 @@ export async function runInnerArm(o) {
     const error = result.userRoleError ?? result.mainException;
     result.status = 'error';
     result.reason = result.userRoleError ? `ユーザー役の呼び出しに失敗しました：${error.message ?? error}` : `メインの実行が失敗しました：${error.message ?? error}`;
-  } else if (arm === 'with' && result.mainInit && !result.mainInit.plugins.includes(reportInfo.plugin)) {
+  } else if (plugged && result.mainInit && !result.mainInit.plugins.includes(reportInfo.plugin)) {
     result.status = 'error';
     result.reason = `プラグイン ${reportInfo.plugin} が読み込まれませんでした${result.mainInit.pluginErrors.length ? `（${result.mainInit.pluginErrors.map((e) => e.message).join('、')}）` : ''}。`;
   } else if (arm === 'with' && result.mainInit && result.mainInit.mcpServers.find((s) => s.name === adapter.serverName)?.status !== 'connected') {
@@ -466,10 +573,37 @@ export async function runInnerArm(o) {
       finalState: result.finalState, agents: result.agents, modelMap: modelMapOf(reportInfo), serverName: adapter.serverName,
     });
   }
+  // その実行で始まったエージェントの種類（ありはつなぎ口の記録、ほかはメインの Agent の呼び出しとサブエージェントのメッセージ）
+  const agentTypes = arm === 'with'
+    ? result.agents.map((a) => a.agentType)
+    : [...new Set([...result.mainAgents, ...Object.values(result.subagentModels).map((s) => s.type)].filter(Boolean))];
+  if (arm === 'standalone') {
+    const extension = (reportInfo.extensions ?? []).find((e) => e.name === reportInfo.plugin) ?? (reportInfo.extensions ?? [])[0];
+    const { checks, ...seen } = standaloneChecks({
+      pluginName: reportInfo.plugin, serverName: extension?.server ?? null, mainTools: result.mainTools, agentTypes, skillsUsed: result.skillsUsed, entrySkills: entrySkillsOf(reportInfo),
+    });
+    result.standalone = seen;
+    result.checks = checks;
+  }
+  result.networkRefused = refused.filter((r) => r.toolName === SANDBOX_NETWORK_TOOL);
+
+  // ---- 擬似の機器の記録 -------------------------------------------------------------------------------------
+  // 採点は作業フォルダの中しか見ないので、機器の記録を作業フォルダの .device/ に写す（エージェントが同じ名前のファイルを作っていたら消す）
+  if (device) {
+    try {
+      result.device.records = device.copyRecordsTo(workDir);
+    } catch (error) {
+      result.device.copyError = String(error?.message ?? error);
+    }
+  }
 
   // ---- 採点 ----------------------------------------------------------------------------------------------
   if (result.status === 'completed' || result.status === 'incomplete') {
-    const graded = await gradeRun({ task: task.json, workDir, inputs, judge });
+    const graded = await gradeRun({
+      task: task.json, workDir, inputs, judge,
+      // 基準 agent_ran（REQ-061）のための、その実行で動いたエージェント
+      subagents: agentTypes.map((agentName) => ({ agentName })), pluginName: reportInfo?.plugin ?? null,
+    });
     result.grading = { passed: graded.passed, total: graded.total, score: graded.score, errors: graded.errors, results: graded.results, judgments: graded.judgments };
   }
   result.seconds = Math.round((Date.now() - startedAt) / 1000);

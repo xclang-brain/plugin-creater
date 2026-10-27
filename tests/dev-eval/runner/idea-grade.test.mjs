@@ -99,38 +99,38 @@ test('最後まで進んだ回は、すべての採点に合格する', () => {
   assert.equal(r.ok, true);
 });
 
-test('REQ-059 読み手がファイルを読むと落ちる', () => {
+test('REQ-070 読み手がファイルを読むと落ちる', () => {
   const { dataDir, calls, readers } = finishedRun();
   calls.push({ owner: readers[1].id, id: 'x2', name: 'Read', input: { file_path: '/tmp/x' }, group: null });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['explain-reader-blind']);
 });
 
-test('REQ-059 読み手の頼みに回のフォルダの場所があると落ちる', () => {
+test('REQ-070 読み手の頼みに回のフォルダの場所があると落ちる', () => {
   const { dataDir, calls, readers } = finishedRun();
   readers[0].input.prompt += `\n${dataDir}/runs/20261027-1000/explain/1/draft-1.md`;
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['explain-reader-prompt']);
 });
 
-test('REQ-056 なぜなぜ分析の役がほかの分析を読むと落ちる', () => {
+test('REQ-067 なぜなぜ分析の役がほかの分析を読むと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   const analyst = calls.find((c) => c.input?.prompt === '役：なぜなぜ分析');
   calls.push({ owner: analyst.id, id: 'x3', name: 'Read', input: { file_path: `${dataDir}/runs/20261027-1000/essence/analysis-2.md` }, group: null });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['essence-independent']);
 });
 
-test('REQ-065 クリエイターのツールを呼ぶと落ち、ヒアリングの記録があると落ちる', () => {
+test('REQ-076 クリエイターのツールを呼ぶと落ち、ヒアリングの記録があると落ちる', () => {
   const { dataDir, calls } = finishedRun();
   calls.push({ owner: 'main', id: 'x4', name: 'mcp__plugin-creator__state', input: {}, group: 99 });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls, hearingState: { stage: 'start' } })), ['separation-tools', 'separation-hearing']);
 });
 
-test('REQ-055 集める調査役を同時に起動しないと落ちる', () => {
+test('REQ-066 集める調査役を同時に起動しないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   calls.filter((c) => c.input?.prompt === '役：集める').forEach((c, i) => { c.group = 100 + i; });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['research-parallel']);
 });
 
-test('REQ-056 本質が足りないと落ち、REQ-057 組の判定が足りないと落ちる', () => {
+test('REQ-067 本質が足りないと落ち、REQ-068 組の判定が足りないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   const run = latestRun(dataDir);
   fs.writeFileSync(path.join(run, 'essence', 'index.md'), '- E1\n- E2\n');
@@ -138,13 +138,13 @@ test('REQ-056 本質が足りないと落ち、REQ-057 組の判定が足りな�
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['essence-count', 'combine-judges']);
 });
 
-test('REQ-060 知識・経験の項目に欠けがあると落ちる', () => {
+test('REQ-071 知識・経験の項目に欠けがあると落ちる', () => {
   const { dataDir, calls } = finishedRun();
   fs.writeFileSync(path.join(dataDir, 'knowledge', '3-essence.md'), `# 本質\n## K3-1 ある本質\n- 例：…\n`);
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['knowledge-items']);
 });
 
-test('REQ-061 2回目は、前の回の項目を使った記録がないと落ちる', () => {
+test('REQ-072 2回目は、前の回の項目を使った記録がないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls, expectKnowledgeUse: true })), ['knowledge-applied']);
   fs.appendFileSync(path.join(latestRun(dataDir), 'knowledge-used.md'), '\n- K3-1 を使い、目的と仕組みで書かせた\n');
@@ -157,27 +157,27 @@ test('make-idea のエージェントのほかを起動すると落ちる', () =
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['separation-agents']);
 });
 
-test('REQ-056 意見の出し合いのファイルがないと落ちる', () => {
+test('REQ-067 意見の出し合いのファイルがないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   for (const a of [1, 2]) fs.rmSync(path.join(latestRun(dataDir), 'essence', `opinion-${a}-r1.md`));
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['essence-opinions']);
 });
 
-test('REQ-057 通ったのに数を変える、だめなのに数を変えないと落ちる', () => {
+test('REQ-068 通ったのに数を変える、だめなのに数を変えないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   const log = path.join(latestRun(dataDir), 'combine', 'log.md');
   fs.writeFileSync(log, '- c01｜数 2｜E1、E2｜作った案 2｜通った案：1\n- c02｜数 3｜E3、E4、E5｜作った案 2｜通った案：なし\n- c03｜数 3｜E1、E5、E6｜作った案 2｜通った案：2\n');
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-size']);
 });
 
-test('REQ-057 通った案が1つもないと落ちる', () => {
+test('REQ-068 通った案が1つもないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   const log = path.join(latestRun(dataDir), 'combine', 'log.md');
   fs.writeFileSync(log, '- c01｜数 2｜E1、E2｜作った案 2｜通った案：なし\n- c02｜数 3｜E3、E4、E5｜作った案 2｜通った案：なし\n- c03｜数 2｜E1、E6｜作った案 2｜通った案：なし\n');
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-some-passed']);
 });
 
-test('REQ-060 外した候補が保存されると落ち、外した番号の答えがないと落ちる', () => {
+test('REQ-071 外した候補が保存されると落ち、外した番号の答えがないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   fs.appendFileSync(path.join(dataDir, 'knowledge', '3-essence.md'), `\n${ITEM(2).replace('目的と仕組みで書くと、組み合わせやすい。', '外された本質の1文。')}`);
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['knowledge-excluded']);
@@ -185,13 +185,13 @@ test('REQ-060 外した候補が保存されると落ち、外した番号の答
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['knowledge-excluded']);
 });
 
-test('REQ-063 データの置き場所の外に書くと落ちる', () => {
+test('REQ-074 データの置き場所の外に書くと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   calls.push({ owner: 'main', id: 'w2', name: 'Write', input: { file_path: '/tmp/work/idea.md' }, group: 300 });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['data-only']);
 });
 
-test('REQ-064 続き：新しい回のフォルダを作ると落ち、続けるかを聞かないと落ちる', () => {
+test('REQ-075 続き：新しい回のフォルダを作ると落ち、続けるかを聞かないと落ちる', () => {
   const { dataDir, calls } = finishedRun();
   const runsBefore = ['20261027-1000'];
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls, resume: { runsBefore, questions: ['20261027-1000 を続けますか？'] } })), []);
@@ -201,7 +201,7 @@ test('REQ-064 続き：新しい回のフォルダを作ると落ち、続ける
   assert.ok(failed(gradeIdeaRun({ dataDir, calls, resume: { runsBefore, questions: ['続けますか？'] } })).includes('resume'));
 });
 
-test('REQ-064 続きの試験では、止まった柱より前の呼び出しを採点しない', () => {
+test('REQ-075 続きの試験では、止まった柱より前の呼び出しを採点しない', () => {
   const { dataDir } = finishedRun();
   const r = gradeIdeaRun({ dataDir, calls: [], resume: { runsBefore: ['20261027-1000'], questions: ['続けますか？'], fromPillar: 5 } });
   assert.deepEqual(failed(r), ['explain-readers']);
@@ -235,7 +235,7 @@ test('部品：URL、本質の番号、知識・経験の項目、同時の数�
   assert.equal(isFinished(dataDir), true);
 });
 
-test('小さなパラメーターは、既定のパラメーターと同じ項目で、値の扱いの決まりに合う（REQ-062）', () => {
+test('小さなパラメーターは、既定のパラメーターと同じ項目で、値の扱いの決まりに合う（REQ-073）', () => {
   const defaults = JSON.parse(fs.readFileSync(path.join(REPO, 'skills', 'make-idea', 'assets', 'params.json'), 'utf8'));
   const keys = (p) => Object.entries(p).filter(([, v]) => typeof v === 'object').flatMap(([g, v]) => Object.keys(v).map((k) => `${g}/${k}`)).sort();
   assert.deepEqual(keys(SMALL_PARAMS), keys(defaults));
