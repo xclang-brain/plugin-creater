@@ -176,7 +176,8 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('research-deep', `柱2：掘り下げた作品が ${p.deep} 以上`, deepCount >= p.deep, `${deepFiles.length} ファイル、${deepCount} 件`);
 
   // 柱3
-  const ids = essenceIds(readText(r('essence/index.md')));
+  // 一覧は、大きさの上限で index.md・index-2.md… に分けて書かれることがある（エージェントの決まり）
+  const ids = essenceIds(listDir(r('essence')).filter((n) => /^index.*\.md$/.test(n)).map((n) => readText(r(`essence/${n}`))).join('\n'));
   add('essence-count', `柱3：本質の一覧に ${p.essences} 以上（REQ-056）`, ids.size >= p.essences, `${ids.size} 個`);
   const analyses = listDir(r('essence')).filter((n) => /^analysis-.*\.md$/.test(n)).length;
   const finals = listDir(r('essence')).filter((n) => /^final-.*\.md$/.test(n)).length;
@@ -230,7 +231,10 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('knowledge-items', '柱6：知識・経験の項目が決まった形（REQ-060）', items.length > 0 && badItems.length === 0, `${items.length} 項目、欠け ${badItems.map((i) => `${i.file} ${i.head}：${i.missing.join('・')}`).join(' / ') || 'なし'}`);
   const big = kfiles.filter((f) => fs.statSync(path.join(kdir, f)).size >= p.fileMax);
   add('knowledge-size', `柱6：知識・経験のファイルが ${p.fileMax} バイトより小さい`, big.length === 0, big.join(', ') || 'すべて小さい');
-  const cands = candidatesOf(readText(r('reflect/candidates.md')));
+  const candText = readText(r('reflect/candidates.md'));
+  // 外した番号は candidates.md の終わりに書く決まり。state.md にだけ書いたときも、答えの記録として読む
+  const exclusionLine = /外した番号/.test(candText) ? '' : (readText(r('state.md')).match(/^.*外した番号.*$/m)?.[0] ?? '').replace(/^.*?外した番号[：:]?\s*/, '外した番号：');
+  const cands = candidatesOf(`${candText}\n${exclusionLine}`);
   const allKnowledge = kfiles.map((f) => readText(path.join(kdir, f))).join('\n');
   const leakedExcluded = cands.candidates.filter((c) => cands.excluded.includes(c.n) && ['足す', '直す'].includes(c.op) && c.sentence && allKnowledge.includes(c.sentence));
   add('knowledge-excluded', '柱6：ユーザーが外した候補が保存されていない（REQ-060）', cands.answered && leakedExcluded.length === 0, cands.answered ? `外した番号 ${cands.excluded.join('、') || 'なし'}、保存されたもの ${leakedExcluded.map((c) => c.n).join('、') || 'なし'}` : 'candidates.md に「外した番号：」がない');
