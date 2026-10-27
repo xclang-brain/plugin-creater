@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { checkFreeSpace, DISK_ERROR, diskErrorResults, diskErrorsOnly, MIN_FREE_BYTES, removeAgentCache } from './disk.mjs';
+import { checkFreeSpace, DISK_ERROR, diskErrorResults, diskErrorsOnly, MIN_FREE_BYTES, removeAgentCache, removeSessionRecords } from './disk.mjs';
 import { tempDir } from './temp-dirs.mjs';
 
 const GB = 1024 ** 3;
@@ -66,6 +66,24 @@ test('testing.md 5章 実行の後の片づけ：エージェントのホーム�
   // .cache がないときも、ホームがないときも、誤りにしない
   assert.equal(removeAgentCache(home), true);
   assert.equal(removeAgentCache(path.join(home, 'none')), true);
+});
+
+test('testing.md 5章 実行の後の片づけ：セッションの記録（.claude）を消す。止めた後も子プロセスが書いていて消せない（ENOTEMPTY）ときは、誤りにせず残す', () => {
+  const home = tempDir('disk-session');
+  fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.cache'), { recursive: true });
+  assert.equal(removeSessionRecords(home), true);
+  assert.equal(fs.existsSync(path.join(home, '.claude')), false);
+  assert.equal(fs.existsSync(path.join(home, '.cache')), true, '.claude のほかは消さない');
+  assert.equal(removeSessionRecords(home), true, 'ないときも誤りにしない');
+  fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
+  const busy = () => {
+    const error = new Error(`ENOTEMPTY: directory not empty, rmdir '${path.join(home, '.claude')}'`);
+    error.code = 'ENOTEMPTY';
+    throw error;
+  };
+  assert.equal(removeSessionRecords(home, busy), false);
+  assert.equal(fs.existsSync(path.join(home, '.claude', 'projects')), true);
 });
 
 test('testing.md 6.5 2段目の不合格がすべてディスクの誤り（ENOSPC・EIO）か：外側の EVAL〔改善〕3回目の3つの形と、Python の形を見分ける。ほかの不合格が1つでも混ざれば偽', () => {

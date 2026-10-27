@@ -20,7 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { DISK_ERROR, diskErrorsOnly, removeAgentCache } from './disk.mjs';
+import { DISK_ERROR, diskErrorsOnly, removeAgentCache, removeSessionRecords } from './disk.mjs';
 import { makeQueryOptions, sandboxStatus } from './isolation.mjs';
 import { readConversionReport } from './model-map.mjs';
 import { collectGeneratedFiles, gradeOuter, personaFileHashes } from './outer-grade.mjs';
@@ -749,9 +749,7 @@ export async function runOuterOnce(o) {
 
     await toolkit?.shutdown();
     // 開発者が答えるときは、クリエイターのセッションの記録を消さない（止まったときに、続きから始められるように）
-    if (!keepHomes && !human) {
-      fs.rmSync(path.join(dirs.agentHome, '.claude'), { recursive: true, force: true });
-    }
+    if (!keepHomes && !human) removeSessionRecords(dirs.agentHome);
     finishInfo = {
       reason: stopped?.reason ?? null,
       ...(stopped?.message ? { message: stopped.message } : {}),

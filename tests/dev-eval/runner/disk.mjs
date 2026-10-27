@@ -69,6 +69,20 @@ export function removeAgentCache(home) {
   }
 }
 
+/**
+ * エージェントのホームのセッションの記録（.claude）を消す。止めた後も Agent SDK の子プロセス（Claude Code）が少しのあいだ書き込み、
+ * 消すのと競って ENOTEMPTY になることがある。記録（record.json）は書いた後なので、消せなくても実行は止めない。
+ * rm は試験で差し替える。@returns {boolean} 消せたか
+ */
+export function removeSessionRecords(home, rm = fs.rmSync) {
+  try {
+    rm(path.join(home, '.claude'), { recursive: true, force: true, maxRetries: 3 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** tests/run.py の段階（stages[] の1つ）の不合格が、すべてディスクの誤りか。不合格がなければ偽 */
 export function diskErrorsOnly(stage) {
   const failures = stage?.failures ?? [];
