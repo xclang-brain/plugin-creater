@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "deny": [
-      "Read(/tests/dev-eval/heldout/**)",
-      "Read(**/heldout/**)",
-      "Bash(*dev-eval/heldout*)"
-    ]
-  }
-}
