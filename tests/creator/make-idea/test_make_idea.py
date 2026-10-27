@@ -162,11 +162,10 @@ class Agents(unittest.TestCase):
         meta, _ = agent_meta(agent_id)
         return [t.lower() for t in meta.get("tools", [])]
 
-    def test_REQ_059_reader_cannot_read_files(self):
+    def test_REQ_059_reader_cannot_find_or_change_files(self):
+        """読み手は read だけ（場所を渡されず、探すツールを持たない）。ツールなしは Claude Code が起動を断る（アイデア創出の設計 1章）"""
         tools = self.tools("idea-reader")
-        self.assertTrue(tools, "tools を空にすると、Claude Code 向けの置き換えですべてのツールになる")
-        for name in ("read", "view", "search", "grep", "glob", "edit", "execute", "web", "agent"):
-            self.assertNotIn(name, tools)
+        self.assertEqual(["read"], tools)
 
     def test_thinker_has_no_web_and_researcher_has_web(self):
         self.assertNotIn("web", self.tools("idea-thinker"))
@@ -236,7 +235,7 @@ class Conversion(unittest.TestCase):
         return yaml.safe_load(head)
 
     def test_agent_tools_become_claude_code_names(self):
-        self.assertEqual("TodoWrite", self.converted_agent("idea-reader")["tools"])
+        self.assertEqual("Read", self.converted_agent("idea-reader")["tools"])
         thinker = self.converted_agent("idea-thinker")
         self.assertEqual("inherit", thinker["model"])
         self.assertNotIn("Web", thinker["tools"])

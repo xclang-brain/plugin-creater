@@ -204,7 +204,8 @@ async function main() {
           } else if (c.type === 'tool_use') {
             const input = { ...c.input };
             if (typeof input.content === 'string') input.content = `${input.content.slice(0, 300)}…`;
-            calls.push({ owner, id: c.id, name: c.name, input, group: owner === 'main' ? group : null });
+            // 同じ応答の tool_use は、別々のメッセージで届くことがある。メッセージの番号（message.id）が同じものを、同時に起動したものとする
+            calls.push({ owner, id: c.id, name: c.name, input, group: owner === 'main' ? (m.message?.id ?? `g${group}`) : null });
             if (c.name === 'Agent' || c.name === 'Task') log({ phase: 'agent', type: c.input?.subagent_type, description: c.input?.description });
           }
         }

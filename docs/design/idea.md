@@ -11,11 +11,11 @@
 | 既定のパラメーター | `skills/make-idea/assets/params.json` | 初めて使うときに、データの置き場所へ写す元 | REQ-062 |
 | 調査のエージェント | `com.github.copilot/agents/idea-researcher.agent.md` | Web で作品を集め、掘り下げ、似たものを探す。引用つきで書き写す。`tools`：`web`、`read`、`edit`、`search`。モデルは費用の低いもののリスト | REQ-055、REQ-059 |
 | 検討のエージェント | `com.github.copilot/agents/idea-thinker.agent.md` | なぜなぜ分析、本質の集約、案を作る、壁打ちの相手、説明を書く、振り返り。役は頼みの文で決まる。`tools`：`read`、`edit`、`search`。`model` を書かず、ユーザーが選んだモデルを継ぐ | REQ-056〜REQ-060 |
-| 読み手のエージェント | `com.github.copilot/agents/idea-reader.agent.md` | 説明の文だけを読む第三者。ファイルを読むツールを持たない（`tools`：`todo` だけ） | REQ-059 |
+| 読み手のエージェント | `com.github.copilot/agents/idea-reader.agent.md` | 説明の文だけを読む第三者。ファイルの場所を渡されず、探すツールを持たない（`tools`：`read` だけ） | REQ-059 |
 | 試験 | `tests/creator/make-idea/`、`tests/dev-eval/runner/idea*.mjs` | 7章 | 全体 |
 
 - 3つのエージェントに分けるのは、持つツールが違うからである（調査だけが Web、読み手だけがファイルを読めない）。役ごとにエージェントを増やさない（憲章 第10条）。
-- 読み手の `tools` を空にしないのは、Claude Code 向けの置き換え（`convert.py`）が、空の `tools` を「すべてのツール」にするためである。`todo` だけなら、どちらの CLI でもファイルを読めない。
+- 読み手の `tools` を空にしないのは、Claude Code 向けの置き換え（`convert.py`）が、空の `tools` を「すべてのツール」にするためである。`todo` だけにすると、置き換えた `TodoWrite` が Claude Code（Agent SDK 0.3.310 が同梱する版）になく、「ツールが1つもないエージェント」として起動を断られた（流れの試験で実測）。そこで、`read` だけにする。読み手には、ファイルの場所を渡さず（REQ-059）、探すツール（`search`）も渡さないので、作る過程のファイルにたどり着けない。読み手がファイルを読んでいないことは、流れの試験で確かめる（7.1）。
 - スクリプトを使わない。業務の Windows の PC に Python や Node.js があるかが分からないためである。パラメーターの確かめも、メインのエージェントが行う。
 
 ## 2. データの置き場所と形
