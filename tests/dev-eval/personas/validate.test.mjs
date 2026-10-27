@@ -507,6 +507,7 @@ const RUN2_ANSWERS = {
 const RUN3 = {
   44: { header: 'ファイル', question: 'クロスコンパイルとデプロイのスキル（kx200-firmware/.github/skills の cross-compile と deploy）は受け取りました。ほかにも実際のファイルがあると、AI が KX-200 での書き方や決まりを取り違えにくくなり、直した後のプラグインを試しに動かすときの入力にも使えます。最近 KX-200 のボードでデバッグをしたときに受け取ったファイルと作ったファイル（ログ、ビルドの出力など）、いつも使っているファイル（手順書、設定ファイル、スクリプトなど）は、どこにありますか？ファイルの場所（パス）か @ で書いてください。2つのスキルのほかにない場合は「ない」と書いてください。' },
   182: { header: '前回の1回', question: 'AI は、あなたが KX-200 でふだん当たり前にしている手順を知りません。最近 KX-200 のボードで、ソースを直してクロスコンパイルし、ボードに入れて動かし、ログを取った1回を思い出して、ビルドを始めるところからログを見終えるところまでを、したことを順に書いてください。' },
+  191: { header: '流れ', question: '流れを取り違えると、AI が手順を飛ばしたり順番を入れ替えたりします。最近の1回（センサーの平均値の件）は、次のように理解しました。\n1. ソースに DBG_LOG でログを足す\n2. kx-build.sh でクロスコンパイルする\n3. mkkximg.py で ELF を .kximg にする\n4. kxtool -d 192.168.7.2 send で送り、kxinstall /tmp/<イメージ> で入れる\n5. reboot する\n6. kxapp run <アプリの名前> で動かし、exited の行まで取ってログとして保存する\n7. ログが取れなかったときは reboot してやり直す\n8. ログを見て原因を突き止め、ソースを直す\n違うところと足りないところを書いてください。なければ「ない」と書いてください。' },
   218: { header: 'つまずき', question: '初めての人がつまずくところは、AI もつまずきやすいところです。KX-200 のボードでビルドして入れて動かし、ログを取るとき、初めての人がやると、どこで間違えそうですか？' },
 };
 const RUN3_ANSWERS = {
@@ -514,6 +515,8 @@ const RUN3_ANSWERS = {
   44: 'ない。2つのスキルのほかに渡せるファイルはありません。ビルドとイメージ作成のスクリプト（kx-build.sh と mkkximg.py）は、それぞれのスキルの scripts フォルダの中にあります。',
   // 最近の1回の答え。reveal で言わないとした、ログの出し方（DBG_LOG）と目印（exited の行）を言った（3回目の診断 5章）
   182: '書く\n\n最近の1回は、センサーの平均値がおかしかった件です。順にこうしました。\n\n1. 原因を探すため、ソースにログを足した（DBG_LOG で出力）。\n2. kx-build.sh でクロスコンパイルした。\n3. mkkximg.py で ELF を .kximg のイメージにした。\n4. kxtool -d 192.168.7.2 send でボードに送り、kxinstall /tmp/<イメージ> で入れた。\n5. ボードを reboot した。\n6. kxapp run <アプリの名前> で動かし、出力を終わりの目印（exited の行）まで取って、ログとして保存した。\n7. 途中で1回ログが取れなかったので、ボードを reboot してやり直したら取れた。\n8. ログを見て原因を突き止め、ソースを直した。',
+  // 流れの要約の問いに、示された中の誤り（7番目）と順番の注意だけを答えた（示されていないコンパイラ・リンク・最適化・git pull・uname は言っていない）
+  191: '違う・足りない\n\n7番目が違います。ログが取れなかったのは1回だけで、reboot してやり直したら取れました。ログが取れないときはいつも reboot してやり直す、という書き方ではなく、「deploy できない、実機が応答しない、ログが取れないときは、1回 reboot してやり直し、それでもだめなら人に伝えて判断してもらう」としてください。\n\nまた、4番目と5番目の間に順番の注意があります。kxinstall で入れただけでは有効にならず、reboot するまでは入れたものが使えません。\n\nほかの1、2、3、6、8は、そのとおりです。',
   218: '書く\n\nつまずきやすいところは次の4つです。\n\n1. ビルドは arm-linux-gnueabihf-gcc で行います。開発機の gcc でビルドすると x86 の実行ファイルになり、KX-200 では動きません。\n2. 必ず静的リンク（-static）にします。KX-200 には共有ライブラリのローダーがないので、動的リンクだと not found と出て動きません。\n3. ボードに送るものは、必ず mkkximg.py で .kximg のイメージにします。ELF のまま送って kxinstall すると bad magic で断られます。\n4. kxtool -d <アドレス> send で送り、kxinstall /tmp/<イメージ> で入れた後、reboot するまでは入れたものが有効になりません。reboot してから kxapp run <アプリの名前> で動かします。',
 };
 /** 外側の EVAL が asked を当てる文（outer-grade.mjs の questionTextOf と同じ、見出しと問い） */
@@ -876,9 +879,9 @@ test('REQ-056 聞かれないと話さないナレッジの asked は、ほか�
     for (const id of ['cc-static', 'dp-steps']) assert.doesNotMatch(q, asked(id), `[${seq}] ${id}`);
     // 範囲の問い [152] は、組み込むスクリプトの名前（mkkximg.py）を示すので、dp-image を聞いたことになる。名前のほかには当たらない
     assert.doesNotMatch(q.replaceAll('mkkximg.py', ''), asked('dp-image'), `[${seq}] dp-image`);
-    // 「修正とログ追加をして」（範囲）や「ログ追加・クロスコンパイル・デプロイ」（一覧の K-07）には当たらない。一覧の K-08 は printf の決まり
-    // そのもの（log-dbg はそれに書き足した決まり）なので、printf で当たるのは、話題を示された問いとしてよい
-    assert.doesNotMatch(q.replaceAll('printf', ''), asked('log-dbg'), `[${seq}] log-dbg`);
+    // 「修正とログ追加をして」（範囲）や「ログ追加・クロスコンパイル・デプロイ」（一覧の K-07）には当たらない。一覧の K-08 の「printfを使い」
+    // にも当たらない（一覧の問いで書き足した決まりを話すと、聞かれずに話したことにする。4回目の診断 2章）
+    assert.doesNotMatch(q, asked('log-dbg'), `[${seq}] log-dbg`);
   }
   // 1回目の範囲の問いの「C/C++ を静的に調べ」は、リンクのしかたではない
   assert.doesNotMatch(RUN1_161_ITEM2, asked('cc-static'));
@@ -1050,6 +1053,134 @@ test('REQ-056 最近の1回の問いには、送る形・手順・いつもと�
   // 2回目の答え [186] は、言わない側を言っていない。送った後の手順（kxinstall・reboot・kxapp run）を言っていないので、手順が足りない
   assert.deepEqual(notOnLastTime.filter((id) => forbidRe(id).test(RUN2_ANSWERS[185])), []);
   assert.deepEqual(EXPECT.filter((id) => !answeredRe(id).test(RUN2_ANSWERS[185])), ['dp-steps']);
+});
+
+// 外側の EVAL（改善）4回目の問いと答え（会話の記録の seq。答えは問いの seq で引く）。決まりの一覧の問い [151] は、2回目の [167] と同じ文
+// （記録と同じであることを確かめてある）。見出しと問いと答えは記録のとおり
+const RUN4 = {
+  get 151() {
+    return RUN2[167];
+  },
+  196: { header: '要約', question: 'ここまでの話を記録した内容です。違うところがあると、AI がそのまま取り違えます。\n\n- 流れ：ログを足す → kx-build.sh でビルド → mkkximg.py で .kximg にする → kxtool で送り kxinstall で入れる → reboot → kxapp run で動かしてログを取って保存 → ログを見て直す。今のプラグインの試行の流れ（修正・ログ追加 → クロスコンパイル → デプロイ → ログ収集 → 分析）にそのまま当てはまると理解しました（推し量ったことです）。\n- 決まったこと：KX-200 向けは arm-linux-gnueabihf-gcc でビルドし、開発機の gcc は使わない。必ず -static を付ける。送るのは必ず mkkximg.py で作った .kximg にする。kxinstall の後は必ず reboot してから動かす。\n- まだ決まっていないこと：何をもって「ログが取れなかった」とするか（思い出せないとのことなので、あとで聞くことの点検でもう一度取り上げます）。\n\n違うところと足りないところを書いてください。なければ「ない」と書いてください。' },
+};
+const RUN4_ANSWERS = {
+  // 一覧の問いに、書き足した決まり（DBG_LOG）を足し、printf の決まり（K-08）を「今と違う」と言った（4回目の診断 2章）
+  151: '番号を書く\n\nK-15 が古くなっています。デプロイできない・実機が応答しない・ログが取れないときは、止まらずにボードを1回 reboot してやり直し、それでもだめなら人に伝えて判断してもらいます。ビルドが失敗したときだけは、今までどおりそのまま進めずに人に伝えます。\n\nK-08 も今と違います。KX-200 のファームウェアでは、ログは dbg_log.h の DBG_LOG で出し、printf を直接使いません。',
+  // 要約の問いに、示されていない git pull を足した（4回目の診断 3章）
+  196: '書く\n\n違うところが1つあります。\n\n- 「ログを足す → ビルド」の前に、ビルドの手順の中で git pull をしていることがスキルに書いてありますが、あれは決まりではなく、たまたまです。ソースが git で管理されていないときもあります。\n\nそれ以外は、記録のとおりです。',
+};
+
+test('REQ-054 決まりの一覧の問いでは、書き足した決まり（DBG_LOG）を言わず、printf の決まりを違うとも言わない（4回目の [151]・[152]）', () => {
+  const p = readPersona(EDL);
+  const log = knowledgeOf(p, 'log-dbg');
+  const asked = new RegExp(log.markers.asked);
+  // 一覧の問い（4回目の [151]、3回目の [164] と同じ形のもの、ユーザー役の試験の一覧の問い）は、log-dbg の asked に当たらない
+  const lists = p.userRoleTests.options.filter((o) => /K-08/.test(o.question));
+  assert.ok(lists.some((o) => o.question === RUN4[151].question), 'userRoleTests.options に、4回目の一覧の問い [151] がない');
+  for (const q of [askedText(RUN4[151]), ...lists.map((o) => o.question)]) assert.doesNotMatch(q, asked, q.slice(0, 40));
+  // printf を使うかの問い（いろいろな言い方）、ログの出し方の問い、書き足した決まりの確かめ、範囲の問いの「ログ追加のルール」には当たる
+  const printfQuestions = ['ログを足すとき、printf をそのまま使いますか？', 'ログは printf を使いますか？', 'printf を直接使ってよいですか？', 'printf について教えてください。', 'ログは printf で出していますか？', 'ログを足すときは printf ですか？', 'printf を使っていいですか？', 'printf は使わないのですか？'];
+  for (const q of [...printfQuestions, askedText(RUN1[161]), 'KX-200 では、ログをどう足しますか？']) assert.match(q, asked, q);
+  // 答える条件と、一覧の問いでの答え方
+  assert.match(log.reveal, /printf を使うかを聞かれたとき/);
+  assert.doesNotMatch(log.reveal, /printf について聞かれたとき/);
+  assert.match(log.reveal, /決まりの一覧を見せられて、違うもの・古いものを聞かれたときは、printf の決まりを違うとも古いとも言わず、ログの出し方（使う関数）も言わない/);
+  // printf の決まり（K-08）は今もそのとおりで、DBG_LOG はその「ログ関数を使う場合」の KX-200 での例（k15-now の「ほかは今もそのとおり」と食い違わない）。
+  // 一覧を見せられる前のユーザーは番号を知らないので、番号でなく中身で書く（FORMAT.md 2.5）
+  assert.match(log.fact, /「ログ追加は基本的に printf を使い、ログ関数を使う場合もある」という決まりは、今もそのとおりで、KX-200 の DBG_LOG は、その「ログ関数を使う場合」の例である/);
+  assert.doesNotMatch(log.fact, /K-\d/);
+  assert.match(knowledgeOf(p, 'k15-now').fact, /ほかは今もそのとおり/);
+  // ユーザー役の試験：一覧の問いでは log-dbg を言わない
+  for (const o of lists) assert.deepEqual(o.forbid, ['log-dbg'], o.question.slice(0, 40));
+  // 外側の EVAL の判定：4回目の答え [152] は、聞かれずに DBG_LOG を話したことになる。K-15 だけを答えれば、漏れはない
+  assert.deepEqual(judgeExchange(p, RUN4[151], RUN4_ANSWERS[151]).leaked, ['log-dbg']);
+  const k15only = RUN4_ANSWERS[151].replace(/\n\nK-08 も今と違います。[^\n]+$/, '');
+  assert.notEqual(k15only, RUN4_ANSWERS[151]);
+  const got = judgeExchange(p, RUN4[151], k15only);
+  assert.deepEqual(got.leaked, []);
+  assert.ok(got.answered.includes('k15-now'));
+  for (const o of lists) assert.match(k15only, new RegExp(o.expect));
+  // 一覧の問いの expect は、K-08 を挙げた答えに当たらない。forbid は書き足した決まりの言葉（leak）しか見ないので、DBG_LOG を書かずに
+  // K-08 を違うと言う答え（4回目の診断 7章の3で、K-08 を KX-200 だけの決まりに置き換えた元）も、ここで落とす
+  const withK08 = [RUN4_ANSWERS[151], `${k15only}\n\nK-08 も今と違います。KX-200 では printf を直接使わず、専用のログ関数で出します。`, `${k15only}\n\nK-08 も今と違います。`, `${k15only}\nK08 は古いです。`];
+  for (const o of lists) {
+    for (const answer of withK08) assert.doesNotMatch(answer, new RegExp(o.expect), answer.slice(-30));
+    // K-08 のほかの番号や名前（KX-200）があっても、K-15 を答えれば当たる
+    assert.match(`${k15only}\nKX-200 のボードでの話です。`, new RegExp(o.expect));
+  }
+  // DBG_LOG を書かずに、printf を使わないと言った答えも、ユーザー役の試験では log-dbg を話したことになる（leak）
+  assert.match(withK08[1], new RegExp(log.markers.leak));
+  assert.doesNotMatch(k15only, new RegExp(log.markers.leak));
+});
+
+test('REQ-056 要約や流れの問いでは、示された中になく、まだ話していない、聞かれないと話さないナレッジを言わない（4回目の [196]・[197]、3回目の [191]）', () => {
+  const p = readPersona(EDL);
+  // 答え方は、聞かれないと話さないナレッジ（答え方の立場を除く）のすべてに書く。要約に出るナレッジは回ごとに違う（3回目の [191] と4回目の [196] で違う）
+  const hidden = p.knowledge.filter((k) => !k.volunteer && !k.stance).map((k) => k.id);
+  assert.equal(hidden.length, 10);
+  for (const id of hidden) {
+    const reveal = knowledgeOf(p, id).reveal;
+    // 条件つき：示された中になく、まだ話していないときだけ言わない。示された中の誤りは直し、前に話したことが抜けていれば足りないと言ってよい（3回目の [228] の目印）
+    const rule = /話を要約や流れにまとめて示され、違うところ・足りないところを聞かれても、示された中に([^。]+?)がなく、これまでのやり取りで\1をまだ話していなければ、([^。]+言わない)（示された中の誤りは直し、これまでに話した\1が抜けているときは、足りないところとして言ってよい）/.exec(reveal);
+    assert.ok(rule, `${id} の reveal に、要約の問いでの答え方がない`);
+    assert.doesNotMatch(reveal, /示された中の誤りだけを直す/, id);
+    // 言わないことは、そのナレッジの言葉で書く（log-dbg は、最近の1回・つまずきの項と同じく「ログの出し方（使う関数）」と中身で書く）
+    if (id !== 'log-dbg') assert.match(rule[2], new RegExp(knowledgeOf(p, id).markers.leak), id);
+  }
+  const forbidRe = (id) => new RegExp(knowledgeOf(p, id).markers.leak ?? knowledgeOf(p, id).markers.answered);
+  const cases = [
+    { e: RUN4[196], answer: RUN4_ANSWERS[196], said: ['cc-git-pull'], notShown: ['cc-debug', 'cc-git-pull', 'dp-uname', 'log-dbg'] },
+    { e: RUN3[191], answer: RUN3_ANSWERS[191], said: [], notShown: ['cc-toolchain', 'cc-static', 'cc-debug', 'cc-git-pull', 'dp-uname'] },
+  ];
+  for (const { e, answer, said, notShown } of cases) {
+    // 問いに出ていないもの（asked に当たらないもの）を、ユーザー役の試験の forbid にする。expect は空
+    assert.deepEqual(hidden.filter((id) => !new RegExp(knowledgeOf(p, id).markers.asked).test(askedText(e))), notShown);
+    const c = p.userRoleTests.compound.find((x) => x.question === e.question);
+    assert.ok(c, `userRoleTests.compound に、要約や流れの問いがない：${e.question.slice(0, 30)}`);
+    assert.deepEqual(c.expect, []);
+    assert.deepEqual([...c.forbid].sort(), [...notShown].sort());
+    // 外側の EVAL の判定とユーザー役の試験の言葉：4回目の答え [197] は git pull を話した。3回目の答え [192] は示された中の誤りだけを直した
+    assert.deepEqual(judgeExchange(p, e, answer).leaked, said);
+    assert.deepEqual(c.forbid.filter((id) => forbidRe(id).test(answer)), said);
+    for (const ok of ['ない', '書く\n\n違うところが1つあります。kxinstall の後は必ず reboot してから kxapp run で動かします。それ以外は、記録のとおりです。']) {
+      assert.deepEqual(judgeExchange(p, e, ok).leaked, [], ok);
+      assert.deepEqual(c.forbid.filter((id) => forbidRe(id).test(ok)), [], ok);
+    }
+  }
+  // 前に話したことが要約から抜けたと言うのは、外側の EVAL でも聞かれずに話したことにならない（初めて話した答えで見る）。まだ話していなければ漏れ
+  const missing = '書く\n\n足りないところがあります。ビルドは -O2 で、デバッグの調査のときだけ --debug を付けます。';
+  const before = { header: '最適化', question: 'ビルドの最適化に決まりはありますか？', answer: 'ふだんは -O2 です。gdb で追うときだけ --debug を付けます。' };
+  const trace = (exchanges) => knowledgeTrace({ persona: p, exchanges, scope: { embedded: '', excluded: '', task: '' } }).find((t) => t.id === 'cc-debug');
+  assert.equal(trace([before, { ...RUN4[196], answer: missing }]).leaked, false);
+  assert.equal(trace([{ ...RUN4[196], answer: missing }]).leaked, true);
+});
+
+test('REQ-015 options にも forbid を書ける。forbid だけを見るまとめた質問は、expect を空にできる', async () => {
+  // options の forbid も、compound と同じ決まりで確かめる
+  const r = await mutate(EDL, (q) => {
+    q.userRoleTests.options[0].forbid = ['nope', 'dp-ip'];
+    q.userRoleTests.options[1].forbid = [];
+  });
+  assert.ok(hasError(r, 'userRoleTests.options[0].forbid の「nope」が、knowledge の id にない'), r.errors.join('\n'));
+  assert.ok(hasError(r, 'userRoleTests.options[0].forbid の「dp-ip」は、聞かれないと話さないナレッジ（volunteer が false）ではない'), r.errors.join('\n'));
+  assert.ok(hasError(r, 'userRoleTests.options[1].forbid は、knowledge の id を 1 つ以上並べる'), r.errors.join('\n'));
+  // log-dbg の asked を、狭める前の printf に戻すと、一覧の問いに当たる（言っても聞かれずに話したことにならない）ので誤り
+  const r2 = await mutate(EDL, (q) => {
+    knowledgeOf(q, 'log-dbg').markers.asked += '|printf';
+  });
+  assert.ok(hasError(r2, 'userRoleTests.options[0] の質問が、forbid のナレッジ「log-dbg」の markers.asked に当たる'), r2.errors.join('\n'));
+  // expect が空のまとめた質問は、forbid があるときだけよい。forbid があっても、expect が1つは誤り（2つ以上か空）
+  const at = readPersona(EDL).userRoleTests.compound.findIndex((c) => c.expect.length === 0);
+  assert.ok(at >= 0);
+  assert.equal((await validatePersona(dirOf(EDL))).ok, true);
+  const r3 = await mutate(EDL, (q) => {
+    delete q.userRoleTests.compound[at].forbid;
+  });
+  assert.ok(hasError(r3, `userRoleTests.compound[${at}].expect は、knowledge の id を 2 つ以上並べる（forbid があるときは空でもよい）`), r3.errors.join('\n'));
+  const r4 = await mutate(EDL, (q) => {
+    q.userRoleTests.compound[at].expect = ['dp-image'];
+  });
+  assert.ok(hasError(r4, `userRoleTests.compound[${at}].expect は、knowledge の id を 2 つ以上並べる`), r4.errors.join('\n'));
 });
 
 test('REQ-055 示したスキルのほかの文（環境の条件、status の意味）への立場があり、確かめられたら「このとおり」と答える', async () => {

@@ -1111,6 +1111,13 @@ describe('抜き書きは、ユーザーの言葉の中にある（plugin-creato
 });
 
 describe('今のプラグインを直す（plugin-creator_change と、直すときの記録・確認。BLUEPRINT 5 C1）', () => {
+  // 新しく記録を作ったときの返り値の終わり：これからの流れの文そのものと、それをそのまま書く指示（hearing.md 3.4・7.5）。
+  // 「スキル」と言わず「今使っているファイル」と書く（ユーザーの言い方は分からず、words.md は「スキル」を話さないため）
+  const FLOW_ASK = '\n次の行を、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n';
+  const FLOW_GENERATED =
+    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 今の決まりの一覧を確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具（作業の画面を変えるときは、画面で見たいことも） → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+  const FLOW_NOT_GENERATED =
+    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 作業の最初から最後まで、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具 → 作業の画面で見たいこと → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
   const CHANGE_KEYS = ['folder', 'manifest', 'name', 'version', 'generated', 'carried', 'removed', 'maxId', 'criteriaIds', 'evalPrompts', 'wants', 'startedAt'];
   const ALL_IDS = PLUGIN_KNOWLEDGE.map((k) => k.id);
 
@@ -1120,7 +1127,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       const { folder, text } = await startChange(run);
       assert.equal(
         text,
-        '直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。仕事のやり方や決まり K-01〜K-05 の5件を、確かめたいこととして取り込みました。新しい決まりは K-06 から付きます。\nこれからの流れをまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。',
+        `直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。仕事のやり方や決まり K-01〜K-05 の5件を、確かめたいこととして取り込みました。新しい決まりは K-06 から付きます。${FLOW_ASK}${FLOW_GENERATED}`,
       );
       assert.deepEqual(internalSymbolsIn(text), []);
       assert.deepEqual(leftWordsIn(text), []);
@@ -1465,10 +1472,12 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     for (const plugin of [{ task: null }, { knowledge: null }, { task: null, knowledge: null }]) {
       const r = await generatedOf(plugin);
       assert.deepEqual([r.generated, r.carried, r.rows, r.criteriaIds, r.evalPrompts], [false, [], 0, {}, []], JSON.stringify(plugin));
-      assert.match(
+      assert.equal(
         r.text,
-        /^直すプラグインとして記録しました（edl-sample、今の版 0\.1\.0）。決まりの一覧（tests\/knowledge\.json）と com\.github\.copilot\/extensions\/edl-sample\/task\.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-\d+ から付きます。\nこれからの流れ（作っていないプラグインのときの流れ）をまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。$/,
+        `直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）と com.github.copilot/extensions/edl-sample/task.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-${String(r.maxId + 1).padStart(2, '0')} から付きます。${FLOW_ASK}${FLOW_NOT_GENERATED}`,
+        JSON.stringify(plugin),
       );
+      assert.deepEqual(leftWordsIn(r.text), [], JSON.stringify(plugin));
     }
     // 決まりの一覧だけがあるとき：取り込まないが、その番号とは重ならないように付ける
     assert.equal((await generatedOf({ task: null })).maxId, 5);
@@ -1478,7 +1487,10 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     assert.deepEqual([loose.generated, loose.maxId], [false, 12]);
     // 決まりの一覧が空の生成プラグイン
     const empty = await generatedOf({ knowledge: [], removed: [{ id: 'K-03', kind: 'other', item: '進め方', text: 'x' }] });
-    assert.match(empty.text, /決まりの一覧（tests\/knowledge\.json）に決まりがないので、取り込んだものはありません。新しい決まりは K-04 から付きます。\nこれからの流れをまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。$/);
+    assert.equal(
+      empty.text,
+      `直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。新しい決まりは K-04 から付きます。${FLOW_ASK}${FLOW_GENERATED}`,
+    );
   });
 
   test('REQ-054 直すときは、段階と聞くこと「できていたことの確認」を断る（できていたことは、すべて引き継ぐ）', async () => {

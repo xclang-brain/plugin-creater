@@ -344,28 +344,33 @@ function validateUserRoleTests(persona, errors, context) {
       else if (id) for (const q of r.questions) askedMatches(id, q, `userRoleTests.recall[${i}]`);
     });
   }
+  // 言わないはずのナレッジ（compound と options の forbid。任意）：聞かれないと話さないもので、expect にないもの
+  const checkForbid = (c, label) => {
+    if (!c || !('forbid' in c)) return;
+    if (!Array.isArray(c.forbid) || c.forbid.length === 0) {
+      errors.push(`${label}.forbid は、knowledge の id を 1 つ以上並べる`);
+      return;
+    }
+    for (const id of c.forbid) {
+      const k = context.knowledgeById.get(id);
+      if (!k) errors.push(`${label}.forbid の「${id}」が、knowledge の id にない`);
+      else if (k.volunteer !== false) errors.push(`${label}.forbid の「${id}」は、聞かれないと話さないナレッジ（volunteer が false）ではない`);
+      // 質問が asked に当たると、外側の EVAL では、言っても聞かれずに話したことにならない（見分けられない）
+      else if (isText(c.question) && regexOf(k.markers?.asked)?.test(c.question)) errors.push(`${label} の質問が、forbid のナレッジ「${id}」の markers.asked に当たる`);
+      if (Array.isArray(c.expect) && c.expect.includes(id)) errors.push(`${label}.forbid の「${id}」が、expect にもある`);
+    }
+  };
   if (!Array.isArray(t.compound) || t.compound.length === 0) errors.push('userRoleTests.compound がない（1 件以上）');
   else {
     t.compound.forEach((c, i) => {
       const label = `userRoleTests.compound[${i}]`;
       if (!isText(c?.question)) errors.push(`${label}.question がない`);
-      if (!Array.isArray(c?.expect) || c.expect.length < 2 || c.expect.some((id) => !context.ids.has(id))) {
-        errors.push(`${label}.expect は、knowledge の id を 2 つ以上並べる`);
+      // forbid があるときは、expect は空でもよい（言わないことだけを見る問い。要約を示して違うところを聞く問いなど）
+      const hasForbid = Array.isArray(c?.forbid) && c.forbid.length > 0;
+      if (!Array.isArray(c?.expect) || c.expect.some((id) => !context.ids.has(id)) || !(c.expect.length >= 2 || (c.expect.length === 0 && hasForbid))) {
+        errors.push(`${label}.expect は、knowledge の id を 2 つ以上並べる（forbid があるときは空でもよい）`);
       } else for (const id of c.expect) askedMatches(id, c.question, label);
-      // 言わないはずのナレッジ（任意）：聞かれないと話さないもので、expect にないもの
-      if (c && 'forbid' in c) {
-        if (!Array.isArray(c.forbid) || c.forbid.length === 0) errors.push(`${label}.forbid は、knowledge の id を 1 つ以上並べる`);
-        else {
-          for (const id of c.forbid) {
-            const k = context.knowledgeById.get(id);
-            if (!k) errors.push(`${label}.forbid の「${id}」が、knowledge の id にない`);
-            else if (k.volunteer !== false) errors.push(`${label}.forbid の「${id}」は、聞かれないと話さないナレッジ（volunteer が false）ではない`);
-            // 質問が asked に当たると、外側の EVAL では、言っても聞かれずに話したことにならない（見分けられない）
-            else if (isText(c.question) && regexOf(k.markers?.asked)?.test(c.question)) errors.push(`${label} の質問が、forbid のナレッジ「${id}」の markers.asked に当たる`);
-            if (Array.isArray(c.expect) && c.expect.includes(id)) errors.push(`${label}.forbid の「${id}」が、expect にもある`);
-          }
-        }
-      }
+      checkForbid(c, label);
     });
   }
   if (!Array.isArray(t.context) || t.context.length === 0) errors.push('userRoleTests.context がない（1 件以上）');
@@ -383,6 +388,7 @@ function validateUserRoleTests(persona, errors, context) {
       if (!isText(o?.question)) errors.push(`${label}.question がない`);
       if (!isTextList(o?.choices, 2)) errors.push(`${label}.choices は、選択肢を 2 つ以上並べる`);
       checkRegex(o?.expect, `${label}.expect`, errors);
+      checkForbid(o, label);
     });
   }
   const confirmed = new Set();

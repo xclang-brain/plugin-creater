@@ -221,6 +221,25 @@ test('REQ-057 REQ-061 confirm-contents：スキルのとおり、確認を1つ�
   assert.equal(gradesOf(retried)['confirm-contents'].ok, true);
 });
 
+test('REQ-057 confirm-contents：土台は、words.md の言い方「共通の形」でも、同じ文の中に「今の版」があれば数える（外側の EVAL 4回目 [409]）', () => {
+  // 4回目の確認 1/2 [409] の「変わること（ほか）」の文そのもの
+  const run4 = 'plugin-creator が用意した共通の形を、今の版に上げます。人に聞いて待つしくみ、画面の文字の書体、AI への指示や画面・仕様書・試験の道具の共通部分が、足されたり上書きされたりします。';
+  const ok = goodCase();
+  const first = ok.items.find((i) => i.seq === 11);
+  first.text = first.text.replace('共通の土台を今の版に上げます。', run4);
+  assert.doesNotMatch(first.text, /土台/);
+  const g = gradesOf(ok)['confirm-contents'];
+  assert.equal(g.ok, true, g.detail);
+  // 「共通の形」だけで、同じ文に「今の版」がなければ数えない（文をまたぐ・「今の版」がない・「共通部分」だけ）
+  for (const shown of ['plugin-creator が用意した共通の形を使います。今の版に上げます。', 'plugin-creator が用意した共通の形を、新しくします。', 'AI への指示の共通部分を、今の版に上げます。']) {
+    const bad = expectOnlyFails((a) => {
+      const i = a.items.find((x) => x.seq === 11);
+      i.text = i.text.replace('共通の土台を今の版に上げます。', shown);
+    }, ['confirm-contents']);
+    assert.match(bad['confirm-contents'].detail, /土台/, shown);
+  }
+});
+
 test('REQ-057 version-approved：直した版が確認の版と違う・元の版より大きくないと落ちる', () => {
   expectOnlyFails((a) => { a.repo.versionAfter = '0.1.1'; }, ['version-approved']);
   expectOnlyFails((a) => { a.state.confirmation.version = '0.1.0'; a.repo.versionAfter = '0.1.0'; for (const i of a.items) if (i.text) i.text = i.text.replaceAll('0.2.0', '0.1.0'); }, ['version-approved']);

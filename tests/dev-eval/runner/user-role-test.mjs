@@ -5,16 +5,19 @@
 // 観点（FORMAT.md 2.3）
 //   leak         漏らさない：大まかな質問（generic）に、聞かれないと話さないナレッジを話さない
 //   recall       答える：ナレッジごとの具体的な質問に、そのナレッジを答える。聞き直して答えてよい話し方（reask）は、1 回聞き直した後の答えまでを見る
-//   compound     まとめて答える：いくつかのことを 1 つにまとめた質問に、すべて答える。forbid があれば、そのナレッジは話さない
+//   compound     まとめて答える：いくつかのことを 1 つにまとめた質問に、すべて答える。forbid があれば、そのナレッジは話さない（forbid でも数える）
 //   unknown      作らない：ナレッジにないことは「特に決まっていません」と答える
 //   context      前の話を踏まえる：後の質問が前の答えを指す
-//   options      選択肢で済ませない：選択肢の言葉だけでなく、具体的に答える
+//   options      選択肢で済ませない：選択肢の言葉だけでなく、具体的に答える。forbid があれば、そのナレッジは話さない（forbid でも数える）
+//   forbid       言わないはずのナレッジを話さない：compound と options の forbid に当たった回数。漏らさないと同じく回数で見る
 //   confirm      決まりの確かめに、ファイルの決まりの種類に合う選択肢で答える
 //   instruction  指示のことを話さない：すべての答えを見る
 //   toolMarkup   道具の呼び出しの形で答えない：すべての質問を見る。呼び直して直った答えも数える（user-role.mjs の answerOnce が返す
 //                呼び直しの回数）。呼び直しても直らなかった質問は、その質問の答えを空にし（その観点では不合格になりうる）、試験の全体は続ける
-// 合格の条件（このファイルが決める。testing.md 6.2 は割合を決めていない）
-//   leak・instruction・toolMarkup は 0 件。ほかは 90% 以上。どちらも、結果のファイルに残す。
+// 合格の条件（testing.md 6.2）
+//   leak・forbid・instruction・toolMarkup は 0 件。ほかは 90% 以上。どちらも、結果のファイルに残す。
+//   forbid を compound・options の割合だけで見ると、たまにしか起きない漏れ（外側の EVAL（改善）4回目の要約の問いでの、1 回だけの漏れなど）が、
+//   ほかの答えに薄められて合格に紛れる（18 回中 1 回で 94%）。
 //
 // 使い方（実際のモデルを使う。統括がユーザーの承認をとってから動かす）
 //   node tests/dev-eval/runner/user-role-test.mjs <模擬ユーザーのフォルダ>… [--style 名前]… [--all-styles] [--reps 1] [--out <フォルダ>] [--model <ID>]
@@ -31,7 +34,7 @@ import { INSTRUCTION_WORDS, REASK_QUESTION, USER_ROLE_MODEL, askUserRole, loadQu
 /** 同じ質問を聞く回数（試作の値。--reps で何倍かにする） */
 export const REPS = Object.freeze({ generic: 5, recall: 2, compound: 3, unknown: 2, context: 3, options: 3, confirm: 2 });
 /** 合格の条件 */
-export const THRESHOLDS = Object.freeze({ maxLeaks: 0, maxInstructionWords: 0, maxToolMarkup: 0, minRate: 0.9 });
+export const THRESHOLDS = Object.freeze({ maxLeaks: 0, maxForbidden: 0, maxInstructionWords: 0, maxToolMarkup: 0, minRate: 0.9 });
 
 const regexOf = (p) => new RegExp(p);
 const rate = (xs) => ({ passed: xs.filter(Boolean).length, total: xs.length, rate: xs.length ? xs.filter(Boolean).length / xs.length : 1 });
@@ -94,6 +97,11 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
     onProgress({ phase: 'asked', n: answers.length });
     return r.text;
   };
+  // 言わないはずのナレッジ（personas/FORMAT.md 2.3 の compound と options の forbid）：漏らさないと同じく leak（なければ answered）で見る
+  const forbiddenIn = (ids, a) => (ids ?? []).filter((id) => {
+    const m = byId.get(id).markers;
+    return regexOf(m.leak ?? m.answered).test(a);
+  });
   const rec = { leak: [], recall: [], compound: [], unknown: [], context: [], options: [], confirm: [] };
   const jobs = [];
 
@@ -118,20 +126,17 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
       }
     }
   }
-  for (const c of T.compound) {
+  T.compound.forEach((c, at) => {
     for (let i = 0; i < reps.compound; i += 1) {
       jobs.push(async () => {
         const a = await ask(c.question);
+        // expect は、forbid があるときは空でもよい（言わないことだけを見る問い。personas/FORMAT.md 2.3）
         const missing = c.expect.filter((id) => !regexOf(byId.get(id).markers.answered).test(a));
-        // 言わないはずのナレッジ（personas/FORMAT.md 2.3 の forbid）：漏らさないと同じく leak（なければ answered）で見る
-        const forbidden = (c.forbid ?? []).filter((id) => {
-          const m = byId.get(id).markers;
-          return regexOf(m.leak ?? m.answered).test(a);
-        });
-        rec.compound.push({ q: c.question, a, missing, forbidden, ok: missing.length === 0 && forbidden.length === 0 });
+        const forbidden = forbiddenIn(c.forbid, a);
+        rec.compound.push({ at: `compound[${at}]`, forbid: c.forbid ?? [], q: c.question, a, missing, forbidden, ok: missing.length === 0 && forbidden.length === 0 });
       });
     }
-  }
+  });
   for (const q of T.unknown) {
     for (let i = 0; i < reps.unknown; i += 1) {
       jobs.push(async () => {
@@ -153,14 +158,15 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
       });
     }
   }
-  for (const o of T.options) {
+  T.options.forEach((o, at) => {
     for (let i = 0; i < reps.options; i += 1) {
       jobs.push(async () => {
         const a = await ask(o.question, o.choices);
-        rec.options.push({ q: o.question, a, ok: regexOf(o.expect).test(a) });
+        const forbidden = forbiddenIn(o.forbid, a);
+        rec.options.push({ at: `options[${at}]`, forbid: o.forbid ?? [], q: o.question, a, forbidden, ok: regexOf(o.expect).test(a) && forbidden.length === 0 });
       });
     }
-  }
+  });
   for (const c of T.confirm ?? []) {
     for (let i = 0; i < reps.confirm; i += 1) {
       jobs.push(async () => {
@@ -172,6 +178,9 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
   await pool(jobs, concurrency);
 
   const instruction = answers.filter((a) => INSTRUCTION_WORDS.test(a));
+  // forbid のある質問への答え（compound と options）。当たった回数は、ナレッジごと・質問ごと（userRoleTests の何番目か）にも数える
+  const withForbid = [...rec.compound, ...rec.options].filter((r) => r.forbid.length > 0);
+  const hits = (rs) => rs.reduce((n, r) => n + r.forbidden.length, 0);
   const observations = {
     leak: { ...rate(rec.leak.map((r) => r.leaked.length === 0)), leaks: rec.leak.reduce((n, r) => n + r.leaked.length, 0), byKnowledge: Object.fromEntries(hidden.map((k) => [k.id, rec.leak.filter((r) => r.leaked.includes(k.id)).length])) },
     recall: { ...rate(rec.recall.map((r) => r.ok)), byKnowledge: Object.fromEntries(T.recall.map((r) => [r.knowledge, `${rec.recall.filter((x) => x.knowledge === r.knowledge && x.ok).length}/${rec.recall.filter((x) => x.knowledge === r.knowledge).length}`])) },
@@ -179,12 +188,22 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
     unknown: rate(rec.unknown.map((r) => r.ok)),
     context: rate(rec.context.map((r) => r.ok)),
     options: rate(rec.options.map((r) => r.ok)),
+    forbid: {
+      count: hits(withForbid),
+      answers: withForbid.length,
+      byKnowledge: Object.fromEntries([...new Set(withForbid.flatMap((r) => r.forbid))].map((id) => [id, withForbid.filter((r) => r.forbidden.includes(id)).length])),
+      byQuestion: Object.fromEntries([...new Set(withForbid.map((r) => r.at))].map((at) => [at, hits(withForbid.filter((r) => r.at === at))])),
+    },
     confirm: rate(rec.confirm.map((r) => r.ok)),
     instruction: { passed: answers.length - instruction.length, total: answers.length, count: instruction.length },
     toolMarkup: { passed: answers.length - markup.length, total: answers.length, count: markup.length, fixed: markup.filter((m) => m.fixed).length, unfixed: markup.filter((m) => !m.fixed).length },
   };
   const failures = [];
   if (observations.leak.leaks > thresholds.maxLeaks) failures.push(`漏らさない：聞かれないと話さないナレッジが ${observations.leak.leaks} 回漏れた`);
+  if (observations.forbid.count > (thresholds.maxForbidden ?? 0)) {
+    const where = Object.entries(observations.forbid.byQuestion).filter(([, n]) => n > 0).map(([at, n]) => `${at} ${n} 回`).join('、');
+    failures.push(`言わないはずのナレッジを話さない：まとめた質問・選択肢の問いで、言わないはずのナレッジを ${observations.forbid.count} 回話した（${where}）`);
+  }
   if (observations.instruction.count > thresholds.maxInstructionWords) failures.push(`指示のことを話さない：指示の言葉が ${observations.instruction.count} 回の答えに出た`);
   if (observations.toolMarkup.count > (thresholds.maxToolMarkup ?? 0)) {
     failures.push(`道具の呼び出しの形で答えない：${observations.toolMarkup.count} 回の質問で道具の呼び出しの形の答えが出た（呼び直して直った ${observations.toolMarkup.fixed} 回、直らなかった ${observations.toolMarkup.unfixed} 回）`);
@@ -211,6 +230,7 @@ export async function testUserRole({ loaded, styleName = 'normal', query, model 
       unknown: rec.unknown.filter((r) => !r.ok).slice(0, 3),
       context: rec.context.filter((r) => !r.ok).slice(0, 3),
       options: rec.options.filter((r) => !r.ok).slice(0, 3),
+      forbid: withForbid.filter((r) => r.forbidden.length > 0).slice(0, 3),
       confirm: rec.confirm.filter((r) => !r.ok).slice(0, 3),
       instruction: instruction.slice(0, 3),
       toolMarkup: markup.slice(0, 3),

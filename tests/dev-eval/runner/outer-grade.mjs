@@ -480,7 +480,7 @@ const NUMBERED_LINE = /^[ \t]*\d+[.)．）][ \t]*\S/gm;
 
 /**
  * これからの流れを示した文か（testing.md 6.5）：段階を並べた矢印が2つ以上か、番号付きの行が3つ以上ある。
- * 作る流れ（make-plugin の start.md の3）と直す流れ（change-plugin の change-start.md の7）の示す例は、どちらも「これから、次の順に…。A → B → …」の形。
+ * 作る流れ（make-plugin の start.md の3）と直す流れ（plugin-creator_change の返り値。change-start.md の7で書く）の流れの文は、どちらも「これから、次の順に…。A → B → …」の形。
  * 言い方（「これから」など）は見ない。最初の問いより前の文は、ほぼ画面の URL と流れだけで、言い方の条件は誤ったヒットをほとんど防がず、
  * 例と違う言い方の流れを見落とすだけのため
  */

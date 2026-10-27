@@ -103,6 +103,13 @@ export const pluginLabel = (change) => `${change.name}、今の版 ${change.vers
 const MAKE_RECORD_MESSAGE = 'このセッションでは、新しく作るか作り直すお話を聞いています。今のプラグインを直すときは、/clear してから頼み直してください。';
 const REBUILD_IN_CHANGE_MESSAGE = '今のプラグインを直すときは、できていたことは聞かずに、すべて引き継ぎます。段階と聞くこと「できていたことの確認」は使いません。';
 
+/** 直すときの、これからの流れ（hearing.md 3.4。直す流れの記録を新しく作ったときに、返り値で示す）。段階を words.md の言葉で並べる */
+const FLOW_GENERATED =
+  'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 今の決まりの一覧を確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具（作業の画面を変えるときは、画面で見たいことも） → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+/** plugin-creator が作っていないプラグインのとき：決まりの一覧の確かめはなく、最近の1回は作業の最初から最後まで聞き、画面で見たいことも聞く */
+const FLOW_NOT_GENERATED =
+  'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 作業の最初から最後まで、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具 → 作業の画面で見たいこと → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+
 /** 項目の状態が、聞いていないもの（未着手か、変えないので聞かない）か */
 const notAsked = (status) => status === 'todo' || status === 'unchanged';
 
@@ -647,16 +654,19 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     commit(next);
 
     const head = `直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
-    // 流れを書く手順（change-start.md の7）を、返り値でも促す。手順だけでは、流れを書かずに段階を進めた（外側の EVAL〔改善〕の1〜3回目）
-    const flow = (kind) => `\nこれからの流れ${kind}をまだチャットに書いていなければ、次のツールを呼ぶ前に、チャットの文に書いてください。`;
+    // これからの流れの文そのものを返し、そのまま書かせる（hearing.md 3.4。流れの文はここにだけ置く）。
+    // 外側の EVAL（改善）の1〜4回目は、手順で（4回目は返り値でも）「流れを書いて」と言うだけでは、次が流れを書く手順だけになっても書かずに進んだ。
+    // 画面の URL は、書く1行そのものを返したら書けた。ユーザーの言い方（スキルかファイルか）は分からないので、
+    // 「今使っているファイル」と書く（words.md は「スキル」を話さない）
+    const flow = `\n次の行を、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n${plugin.generated ? FLOW_GENERATED : FLOW_NOT_GENERATED}`;
     const nextId = `新しい決まりは ${knowledgeNumber(next.knowledgeCounter + 1)} から付きます。`;
     if (!plugin.generated) {
-      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}${flow('（作っていないプラグインのときの流れ）')}`;
+      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}${flow}`;
     }
     const ids = next.change.carried;
-    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}${flow('')}`;
+    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}${flow}`;
     const range = ids.length === 1 ? ids[0] : `${ids[0]}〜${ids[ids.length - 1]}`;
-    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}${flow('')}`;
+    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}${flow}`;
   }
 
   /**

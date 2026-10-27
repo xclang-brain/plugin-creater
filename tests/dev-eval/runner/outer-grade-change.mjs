@@ -9,7 +9,8 @@
 //   unchanged-before-approval  承認（段階を「生成」に進める記録）より前のスナップショットで、HEAD が初めのまま、直すフォルダの status が空。
 //                              承認の抜き書きが、直前の質問のツールへの答えにある（REQ-057）
 //   confirm-contents           確認が受け付けられてから承認の問いまでの問いと前の文に、新しい版・土台・擬似の機器・課題の言葉。確認の rebuild の
-//                              keep と change が空でない（REQ-057・061）。確認は、受け付けられた後に、いくつかに分けて、そのたびに問いと一緒に
+//                              keep と change が空でない（REQ-057・061）。土台は「土台」か、1つの文の中の「共通の形 … 今の版」（words.md の
+//                              「ひな形 → plugin-creator が用意した共通の形」に従った言い方）。確認は、受け付けられた後に、いくつかに分けて、そのたびに問いと一緒に
 //                              示すので（make-plugin の confirm.md の3、change-confirm.md の3）、承認の問いの前の文だけでなく、その間をすべて見る。
 //                              新しい版は、記録の confirmation.version の文字そのもの（なければ版の形の数）
 //   version-approved           直した plugin.json の version ＝ 記録の confirmation.version ＞ 元の版（REQ-057）
@@ -230,7 +231,8 @@ function gradeConfirmContents({ units, items, approval, confirm, state }) {
   const version = approvedVersion(state);
   const needs = [
     [version ? `新しい版（${version}）` : '新しい版（記録に確認の版がないので、版の形の数）', version ? versionPattern(version) : VERSION_SHAPE],
-    ['土台', /土台/],
+    // 土台：make-plugin の words.md は「ひな形」を「plugin-creator が用意した共通の形」と言うので、1つの文の中の「共通の形 … 今の版」も数える
+    ['土台（または「共通の形 … 今の版」）', /土台|共通の形[^。\n]{0,40}今の版/],
     ['擬似の機器', /擬似|エミュレー/],
     ['課題', /課題/],
   ];
@@ -240,7 +242,7 @@ function gradeConfirmContents({ units, items, approval, confirm, state }) {
   if (!rebuild?.change?.length) problems.push('確認の rebuild.change（変わること）が空');
   return {
     ok: problems.length === 0,
-    detail: problems.join(' / ') || `確認から承認の問いまでの ${shown.length} つの問いとその前の文に、新しい版・土台・擬似の機器・課題があり、引き継ぐことと変わることを記録した`,
+    detail: problems.join(' / ') || `確認から承認の問いまでの ${shown.length} つの問いとその前の文に、新しい版・土台（または「共通の形 … 今の版」）・擬似の機器・課題があり、引き継ぐことと変わることを記録した`,
   };
 }
 
