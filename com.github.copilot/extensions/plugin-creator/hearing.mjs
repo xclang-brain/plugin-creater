@@ -653,20 +653,20 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     next.knowledgeCounter = plugin.maxId; // 新しい番号は、これまでに使った番号の最大の次から（D15）
     commit(next);
 
-    const head = `直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
-    // これからの流れの文そのものを返し、そのまま書かせる（hearing.md 3.4。流れの文はここにだけ置く）。
-    // 外側の EVAL（改善）の1〜4回目は、手順で（4回目は返り値でも）「流れを書いて」と言うだけでは、次が流れを書く手順だけになっても書かずに進んだ。
-    // 画面の URL は、書く1行そのものを返したら書けた。ユーザーの言い方（スキルかファイルか）は分からないので、
-    // 「今使っているファイル」と書く（words.md は「スキル」を話さない）
-    const flow = `\n次の行を、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n${plugin.generated ? FLOW_GENERATED : FLOW_NOT_GENERATED}`;
+    // 返り値は、画面を開くツール（creator.mjs）と同じ並びにする（hearing.md 3.4・7.5。流れの文はここにだけ置く）。
+    // 1行目は、チャットにそのまま書く流れの文。2行目は、写すのが1行目だけと分かるように「上の1行」と書く。記録の知らせはその後。
+    // 外側の EVAL（改善）の1〜5回目は、流れが書かれなかった（5回目は、書く文を返り値の最後の行に置いていた）。URL は、この並びで書けた。
+    // ユーザーの言い方（スキルかファイルか）は分からないので、「今使っているファイル」と書く（words.md は「スキル」を話さない）
+    const flow = `${plugin.generated ? FLOW_GENERATED : FLOW_NOT_GENERATED}\n上の1行（これから、次の順に…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n`;
+    const head = `${flow}直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
     const nextId = `新しい決まりは ${knowledgeNumber(next.knowledgeCounter + 1)} から付きます。`;
     if (!plugin.generated) {
-      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}${flow}`;
+      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}`;
     }
     const ids = next.change.carried;
-    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}${flow}`;
+    if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}`;
     const range = ids.length === 1 ? ids[0] : `${ids[0]}〜${ids[ids.length - 1]}`;
-    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}${flow}`;
+    return `${head}仕事のやり方や決まり ${range} の${ids.length}件を、確かめたいこととして取り込みました。${nextId}`;
   }
 
   /**

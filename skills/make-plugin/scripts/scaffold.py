@@ -57,6 +57,8 @@ change-guard
 
 commit
   プラグインのフォルダの中だけをコミットし、印のタグを付け直し、作業用の一時フォルダを消す。push はしない。
+  直す前に戻すコマンド（revert）も返す。直したコミットを打ち消して、プラグインのフォルダの中だけをコミットする形で、
+  ほかのフォルダで git add してある変更があっても動く。
 
 終了コード: 0 成功、1 断った・失敗した（違いが残っている）、2 使い方の誤り。
 Python 3.9 以上で動く。PyYAML と jsonschema がなくても動く（jsonschema があれば task.json の形も確かめる）。
@@ -2556,6 +2558,17 @@ def change_guard(plugin: str, work: str, restore: bool = False) -> Dict[str, Any
 
 # ---------------------------------------------------------------- コミット（commit）
 
+def undo_command(plugin: str, name: str, commit: str) -> str:
+    """直す前に戻すコマンド（REQ-059、REQ-060）。直したコミットを打ち消し、プラグインのフォルダの中だけをコミットする。
+    --no-commit を付けるのは、付けないと、ほかのフォルダで git add してある変更があると断るためである（git 2.43 で確かめた）。
+    打ち消すのは直したコミットだけなので、後からのコミットは残る。コミットしていない変更が直したファイルにあれば断る。
+    && は、Windows PowerShell 5.1 では使えない（何も動かずに誤りになる）。PowerShell 7、cmd.exe、sh では使える。"""
+    shown = shown_path(plugin)
+    what = "%s の変更を戻した" % name if NAME_RE.fullmatch(name) else "直した変更を戻した"
+    return ('git -C %s revert --no-commit %s && git -C %s commit -m "plugin-creator: %s" -- .'
+            % (shown, commit, shown, what))
+
+
 def commit_change(plugin: str, message: str, work: Optional[str] = None) -> Dict[str, Any]:
     """プラグインのフォルダの中だけをコミットし、印のタグを付け直し、作業用の一時フォルダを消す。push はしない。"""
     plugin = os.path.abspath(plugin)
@@ -2578,7 +2591,7 @@ def commit_change(plugin: str, message: str, work: Optional[str] = None) -> Dict
     staged = git(["diff", "--cached", "--quiet", "--", "."], plugin)
     if staged.returncode not in (0, 1):
         raise Refusal("git diff に失敗しました：%s" % (staged.stderr or staged.stdout).strip())
-    commit_id = None
+    commit_id = undo = None
     if staged.returncode == 1:
         # 署名も、コミット前のフック（--no-verify）も使わない。ほかのフォルダで git add 済みの変更は入れない（パスを付けたコミット）
         command = ["-c", "commit.gpgsign=false"]
@@ -2586,6 +2599,9 @@ def commit_change(plugin: str, message: str, work: Optional[str] = None) -> Dict
             command += ["-c", "user.name=%s" % FALLBACK_GIT_NAME, "-c", "user.email=%s" % FALLBACK_GIT_EMAIL]
         git_ok(command + ["commit", "-q", "--no-verify", "-m", message, "--", ".", exclude], plugin)
         commit_id = git_ok(["rev-parse", "HEAD"], plugin).strip()
+        parent = git(["rev-parse", "-q", "--verify", commit_id + "^"], plugin)
+        if parent.returncode == 0:   # 最初のコミットを打ち消すと、プラグインのフォルダがなくなる
+            undo = undo_command(plugin, manifest["name"], commit_id)
     else:
         warnings.append("コミットする変更がありませんでした。")
     tag: Optional[str] = tag_name(prefix, manifest["name"])
@@ -2608,7 +2624,7 @@ def commit_change(plugin: str, message: str, work: Optional[str] = None) -> Dict
         "ok": True,
         "commit": commit_id,
         "tag": tag,
-        "revert": "git -C %s revert --no-edit %s" % (shown_path(plugin), commit_id) if commit_id else None,
+        "revert": undo,
         "work_folder_removed": removed,
         "warnings": warnings,
     }

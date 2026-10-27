@@ -1332,11 +1332,69 @@ class Commit(SubBase):
         self.assertEqual(git(self.market, "rev-parse", "plugin-creator-generated-weekly-report^{commit}"), git(self.market, "rev-parse", "HEAD"))
         self.assertEqual(git(self.market, "rev-parse", "plugin-creator-generated^{commit}").strip(), self.base_commit)
 
-    def test_REQ_059_reverting_the_commit_gives_back_the_plugin_before_the_change(self):
+    def run_undo(self, command):
+        """示した戻すコマンドを、ユーザーと同じようにシェルで動かす。"""
+        for key, value in (("user.name", "tester"), ("user.email", "tester@example.com"), ("commit.gpgsign", "false")):
+            git(self.market, "config", key, value)
+        done = subprocess.run(command, shell=True, cwd=self.root, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipIf(os.name == "nt", "示したコマンドを sh で動かす")
+    def test_REQ_059_the_undo_command_gives_back_the_plugin_before_the_change(self):
         result = scaffold.commit_change(self.plugin, self.MESSAGE, self.work)
-        self.assertEqual(result["revert"], "git -C %s revert --no-edit %s" % (self.plugin, result["commit"]))
-        git(self.plugin, "revert", "--no-edit", result["commit"])
+        self.assertEqual(result["revert"],
+                         'git -C %s revert --no-commit %s && git -C %s commit -m "plugin-creator: weekly-report の変更を戻した" -- .'
+                         % (self.plugin, result["commit"], self.plugin))
+        self.run_undo(result["revert"])
         self.assertEqual(git(self.market, "diff", self.base_commit, "HEAD", "--", "plugins/weekly-report"), "")
+        self.assertEqual(git(self.market, "status", "--porcelain"), "")
+        self.assertEqual(git(self.market, "log", "-1", "--format=%s"), "plugin-creator: weekly-report の変更を戻した\n")
+
+    @unittest.skipIf(os.name == "nt", "示したコマンドを sh で動かす")
+    def test_REQ_059_the_undo_command_works_with_changes_staged_in_other_folders_and_removes_added_files(self):
+        result = scaffold.commit_change(self.plugin, self.MESSAGE, self.work)
+        added = git(self.market, "diff", "--name-only", "--diff-filter=A", self.base_commit, result["commit"]).split()
+        self.assertIn("plugins/weekly-report/tests/eval/T-02/eval.json", added)
+        write(os.path.join(self.market, "README.md"), "書き換えて git add した\n")   # --no-commit のない git revert は、これがあると断る
+        write(os.path.join(self.market, "plugins", "other", "x.txt"), "x")
+        git(self.market, "add", "README.md", "plugins/other/x.txt")
+        self.run_undo(result["revert"])
+        self.assertEqual(git(self.market, "diff", self.base_commit, "HEAD", "--", "plugins/weekly-report"), "")
+        for rel in added:
+            self.assertFalse(os.path.exists(os.path.join(self.market, *rel.split("/"))), rel)
+        self.assertEqual(sorted(git(self.market, "status", "--porcelain").splitlines()), ["A  plugins/other/x.txt", "M  README.md"])
+        files = git(self.market, "show", "--name-only", "--format=", "HEAD").split()
+        self.assertTrue(files and all(f.startswith("plugins/weekly-report/") for f in files), files)
+
+    @unittest.skipIf(os.name == "nt", "示したコマンドを sh で動かす")
+    def test_REQ_059_the_undo_command_keeps_later_commits_in_the_plugin_folder(self):
+        result = scaffold.commit_change(self.plugin, self.MESSAGE, self.work)
+        write(os.path.join(self.plugin, "NOTES.md"), "後から足した\n")
+        git(self.market, "add", "plugins/weekly-report/NOTES.md")
+        git(self.market, "-c", "user.name=tester", "-c", "user.email=tester@example.com", "-c", "commit.gpgsign=false",
+            "commit", "-q", "-m", "後からのコミット")
+        self.run_undo(result["revert"])
+        self.assertEqual(git(self.market, "diff", "--name-only", self.base_commit, "HEAD").split(), ["plugins/weekly-report/NOTES.md"])
+
+    @unittest.skipIf(os.name == "nt", "示したコマンドを sh で動かす")
+    def test_REQ_059_the_undo_command_refuses_to_overwrite_an_uncommitted_edit(self):
+        result = scaffold.commit_change(self.plugin, self.MESSAGE, self.work)
+        changed = git(self.market, "diff", "--name-only", "--diff-filter=M", self.base_commit, result["commit"]).split()[0]
+        path = os.path.join(self.market, *changed.split("/"))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("コミットしていない書き足し\n")
+        done = subprocess.run(result["revert"], shell=True, cwd=self.root, capture_output=True, text=True, encoding="utf-8")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(git(self.market, "rev-parse", "HEAD").strip(), result["commit"])
+        with open(path, encoding="utf-8") as f:
+            self.assertTrue(f.read().endswith("コミットしていない書き足し\n"))
+
+    def test_REQ_059_the_undo_command_quotes_the_folder_and_leaves_out_a_name_it_cannot_write(self):
+        command = scaffold.undo_command("/a b/p", 'my "plugin"', "c0ffee")
+        self.assertTrue(command.startswith('git -C "/a b/p" revert --no-commit c0ffee && '), command)
+        self.assertIn('-m "plugin-creator: 直した変更を戻した" -- .', command)
+        self.assertNotIn("my", command)
+        self.assertIn('-m "plugin-creator: 直した変更を戻した" -- .', scaffold.undo_command("/p", "abc\n", "c0ffee"))
 
     def test_REQ_059_the_temporary_folder_is_removed_and_nothing_is_pushed(self):
         origin = os.path.join(self.root, "origin.git")
