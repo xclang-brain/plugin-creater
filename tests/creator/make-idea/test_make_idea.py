@@ -108,7 +108,7 @@ class Params(unittest.TestCase):
     def test_REQ_073_names_and_defaults_match_the_spec_table(self):
         p = params()
         rows = spec_param_rows()
-        self.assertEqual(26, len(rows), rows)
+        self.assertEqual(27, len(rows), rows)
         listed = {(pillar, name) for pillar, name, _ in rows}
         in_file = {(pillar, name) for pillar, group in p.items() if isinstance(group, dict) for name in group}
         self.assertEqual(listed, in_file)

@@ -100,9 +100,9 @@ export function comboReasons(text) {
 
 /** combine/log.md の組の行（設計書 3.6 の形）：{ combo, size, essences, made, passed } */
 export function comboLines(text) {
-  const re = /^- (c\d+)｜数\s*(\d+)｜([^｜\n]*)｜作った案\s*(\d+)｜通った案[：:]\s*(.+)$/gm;
+  const re = /^- (c\d+)｜(?:波\s*(\d+)｜)?数\s*(\d+)｜([^｜\n]*)｜作った案\s*(\d+)｜通った案[：:]\s*(.+)$/gm;
   return [...String(text).matchAll(re)].map((m) => ({
-    combo: m[1], size: Number(m[2]), essences: essenceIds(m[3]).size, made: Number(m[4]), passed: !/^なし/.test(m[5].trim()),
+    combo: m[1], wave: m[2] ? Number(m[2]) : null, size: Number(m[3]), essences: essenceIds(m[4]).size, made: Number(m[5]), passed: !/^なし/.test(m[6].trim()),
   }));
 }
 
@@ -114,16 +114,28 @@ export function sizeSequenceProblems(lines, order, perSize) {
   const problems = [];
   let idx = 0;
   let fails = 0;
+  // 波（同じ波の番号が続く行）ごとに見る。波の番号がない行は、1行で1つの波とする
+  const waves = [];
   for (const line of lines) {
-    if (line.size !== order[idx]) {
-      problems.push(`${line.combo}：数 ${line.size}（決まりでは ${order[idx]}）`);
-      const at = order.indexOf(line.size);
+    const last = waves[waves.length - 1];
+    if (last && line.wave != null && last[0].wave === line.wave) last.push(line);
+    else waves.push([line]);
+  }
+  for (const wave of waves) {
+    const expected = order[idx];
+    for (const line of wave) {
+      if (line.size !== expected) problems.push(`${line.combo}：数 ${line.size}（決まりでは ${expected}）`);
+      if (line.essences !== line.size) problems.push(`${line.combo}：本質が ${line.essences} 個（数 ${line.size}）`);
+    }
+    if (wave.some((l) => l.size !== expected)) {
+      const at = order.indexOf(wave[0].size);
       if (at >= 0) { idx = at; fails = 0; }
     }
-    if (line.essences !== line.size) problems.push(`${line.combo}：本質が ${line.essences} 個（数 ${line.size}）`);
-    if (line.passed) { fails = 0; continue; }
-    fails += 1;
-    if (fails >= perSize) { idx = idx < order.length - 1 ? idx + 1 : 0; fails = 0; }
+    for (const line of wave) {
+      if (line.passed) { fails = 0; continue; }
+      fails += 1;
+      if (fails >= perSize) { idx = idx < order.length - 1 ? idx + 1 : 0; fails = 0; }
+    }
   }
   return problems;
 }

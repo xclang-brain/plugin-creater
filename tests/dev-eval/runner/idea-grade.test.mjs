@@ -446,6 +446,13 @@ test('部品：組の行、数の移り方、候補と外した番号、今の�
   assert.deepEqual(sizeSequenceProblems(seq([3, 3, 3, 3, 4, 4, 4, 2], [false, false, false, false, false, false, false, true]), [3, 4, 2], 3), ['c3：数 3（決まりでは 4）', 'c4：数 4（決まりでは 3）']); // 食い違いの後は、実際の数から数え直す
   assert.deepEqual(sizeSequenceProblems(seq([3, 3, 3, 4, 4, 4, 2, 2, 2, 3], [false, false, false, false, false, false, false, false, false, true]), [3, 4, 2], 3), []);
   assert.deepEqual(sizeSequenceProblems(seq([3, 3, 3], [true, false, true]), [3, 4, 2], 3), []);
+  // 波：同じ波の組は同じ数。次の波の数は、前の波の結果を順にたどって決める
+  const waved = (sizes, passed, waves) => seq(sizes, passed).map((l, i) => ({ ...l, wave: waves[i] }));
+  assert.deepEqual(sizeSequenceProblems(waved([3, 3, 3, 4, 4], [false, false, false, true, false], [1, 1, 1, 2, 2]), [3, 4, 2], 3), []);
+  // 波の中で数が違う組と、3つだめだった次の波で数を変えない組は落ちる
+  assert.deepEqual(sizeSequenceProblems(waved([3, 3, 4, 3], [false, false, false, true], [1, 1, 1, 2]), [3, 4, 2], 3), ['c2：数 4（決まりでは 3）', 'c3：数 3（決まりでは 4）']);
+  assert.deepEqual(comboLines('- c01｜波 2｜数 3｜E1、E2、E3｜作った案 10｜通った案：1')[0].wave, 2);
+  assert.equal(comboLines('- c01｜数 3｜E1、E2、E3｜作った案 10｜通った案：1')[0].wave, null);
   const c = candidatesOf('## 候補1 足す 柱2\n### K2-3 文A。\n## 候補2 消す 柱4\nK4-1 を消す\n外した番号：1、3\n');
   assert.deepEqual(c.candidates.map((x) => [x.n, x.op, x.sentence]), [[1, '足す', '文A。'], [2, '消す', null]]);
   assert.deepEqual(c.excluded, [1, 3]);
