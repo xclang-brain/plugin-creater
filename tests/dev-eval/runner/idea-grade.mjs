@@ -270,12 +270,23 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('essence-count', `柱3：本質の一覧に ${p.essences} 以上（REQ-067）`, ids.size >= p.essences, `${ids.size} 個`);
   const shallow = entries.filter((e) => (String(e.why ?? '').match(/→/g) ?? []).length < 2).map((e) => e.id);
   add('essence-why-chain', '柱3：本質の一覧のすべての本質に、「→」を2つ以上含む「なぜ」の行がある（REQ-067）', entries.length > 0 && shallow.length === 0, shallow.length ? `足りない本質：${shallow.join('、')}` : `${entries.length} 個`);
-  // エージェントの数は、分けたファイル（whys-1-2.md…）を同じエージェントとして数える
-  const agentsOf = (re) => new Set(listDir(essenceDir).map((n) => n.match(re)?.[1]).filter(Boolean)).size;
-  const analyses = agentsOf(/^whys-(\d+)(?:-\d+)?\.md$/);
-  const finals = agentsOf(/^final-(\d+)(?:-\d+)?\.md$/);
-  add('essence-agents', `柱3：なぜなぜ分析と出し直しが ${p.analysts} 者以上（REQ-067）`, analyses >= p.analysts && finals >= p.analysts, `分析 ${analyses}、出し直し ${finals}`);
-  const whysFiles = listDir(essenceDir).filter((n) => /^whys-\d+(?:-\d+)?\.md$/.test(n));
+  // エージェントの数は、分けたファイル（whys-1-2.md、whys-c01-a1-2.md…）を同じエージェントとして数える。
+  // まとまりに分けたとき（whys-c01-a1.md）は、まとまりごとの観点の数のうち、いちばん少ないものを数える
+  const agentsOf = (kind) => {
+    const byChunk = new Map();
+    for (const n of listDir(essenceDir)) {
+      const m = n.match(new RegExp(`^${kind}-(?:(c\\d+)-)?(a?\\d+)(?:-\\d+)?\\.md$`));
+      if (!m) continue;
+      const chunk = m[1] ?? '';
+      if (!byChunk.has(chunk)) byChunk.set(chunk, new Set());
+      byChunk.get(chunk).add(m[2]);
+    }
+    return byChunk.size ? Math.min(...[...byChunk.values()].map((v) => v.size)) : 0;
+  };
+  const analyses = agentsOf('whys');
+  const finals = agentsOf('final');
+  add('essence-agents', `柱3：なぜなぜ分析と出し直しが ${p.analysts} 者以上（まとまりに分けたときは、まとまりごと）（REQ-067）`, analyses >= p.analysts && finals >= p.analysts, `分析 ${analyses}、出し直し ${finals}`);
+  const whysFiles = listDir(essenceDir).filter((n) => /^whys-(?:c\d+-)?a?\d+(?:-\d+)?\.md$/.test(n));
   const whysSections = whysFiles.flatMap((f) => workSections(readText(path.join(essenceDir, f))).map((s) => ({ ...s, file: f })));
   const noFirstWhy = whysSections.filter((s) => !/なぜ評価されている(?:の)?か/.test(s.text)).map((s) => `${s.file} ${s.n}`);
   add('essence-whys-first', '柱3：whys-*.md の作品の節のすべてに「なぜ評価されているのか」がある（REQ-067）', whysSections.length > 0 && noFirstWhy.length === 0, noFirstWhy.length ? `ない節：${noFirstWhy.join(', ')}` : `${whysSections.length} 節`);
@@ -284,7 +295,16 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const notByAnalysts = whysFiles.filter((f) => !writtenByAnalysts.has(f));
   const mainEssence = calls.filter((c) => c.owner === 'main' && WRITES.has(c.name) && /essence[\\/](whys|final)-[^\\/]*$/.test(pathOf(c))).map((c) => path.basename(pathOf(c)));
   addCall('essence-writer', '柱3：whys-*.md をなぜなぜ分析のエージェントが書き、メインのエージェントが whys・final を書いていない（REQ-067）', whysFiles.length > 0 && notByAnalysts.length === 0 && mainEssence.length === 0, [...(notByAnalysts.length ? [`分析役が書いていない：${notByAnalysts.join(', ')}`] : []), ...(mainEssence.length ? [`メインが書いた：${mainEssence.join(', ')}`] : [])].join(' / ') || `${whysFiles.length} ファイル`);
-  const opinions = new Set(listDir(essenceDir).map((n) => n.match(/^opinion-(\d+-r\d+)(?:-\d+)?\.md$/)?.[1]).filter(Boolean)).size;
+  // 意見のファイルは、まとまりごとの観点と回で数え、まとまりのうちいちばん少ないものにする
+  const opinionKeys = new Map();
+  for (const n of listDir(essenceDir)) {
+    const m = n.match(/^opinion-(?:(c\d+)-)?(a?\d+-r\d+)(?:-\d+)?\.md$/);
+    if (!m) continue;
+    const chunk = m[1] ?? '';
+    if (!opinionKeys.has(chunk)) opinionKeys.set(chunk, new Set());
+    opinionKeys.get(chunk).add(m[2]);
+  }
+  const opinions = opinionKeys.size ? Math.min(...[...opinionKeys.values()].map((v) => v.size)) : 0;
   const debateRounds = params['本質の見極め']['意見を出し合う往復の数'];
   addCall('essence-opinions', `柱3：意見の出し合いが ${p.analysts} 者 × ${debateRounds} 往復以上（REQ-067）`, opinions >= p.analysts * debateRounds && maxParallel(calls, AGENT.thinker, role('ほかの分析への意見')) >= p.analysts, `意見のファイル ${opinions}、同時に最大 ${maxParallel(calls, AGENT.thinker, role('ほかの分析への意見'))} 体`);
   const analysisParallel = maxParallel(calls, AGENT.thinker, role('なぜなぜ分析'));

@@ -350,6 +350,26 @@ test('REQ-067 作品の節に「なぜ評価されているのか」がないと
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['essence-why-chain']);
 });
 
+test('REQ-067 まとまりに分けた分析（whys-c01-a1.md）は、まとまりごとの観点の数で数える', () => {
+  const { dataDir, run } = finishedRun();
+  const dir = path.join(run, 'essence');
+  for (const n of fs.readdirSync(dir).filter((x) => /^(whys|opinion|final)-/.test(x))) fs.rmSync(path.join(dir, n));
+  for (const c of ['c01', 'c02']) {
+    for (const a of ['a1', 'a2']) {
+      write(path.join(dir, `whys-${c}-${a}.md`), `# なぜなぜ分析\n${[1, 2].map(WHYS).join('\n')}`);
+      write(path.join(dir, `opinion-${c}-${a}-r1.md`), '意見');
+      write(path.join(dir, `final-${c}-${a}.md`), '出し直し');
+    }
+  }
+  write(path.join(dir, 'whys-c01-a1-2.md'), WHYS(3));
+  const ok = (id) => gradeIdeaRun({ dataDir, calls: [] }).checks.find((c) => c.id === id);
+  assert.equal(ok('essence-agents').ok, true);
+  assert.equal(ok('essence-agents').detail, '分析 2、出し直し 2');
+  assert.equal(ok('essence-whys-first').ok, true);
+  fs.rmSync(path.join(dir, 'whys-c02-a2.md'));
+  assert.equal(ok('essence-agents').ok, false);
+});
+
 test('REQ-068 選んだ理由の行がないと落ち、判定の前に書いた記録がないと落ちる', () => {
   const { dataDir, calls, run } = finishedRun();
   const log = path.join(run, 'combine', 'log.md');
