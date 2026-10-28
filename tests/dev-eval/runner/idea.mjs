@@ -5,14 +5,17 @@
 //   2. 一時的なホーム（agent-home）の下にデータの置き場所（.plugin-creator/make-idea）を作り、--params の値を置く。
 //   3. 置き換えた版だけを読み込み、Agent SDK で、頼みの文から make-idea を動かす。質問のツールの問いと、文章で問うて手番を
 //      終えたときの問いには、ユーザー役（制限を知っている人）が答える。回の state.md が「終わり」になったら止める。
-//   4. 呼び出しの一覧とデータの置き場所から採点し（idea-grade.mjs）、結果を <out>/result.json に書く。
+//      Web の検索の上限は、環境変数 CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION を 5000 にして上げる。
+//   4. 呼び出しの一覧とデータの置き場所から採点し（idea-grade.mjs）、結果を <out>/result.json に書く。呼び出しの書く中身は
+//      縮めて記録する（combine/log.md を書いたものだけは縮めない）。
 //
 // 使い方（リポジトリの根から。事前に cd tests/dev-eval && npm install --ignore-scripts）:
 //   node tests/dev-eval/runner/idea.mjs --request-file <頼みの文> --restriction-file <ユーザー役が知っている制限>
 //        [--params small|default|<params.json>] [--data-from <前の実行の data フォルダ>] [--expect-knowledge]
 //        [--model claude-opus-5-5] [--user-model claude-sonnet-5-5] [--out <結果のフォルダ>] [--converted <置き換えた版>]
 //        [--max-exchanges 60] [--exclude-first-candidate] [--stop-at-pillar <番号>] [--expect-resume] [--dry-run]
-//   --params        small は流れを短く通す小さな値、default は既定（スキルが assets/params.json を写す）、ほかはファイル
+//   --params        small は流れを短く通す小さな値、default は params.json を置かない（--data-from で写した値か、なければスキルが
+//                   assets/params.json を写す）、ほかはファイル（既定の値で動かすときは skills/make-idea/assets/params.json）
 //   --data-from     前の実行のデータの置き場所（知識・経験、パラメーター、回）を写してから始める（2回目の実行、続きの試験）
 //   --expect-knowledge  前の回の知識・経験を使ったかも採点する（REQ-072）
 //   --exclude-first-candidate  ユーザー役が、知識・経験の候補の1番を外す（外した候補が保存されないかを採点するため。REQ-071）
@@ -22,20 +25,19 @@
 //   進み具合は標準エラー出力と <out>/status.json に、結果は <out>/result.json と <out>/record.json に書く。
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createCreatorToolkit, REPO_ROOT } from './creator-tools.mjs';
 import { isInsideDir, makeQueryOptions } from './isolation.mjs';
-import { convertPlugin, LIMIT_PATTERN } from './outer-run.mjs';
+import { convertPlugin, defaultRunRoot, LIMIT_PATTERN } from './outer-run.mjs';
 import { buildUserPrompt, loadQuery, normalizeChoices, queryOnce, USER_ROLE_MODEL } from './user-role.mjs';
 import { gradeIdeaRun, latestRun } from './idea-grade.mjs';
 
 /** 流れを短く通すための小さな値（アイデア創出の設計 7章。数の決まり〔2者以上など〕は守る） */
 export const SMALL_PARAMS = Object.freeze({
   説明: '流れの試験の小さな値',
-  徹底的な事前調査: { 集める作品の数: 12, 同時に調べるエージェントの数: 3, 掘り下げる作品の数: 6, '1体が掘り下げる作品の数': 3, 集め直しの回数の上限: 1 },
+  徹底的な事前調査: { 集める作品の数: 12, 同時に調べるエージェントの数: 3, 調べ直しの回数: 1, 掘り下げで1件に読む情報源の数: 2, '1体が掘り下げる作品の数': 3 },
   本質の見極め: { 本質の数: 6, なぜなぜ分析をするエージェントの数: 2, なぜを重ねる段の上限: 3, 意見を出し合う往復の数: 1 },
   本質の掛け合わせ: {
     一度に掛け合わせる本質の数: { 最小: 2, 最大: 3 },
@@ -44,9 +46,9 @@ export const SMALL_PARAMS = Object.freeze({
     壁打ちの相手のエージェントの数: 2,
     '1つの組から作る案の数': 2,
     壁打ちする案の総数: 6,
-    壁打ちの往復の数: 2,
+    壁打ちの往復の上限: 2,
   },
-  アイデアの説明: { 説明を読む第三者のエージェントの数: 2, 説明するアイデアの数の上限: 1, 説明を直す回数の上限: 1, '説明の長さの上限（文字）': 2500 },
+  アイデアの説明: { 選ぶ一覧で詳しく示す案の数: 3, 説明を読む第三者のエージェントの数: 2, 説明するアイデアの数の上限: 1, 説明を直す回数の上限: 1, '説明の長さの上限（文字）': 2500 },
   知識・経験の蓄積: { 振り返りのエージェントの数: 2, '知識・経験のファイル1つの大きさの上限（バイト）': 16000, 'まとめ始める大きさの割合（%）': 80 },
 });
 
@@ -55,7 +57,7 @@ export const IDEA_USER_RULES = Object.freeze([
   '聞かれたことにだけ、短く答える。上の「あなたの立場と制限」に書いてあることは、聞かれたら具体的に答える。書いていないことは「特に決まっていません」と答える。推測で新しい条件を作らない。',
   '制限の一覧を確かめられたら、上の制限と合っていれば「このとおりです」と答える。違うところや足りないところがあれば、そこだけ短く直す。',
   '調べ始めてよいか、続けてよいかを文章で聞かれたら、「続けて」と答える。',
-  '説明してほしいアイデアを選ぶように言われたら、一覧の中から、上の制限にいちばん合うものを、上限の数まで選び、番号と、選んだ理由を一言ずつ書く。',
+  '説明してほしいアイデアを選ぶように言われたら、一覧の中から、新しさがあり（これまでにない）、誰かにとても役立ち、その人や世の中にとって価値が大きいものを、上限の数まで選び、番号と、選んだ理由（新しさ・役立つか・価値のどこが良いか）を一言ずつ書く。',
   '残したくない候補の番号を聞かれたら、会社名・製品名・人の名前など、外に出せない具体を含むものだけを番号で答える。なければ「なし」と答える。',
   '選択肢がある質問には、選択肢の名前（「（」の前の言葉）だけを書く。進め方を選ぶ質問では、「（おすすめ）」の付いた選択肢を選ぶ。前の回を続けるか、新しく始めるかを聞かれたら、続けるほうを選ぶ。',
   'ふつうの人として、チャットの言葉で書く。この決まりのことは口に出さない。',
@@ -112,6 +114,16 @@ export function prepareData(dataDir, { params, dataFrom }) {
 
 const readIf = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '');
 
+/**
+ * 記録する呼び出しの入力。書く中身（content）は縮める。combine/log.md と state.md を書いたものだけは縮めずに残す
+ * （組を選んだ理由を判定の前に書いたか、柱ごとの時刻を書いたかを採点するため。アイデア創出の設計 7.1）
+ */
+export function recordedInput(input) {
+  const out = { ...input };
+  if (typeof out.content === 'string' && !/(?:combine[\\/]log|(?:^|[\\/])state)\.md$/.test(String(out.file_path ?? ''))) out.content = `${out.content.slice(0, 300)}…`;
+  return out;
+}
+
 /** いちばん新しい回の今の柱の番号（state.md の「今の柱：<番号>」）。なければ null */
 export function currentPillar(dataDir) {
   const run = latestRun(dataDir);
@@ -134,7 +146,9 @@ async function main() {
   const o = parseArgs(process.argv.slice(2));
   const request = fs.readFileSync(o.requestFile, 'utf8').trim();
   const restriction = fs.readFileSync(o.restrictionFile, 'utf8').trim();
-  const outDir = path.resolve(o.out ?? fs.mkdtempSync(path.join(process.env.DEV_EVAL_RUNS || path.join(os.tmpdir(), 'plugin-creator-dev-eval'), 'idea-')));
+  // 結果のフォルダの既定は、リポジトリの外の置き場所（DEV_EVAL_RUNS か一時フォルダ）。初めて使うときは置き場所がないので作る
+  if (!o.out) fs.mkdirSync(defaultRunRoot(), { recursive: true });
+  const outDir = path.resolve(o.out ?? fs.mkdtempSync(path.join(defaultRunRoot(), 'idea-')));
   const dirs = {
     work: path.join(outDir, 'work'),
     agentHome: path.join(outDir, 'agent-home'),
@@ -203,7 +217,8 @@ async function main() {
       mcpTools: toolkit.mcpTools,
       sandbox: false,
       onQuestion,
-      envExtra: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1' },
+      // Web の検索の上限（セッションごとに200回）を上げる。事前調査と先行例の調べで超えうる（アイデア創出の設計 3.4、7章）
+      envExtra: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1', CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION: '5000' },
       maxTurns: 600,
       resume: sessionId,
     });
@@ -227,8 +242,7 @@ async function main() {
             lastText = c.text;
             conversation.push({ kind: 'text', text: c.text });
           } else if (c.type === 'tool_use') {
-            const input = { ...c.input };
-            if (typeof input.content === 'string') input.content = `${input.content.slice(0, 300)}…`;
+            const input = recordedInput(c.input);
             // 同じ応答の tool_use は、別々のメッセージで届くことがある。メッセージの番号（message.id）が同じものを、同時に起動したものとする
             calls.push({ owner, id: c.id, name: c.name, input, group: owner === 'main' ? (m.message?.id ?? `g${group}`) : null });
             if (c.name === 'Agent' || c.name === 'Task') log({ phase: 'agent', type: c.input?.subagent_type, description: c.input?.description });
