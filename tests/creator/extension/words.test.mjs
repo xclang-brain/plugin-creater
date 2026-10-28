@@ -247,10 +247,13 @@ describe('ツールの返り値と断る文（REQ-024）', () => {
       seen.push((await startChange(run)).text);
       await call('change', { folder: 'not-made', wants: ['足したい'] });
 
-      // 変えないので聞かない、できていたことの確認、付け直し
+      // 変えないので聞かない、聞かずに案で示す、できていたことの確認、付け直し
       await call('progress', { items: [{ item: '前回の1回', status: '変えないので聞かない', quote: 'x' }] });
       await call('progress', { items: [{ item: 'いつもと違うとき', status: '聞いた', quote: 'x' }] });
       await call('progress', { items: [{ item: 'いつもと違うとき', status: '変えないので聞かない', quote: 'x' }] });
+      await call('progress', { items: [{ item: '成果物', status: '聞かずに案で示す', quote: 'x' }] });
+      await call('progress', { items: [{ item: 'いつもと違うとき', status: '聞かずに案で示す', quote: 'x' }] });
+      await call('progress', { items: [{ item: '資産', status: '聞かずに案で示す', quote: 'x' }] });
       await call('progress', { stage: 'できていたことの確認' });
       await call('progress', { items: [{ item: 'できていたことの確認', status: '聞いた', quote: 'x' }] });
       await call('record', { knowledge: [{ id: 'K-05', text: 'デプロイできないときは、機器を1回 reboot し、それでもだめなら人に伝える', quote: '今はこうです' }] });
@@ -279,7 +282,27 @@ describe('ツールの返り値と断る文（REQ-024）', () => {
       assert.deepEqual(found, [], `表の左の言葉か内部の記号が出ている：\n${found.map(([t, w, s]) => `${[...w, ...s].join('、')} ← ${t}`).join('\n')}`);
       const all = seen.join('\n');
       assert.ok(!all.includes('クリエイター'), '「クリエイター」はユーザーに説明していない言葉');
-      for (const word of ['直すプラグイン', '直す前の確認', '変えないので聞かない', '確かめたいこと', '引き継いだ決まり']) assert.ok(all.includes(word), `言葉が1度も出ていない：${word}`);
+      for (const word of ['直すプラグイン', '直す前の確認', '変えないので聞かない', '聞かずに案で示す', '確かめたいこと', '引き継いだ決まり']) assert.ok(all.includes(word), `言葉が1度も出ていない：${word}`);
+    });
+  });
+
+  test('REQ-024 REQ-056 今のプラグインを直すときの、頼みの文に関わる抜き書きの断りにも、表の左の言葉と内部の記号が出ない', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: 'デプロイを足したい。いつもは 1. ビルド 2. 送る、の順です' });
+      await startChange(run);
+      await run.fake.askUser({ message: '最近の1回で、したことは何ですか？', answer: 'User responded: 電源を入れ直しました' });
+      const refused = [];
+      for (const [item, quote] of [['前回の1回', '1. ビルド 2. 送る'], ['前回の1回', '別の言葉'], ['成果物', '別の言葉']]) {
+        const r = await run.callSafe('progress', { items: [{ item, status: '聞いた', quote }] });
+        assert.equal(r.ok, false, `${item}：${quote}`);
+        refused.push(r.error);
+      }
+      assert.match(refused[0], /頼みの文からは取れません/);
+      assert.match(refused[2], /ユーザーの答えと頼みの文の中に見つかりません/);
+      for (const text of refused) {
+        assert.deepEqual(leftWordsIn(text), [], text);
+        assert.deepEqual(internalSymbolsIn(text), [], text);
+      }
     });
   });
 

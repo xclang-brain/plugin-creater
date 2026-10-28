@@ -490,12 +490,26 @@ describe('今のプラグインを直すときの状態取得と、記録の置�
     });
   });
 
-  test('REQ-060 plugin-creator が作っていないプラグインでは、引き継いだ決まりが0件で、読み取った決まりを1件ずつ確かめることが分かる', async () => {
+  test('REQ-060 REQ-054 plugin-creator が作っていないプラグインでは、引き継いだ決まりが0件で、読み取った決まりのうち、頼みの文や答えで述べられていないものを1件ずつ確かめることが分かる', async () => {
     await withRun(async (run) => {
       await startChange(run, { plugin: { knowledge: null, task: null, evals: [], version: null } });
       const text = await run.call('state');
       assert.match(text, /^直すプラグイン：.*edl-sample（edl-sample、今の版 なし）$/m);
-      assert.match(text, /^引き継いだ決まり：0件（plugin-creator が作っていないプラグインなので、読み取った決まりは1件ずつ確かめる）$/m);
+      assert.match(text, /^引き継いだ決まり：0件（plugin-creator が作っていないプラグインなので、読み取った決まりは、頼みの文や答えで決まりとして述べられていないものを1件ずつ確かめる）$/m);
+    });
+  });
+
+  test('REQ-056 REQ-057 直すときの状態の返り値に、「聞かずに案で示す」の聞くことがその状態で出て、まだ聞いていないことに入らない', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+      await run.call('progress', { items: [{ item: '実行中に見たいこと', status: '聞かずに案で示す', quote: '画面はおまかせ' }, { item: '作業の目的', status: '変えないので聞かない', quote: '目的は今のまま' }] });
+      const text = await run.call('state');
+      assert.match(text, /^ {2}実行中に見たいこと：聞かずに案で示す$/m);
+      assert.match(text, /^ {2}作業の目的：変えないので聞かない$/m);
+      const remaining = /^まだ聞いていないこと：.*$/m.exec(text)[0];
+      assert.ok(!remaining.includes('実行中に見たいこと') && !remaining.includes('作業の目的'), remaining);
+      assert.deepEqual(internalSymbolsIn(text), []);
+      assert.deepEqual(leftWordsIn(text), []);
     });
   });
 
