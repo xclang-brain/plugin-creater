@@ -27,14 +27,15 @@ describe('REQ-052 REQ-032 呼ばれ方の試験：頼みの一覧（cases.json�
     assert.deepEqual(validateCases(data), []);
   });
 
-  test('設計図の8件の頼みと期待がそろっている', () => {
+  test('設計図の9件の頼みと期待がそろっている', () => {
     const expectOf = Object.fromEntries(data.cases.map((c) => [c.id, [...c.expect].sort()]));
-    assert.equal(data.cases.length, 8);
+    assert.equal(data.cases.length, 9);
     for (const id of ['add-skill', 'add-setting', 'split-workers', 'remove-feature']) assert.deepEqual(expectOf[id], ['change-plugin'], id);
     assert.deepEqual(expectOf['rebuild-only'], ['change-plugin', 'make-plugin']);
     assert.deepEqual(expectOf['make-new'], ['make-plugin']);
     assert.deepEqual(expectOf.retest, ['test-plugin']);
     assert.deepEqual(expectOf['do-the-work'], []);
+    assert.deepEqual(expectOf.idea, ['make-idea']);
   });
 
   test('クリエイターのスキルの一覧が、skills/ のフォルダと同じ', () => {

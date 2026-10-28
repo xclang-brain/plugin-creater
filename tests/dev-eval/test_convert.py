@@ -794,7 +794,7 @@ class RealPlugins(unittest.TestCase):
         out, report = self.convert_real(REPO, "creator")
         self.assert_valid(report)
         self.assertEqual(self.read_json(out, ".claude-plugin/plugin.json")["name"], "plugin-creator")
-        self.assertEqual(sorted(a["name"] for a in report["agents"]), ["reader", "worker"])
+        self.assertEqual(sorted(a["name"] for a in report["agents"]), ["idea-reader", "idea-researcher", "idea-thinker", "reader", "worker"])
         for agent in report["agents"]:
             self.assertRegex(agent["model"], r"^(inherit|claude-[a-z]+-[0-9]+-[0-9]+)$")
         self.assertEqual(report["extensions"], [{"name": "plugin-creator", "server": "plugin-creator"}])

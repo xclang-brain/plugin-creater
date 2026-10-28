@@ -12,6 +12,7 @@
     { "id": "rebuild-only", "request": "sales-report のプラグインを作り直したいです。", "expect": ["make-plugin", "change-plugin"] },
     { "id": "make-new", "request": "毎週の週報を作る作業を、プラグインにしたいです。", "expect": ["make-plugin"] },
     { "id": "retest", "request": "sales-report のプラグインを自分で直したので、試験し直してください。", "expect": ["test-plugin"] },
-    { "id": "do-the-work", "request": "今週の週報を書いてください。", "expect": [] }
+    { "id": "do-the-work", "request": "今週の週報を書いてください。", "expect": [] },
+    { "id": "idea", "request": "組み込みのファームウェア開発で使えるプラグインのアイデアを考えてください。", "expect": ["make-idea"] }
   ]
 }

@@ -9,7 +9,7 @@
 //
 // 開発の試験は Claude Code で動かす見込みの試験である。本物の Copilot CLI と日本語の description で同じように呼ばれるかは、確かめたことにならない。
 // 実際のモデルを使うのは、コマンドとして動かしたとき（main）だけ。試験（trigger.test.mjs）は、頼みの一覧の形と採点の関数だけを試し、モデルを呼ばない。
-// 統括がユーザーの承認をとってから、実際のモデルで動かすこと（8件で約2ドル・10分の見込み）。
+// 統括がユーザーの承認をとってから、実際のモデルで動かすこと（9件で約2ドル・10分の見込み）。
 //
 // 使い方（リポジトリの根で）:
 //   node tests/dev-eval/trigger/trigger.mjs [--model claude-opus-5-5] [--cases <cases.json>] [--only <id,id>] [--out <フォルダ>] [--no-sandbox] [--dry-run]
@@ -29,7 +29,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const CASES_FILE = path.join(HERE, 'cases.json');
 
 /** クリエイターのスキル（skills/ のフォルダの名前） */
-export const CREATOR_SKILLS = Object.freeze(['make-plugin', 'change-plugin', 'test-plugin']);
+export const CREATOR_SKILLS = Object.freeze(['make-plugin', 'change-plugin', 'test-plugin', 'make-idea']);
 /** クリエイターの名前（置き換えた版のスキルは「<この名前>:<スキル>」で呼ばれる） */
 export const CREATOR_NAME = 'plugin-creator';
 

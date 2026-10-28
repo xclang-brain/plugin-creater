@@ -59,6 +59,11 @@
 - 親のツールを絞りたいときは、`tools` ではなく、フックの `preToolUse`（エクステンションの `onPreToolUse`）で拒む。拒んだ理由は、モデルに届く（[画面と Copilot CLI のつなぎ方](dashboard-integration.md)）。
 - Claude Code は逆で、子のツールは親の `tools` に絞られない（Agent SDK 0.3.310、Claude Code 2.1.310 で実測）。
 
+### ツールのないエージェントは、Claude Code で起動を断られる（2026年10月）
+
+- make-idea の読み手（説明の文だけを読むエージェント）を `tools: [todo]` にしたら、Claude Code に置き換えた版（`todo` → `TodoWrite`）が、Agent SDK 0.3.310 の同梱の Claude Code で「Agent ... would be spawned with zero tools — refusing. ... unrecognized [TodoWrite]」と断られた。`TodoWrite` が、今の Claude Code のツールにないためである。メインのエージェントは、汎用のエージェントに定義の本文を写して代わりに動かした（決まりから外れた）。
+- `tools` を空にすると、変換スクリプトが「すべてのツール」にする。道具の要らないエージェントにも、害の小さいツールを1つ渡す（make-idea の読み手は `read` だけにし、ファイルの場所を渡さない）。
+
 ## モデルの指定（2026年10月時点の公式ドキュメント）
 
 - `model` に1つ、または優先する順のリスト（例：`model: [gpt-6-luna, claude-haiku-5.5]`）を書く。ユーザーのプランで使える最初の候補が使われ、どれも使えなければセッションのモデルになる。`model-policy` が `preferred`（既定）なら `/subagents` で上書きでき、`required` なら上書きできない。
