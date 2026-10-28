@@ -247,7 +247,7 @@
 | --- | --- |
 | エクステンションのフック（頼みの文の記録、コンパクションの後の差し込み） | make-plugin・change-plugin・test-plugin を使った会話では始めない（`/clear` を勧める）。終わりに、make-plugin・change-plugin は `/clear` してから頼むよう示す。エクステンションは変えない |
 | `plugin-creator_` のツール | SKILL.md に使わないと書く。試験で呼ばれていないことを見る |
-| クリエイターの画面 | 使わない（憲章 第18条は、生成プラグインを作る対話に限る） |
+| クリエイターの画面 | 使わない（憲章 第18条は、生成プラグインを作る対話と既存のプラグインを直す対話に限る） |
 | reader・worker・words.md・examples/ | 使わない。アイデア創出の言葉は SKILL.md に書く |
 | make-plugin・change-plugin・test-plugin の description | 変えない。make-idea の description に、プラグインを作る頼み、直す頼み、試験の頼みを除外として書く。呼ばれ方の試験（[試験の設計](testing.md) 6.9）に、アイデアの頼みを足す。Copilot CLI での呼ばれ方は、最終確認（[ヒアリングの設計](hearing.md) 14章 H27）で見る |
 | クリエイターの `plugin.json` の description | アイデアを作れることを1文足す。版は変えない（下の「会話例と版」のとおり） |
