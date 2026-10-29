@@ -420,7 +420,8 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   // シェルで書いたもの（cat >> combine/log.md など）も、コマンドの文から読む
   const logWrites = [
     ...calls.filter((c) => WRITES.has(c.name) && /combine[\\/]log\.md$/.test(pathOf(c))).map(writtenText),
-    ...calls.filter((c) => c.name === 'Bash' && /combine[\\/]log\.md/.test(String(c.input?.command ?? ''))).map((c) => String(c.input.command)),
+    // cd で combine に移ってから log.md に書いたもの（cd $R/combine; cat >> log.md）も読む
+    ...calls.filter((c) => c.name === 'Bash' && /combine[\\/]log\.md|combine[\s\S]*(?<![\w.-])log\.md/.test(String(c.input?.command ?? ''))).map((c) => String(c.input.command)),
   ].join('\n');
   const beforeJudging = new Set(logWrites.split('\n').filter((l) => /[（(]判定の前[）)]/.test(l)).map((l) => l.match(/\bc\d+\b/)?.[0]).filter(Boolean));
   const late = combos.filter((c) => !beforeJudging.has(c));

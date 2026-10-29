@@ -429,6 +429,12 @@ test('REQ-068 選んだ理由の行がないと落ち、判定の前に書いた
   // シェルで log.md に書いた記録でもよい
   const bash = { owner: 'main', id: 'b1', name: 'Bash', input: { command: "cat >> combine/log.md <<'EOF'\n- c02｜数 3｜E1、E2、E3｜作った案 10｜通った案：（判定の前）\nEOF" }, group: 'gb' };
   assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: [...rest, bash] })), []);
+  // combine に cd してから log.md に書いた記録でもよい（3回目の試行の書き方）
+  const cdBash = { owner: 'main', id: 'b2', name: 'Bash', input: { command: "R=$HOME/.plugin-creator/make-idea/runs/x; cd $R/combine; cat >> log.md <<'EOF'\n- c02｜波 1｜数 3｜E1、E2、E3｜作った案 10｜通った案：（判定の前）\nEOF" }, group: 'gc' };
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: [...rest, cdBash] })), []);
+  // combine と関係のない log.md（ほかのフォルダ）は数えない
+  const otherLog = { owner: 'main', id: 'b3', name: 'Bash', input: { command: "cat >> /tmp/x/build.log.md <<'EOF'\n- c02｜（判定の前）\nEOF" }, group: 'gd' };
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: [...rest, otherLog] })), ['combine-reason-first']);
   // Edit で書き直したときも、書いた文に「（判定の前）」があればよい
   rest.push({ owner: 'main', id: 'e1', name: 'Edit', input: { file_path: `${other.run}/combine/log.md`, old_string: 'x', new_string: '- c02｜数 2｜E3、E4｜作った案 2｜通った案：（判定の前）\n  - 選んだ理由：…' }, group: 400 });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: rest })), []);
