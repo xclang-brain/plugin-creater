@@ -1,0 +1,287 @@
+{
+  "runs": [
+    "real-1",
+    "real-2",
+    "real-3",
+    "real-4",
+    "real-5"
+  ],
+  "checks": [
+    {
+      "id": "finished",
+      "title": "state.md が「終わり」",
+      "ok": true,
+      "detail": "# 状態 / - 状態：終わり / - 今の柱：6 知識・経験の蓄積 / - 次にすること：なし"
+    },
+    {
+      "id": "restriction",
+      "title": "柱1：restriction.md がある",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/restriction.md"
+    },
+    {
+      "id": "restriction-items",
+      "title": "柱1：restriction.md の見出しが「目的」と「範囲」だけで、条件や良さの観点がない（REQ-065）",
+      "ok": true,
+      "detail": "見出し 目的、範囲"
+    },
+    {
+      "id": "research-plan",
+      "title": "柱2：調べる計画（research/plan.md）がある（REQ-066）",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/research/plan.md"
+    },
+    {
+      "id": "research-rounds",
+      "title": "柱2：調べ直しの記録（gaps-r<k>.md と collect-*-r<k>.md）が 2 回分ある（REQ-066）",
+      "ok": true,
+      "detail": "2 回分"
+    },
+    {
+      "id": "research-count",
+      "title": "柱2：作品の一覧の URL が 100 以上（REQ-066）",
+      "ok": true,
+      "detail": "385 件"
+    },
+    {
+      "id": "research-parallel",
+      "title": "柱2：集める調査役を1つの応答で 4 体同時に起動（REQ-066）",
+      "ok": true,
+      "detail": "最大 4 体"
+    },
+    {
+      "id": "research-deep",
+      "title": "柱2：一覧で評価が「あり」の作品が、すべて deep-*.md にある（REQ-066）",
+      "ok": true,
+      "detail": "評価あり 306、掘り下げ 306"
+    },
+    {
+      "id": "research-sources",
+      "title": "柱2：掘り下げた作品ごとに、違う URL が 3 以上（REQ-066）",
+      "ok": true,
+      "detail": "306 件"
+    },
+    {
+      "id": "research-overview",
+      "title": "柱2：調査のまとめ（research/overview.md）がある（REQ-066）",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/research/overview.md"
+    },
+    {
+      "id": "research-time",
+      "title": "柱2：state.md に柱2の始めと終わりの時刻と、読んだページの数がある（REQ-066）",
+      "ok": true,
+      "detail": "あり"
+    },
+    {
+      "id": "essence-count",
+      "title": "柱3：本質の一覧に 30 以上（REQ-067）",
+      "ok": true,
+      "detail": "72 個"
+    },
+    {
+      "id": "essence-why-chain",
+      "title": "柱3：本質の一覧のすべての本質に、「→」を2つ以上含む「なぜ」の行がある（REQ-067）",
+      "ok": false,
+      "detail": "足りない本質：E69"
+    },
+    {
+      "id": "essence-agents",
+      "title": "柱3：なぜなぜ分析と出し直しが 2 者以上（まとまりに分けたときは、まとまりごと）（REQ-067）",
+      "ok": true,
+      "detail": "分析 2、出し直し 2"
+    },
+    {
+      "id": "essence-whys-first",
+      "title": "柱3：whys-*.md の作品の節のすべてに「なぜ評価されているのか」がある（REQ-067）",
+      "ok": false,
+      "detail": "ない節：whys-c04-a2-3.md 140, whys-c04-a2.md 117, whys-c06-a2-2.md 204, whys-c08-a1-2.md 270, whys-c08-a1-2.md 275, whys-c08-a1-2.md 276, whys-c08-a1-2.md 277, whys-c08-a2-2.md 270, whys-c08-a2-2.md 275, whys-c08-a2-2.md 276, whys-c08-a2-2.md 277, whys-c09-a1-3.md 342, whys-c09-a1-3.md 343, whys-c09-a2-"
+    },
+    {
+      "id": "essence-writer",
+      "title": "柱3：whys-*.md をなぜなぜ分析のエージェントが書き、メインのエージェントが whys・final を書いていない（REQ-067）",
+      "ok": true,
+      "detail": "92 ファイル"
+    },
+    {
+      "id": "essence-opinions",
+      "title": "柱3：意見の出し合いが 2 者 × 1 往復以上（REQ-067）",
+      "ok": true,
+      "detail": "意見のファイル 2、同時に最大 8 体"
+    },
+    {
+      "id": "essence-parallel",
+      "title": "柱3：なぜなぜ分析の検討役を 2 体同時に起動",
+      "ok": true,
+      "detail": "最大 8 体"
+    },
+    {
+      "id": "essence-independent",
+      "title": "柱3：独立の分析で、ほかの分析を読んでいない",
+      "ok": true,
+      "detail": "なし"
+    },
+    {
+      "id": "restriction-later",
+      "title": "柱3から後：役の頼みの文に restriction.md がなく、その役が restriction.md を読んでいない（REQ-065）",
+      "ok": true,
+      "detail": "頼みの文 0 件、読んだ 0 件（柱3から後の起動 310 回）"
+    },
+    {
+      "id": "combine-count",
+      "title": "柱4：組が 10 以上（壁打ちする案の総数 100 ÷ 1組 10）（REQ-068）",
+      "ok": true,
+      "detail": "10 組"
+    },
+    {
+      "id": "combine-judges",
+      "title": "柱4：どの組も、判定の回ごとに壁打ちの相手 2 者の判定があり、回が往復の上限 3 以下（REQ-068）",
+      "ok": true,
+      "detail": "10 組すべて"
+    },
+    {
+      "id": "combine-judge-views",
+      "title": "柱4：判定のファイルのすべてに「新しさ」「役立つ」「価値」がある（REQ-068）",
+      "ok": true,
+      "detail": "60 ファイル"
+    },
+    {
+      "id": "combine-prior",
+      "title": "柱4：組ごとに prior-r1.md があり、検索語の記録がある（REQ-068）",
+      "ok": true,
+      "detail": "10 組すべて"
+    },
+    {
+      "id": "combine-separate",
+      "title": "柱4：案を作る役、先行例を探す役、壁打ちの相手が別の起動（REQ-068）",
+      "ok": true,
+      "detail": "作る・直す 54 回、先行例 53 回、相手 106 回、兼ねた起動 0"
+    },
+    {
+      "id": "combine-passed",
+      "title": "柱4：combine/passed.md がある",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/combine/passed.md"
+    },
+    {
+      "id": "combine-ranked",
+      "title": "柱4：通った案を比べた combine/ranked.md がある（REQ-069）",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/combine/ranked.md"
+    },
+    {
+      "id": "combine-log",
+      "title": "柱4：log.md に、組ごとの決まった形の行がある（設計書 3.6）",
+      "ok": true,
+      "detail": "行 10、組のフォルダ 10"
+    },
+    {
+      "id": "combine-reason",
+      "title": "柱4：log.md に、組ごとに「選んだ理由」の行がある（REQ-068）",
+      "ok": true,
+      "detail": "10 組すべて"
+    },
+    {
+      "id": "combine-reason-first",
+      "title": "柱4：組を選んだ理由を、判定の前に log.md に書いた（書いた記録に「（判定の前）」がある）（REQ-068）",
+      "ok": true,
+      "detail": "10 組すべて"
+    },
+    {
+      "id": "combine-size",
+      "title": "柱4：組の本質の数が 2〜4 で、数の移り方が決まりどおり（REQ-068）",
+      "ok": true,
+      "detail": "10 組"
+    },
+    {
+      "id": "combine-some-passed",
+      "title": "柱4：通った案が1つ以上ある（REQ-068）",
+      "ok": true,
+      "detail": "1 組で通った"
+    },
+    {
+      "id": "explain-count",
+      "title": "柱5：説明が1〜3 件（REQ-070）",
+      "ok": true,
+      "detail": "1 件"
+    },
+    {
+      "id": "explain-readers",
+      "title": "柱5：読み手を説明ごとに 2 者以上（REQ-070）",
+      "ok": true,
+      "detail": "6 回、同時に最大 2 体"
+    },
+    {
+      "id": "explain-reader-blind",
+      "title": "柱5：読み手がファイルを読む・探すツールを使っていない",
+      "ok": true,
+      "detail": "なし"
+    },
+    {
+      "id": "explain-reader-prompt",
+      "title": "柱5：読み手の頼みに、作る過程のファイルの場所がない",
+      "ok": true,
+      "detail": "0 件"
+    },
+    {
+      "id": "selection",
+      "title": "柱5：ユーザーの選択が selection.md にある（REQ-069）",
+      "ok": true,
+      "detail": "<データの置き場所>/runs/20261028-1622/selection.md"
+    },
+    {
+      "id": "accumulate-agents",
+      "title": "柱6：振り返りが 2 者以上（REQ-071）",
+      "ok": true,
+      "detail": "2"
+    },
+    {
+      "id": "knowledge-items",
+      "title": "柱6：知識・経験の項目が決まった形（REQ-071）",
+      "ok": true,
+      "detail": "14 項目、欠け なし"
+    },
+    {
+      "id": "knowledge-size",
+      "title": "柱6：知識・経験のファイルが 16000 バイトより小さい",
+      "ok": true,
+      "detail": "すべて小さい"
+    },
+    {
+      "id": "knowledge-excluded",
+      "title": "柱6：ユーザーが外した候補が保存されていない（REQ-071）",
+      "ok": true,
+      "detail": "外した番号 なし、保存されたもの なし"
+    },
+    {
+      "id": "knowledge-used",
+      "title": "各柱：knowledge-used.md に柱ごとの記録がある（REQ-072）",
+      "ok": true,
+      "detail": "6 柱"
+    },
+    {
+      "id": "separation-tools",
+      "title": "plugin-creator_ のツールを呼んでいない（REQ-076）",
+      "ok": true,
+      "detail": "なし"
+    },
+    {
+      "id": "separation-hearing",
+      "title": "ヒアリングの記録ができていない（REQ-076）",
+      "ok": true,
+      "detail": "なし"
+    },
+    {
+      "id": "separation-agents",
+      "title": "make-idea のエージェントだけを起動（REQ-076）",
+      "ok": true,
+      "detail": "なし"
+    },
+    {
+      "id": "data-only",
+      "title": "ファイルの書き込みが、すべてデータの置き場所の中（REQ-074）",
+      "ok": true,
+      "detail": "すべて中"
+    }
+  ]
+}
