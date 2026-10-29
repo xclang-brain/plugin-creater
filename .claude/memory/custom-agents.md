@@ -99,3 +99,10 @@
 - [Copilot CLI changelog](https://github.com/github/copilot-cli/blob/main/changelog.md)（1.0.67、1.0.68、1.0.81、1.0.86、1.0.100）
 - [Claude Code: Create custom subagents](https://code.claude.com/docs/en/sub-agents)
 - Copilot CLI 1.0.102 の実機での実測（偽物のモデルにつないだ。Linux x64。ログインした本物のアカウントでは試していない）
+
+## Claude Code は、サブエージェントが「報告のファイル」を書くのを断る
+
+- Claude Code の Write は、サブエージェントが、名前の頭が ANALYSIS・REPORT・SUMMARY・FINDINGS（大文字小文字を問わない）の `.md` を書こうとすると、「Subagents should return findings as text, not write report files. Include this content in your final response instead.」で断る（Agent SDK 0.3.310 が同梱する版の Write の確かめで見つけた）。
+- make-idea の1回目の試行では、なぜなぜ分析の役に `analysis-1.md` を書かせたため断られた。メインのエージェントが返事を縮めて書き写し、「なぜ」の段が約3分の1に減った。
+- サブエージェントに書かせるファイルの名前は、この4つの言葉で始めない（例：`whys-1.md`、`overview.md`）。
+

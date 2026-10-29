@@ -1,0 +1,1 @@
+GitHub Copilot CLI と Claude Code で使えるエージェントプラグインのアイデアを考えて。

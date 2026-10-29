@@ -1,0 +1,103 @@
+{
+  "runDir": "<データの置き場所>/runs/20261028-1622",
+  "model": "claude-opus-5-5",
+  "costUsd": 1.0034434,
+  "process": {
+    "ok": false,
+    "items": [
+      {
+        "id": "P1",
+        "title": "なぜなぜ分析",
+        "ok": true,
+        "evidence": "essence/whys-c01-a1.md 2 Superpowers「Completion checks demand concrete evidence…（rywalker）→ なぜか → エージェントは、終わっていないのに終わったと言う。…→ なぜか → 自己申告を信じると、確かめる手間が人に戻ってくる。「almost right, but not quite」が66%…（困りごと）」。essence/whys-c11-a1.md 381「誤りのある文で2つの問題に気づいた人の割合は…58.3%…34.78%だった（p.77）→ 困りごと：…」。各段に出典があり、仮説の段は「（仮説）」と分けて書き、困りごとか原理まで行っている。弱いところ：essence/whys-c06-a1-2.md 206「拒否が必ず勝つなら、許可を広げても怖くない」は機能の言い換えで止まる。ただし essence/opinion-c06-a2-r1.md P13 がこれを指摘し、対になる essence/whys-c06-a2-2.md 206 は「重ね合わせが安全側にだけ動く（原理。「Multiple layers reduce the chance…」DevLeader）」まで行っている。"
+      },
+      {
+        "id": "P2",
+        "title": "掘り下げ",
+        "ok": true,
+        "evidence": "research/deep-30.md の各作品に「評価の証拠」「なぜ評価されているかの材料」「利用者の困りごと・不満」の節がある。例：181 skills.sh「Security audits appear publicly on each skill's detail page.」（vercel.com/changelog）、Snyk「13.4% of all skills, or 534 in total…」。182「No JSON configuration. No path management.」（alpha-insights）。179「Get meaningful results from the first command without complex setup.」（dev.to/sienna）。利用者の声と第三者の評価が、出典つきの引用で集まっている。"
+      },
+      {
+        "id": "P3",
+        "title": "壁打ちの判定",
+        "ok": true,
+        "evidence": "combine/c01/judge-1-r1.md は案ごとに「いちばん強い反論」「新しさ」「役立つか」「価値」「判定」「直し方」を書く。例：案1「新しさ：認めない。…Cursor の利用者が速さを捨てて乗り換える理由が示されていない」、「価値：困っている人の数、良くなる幅の根拠が無い」。通したのは案5だけ（「通す：5」）。combine/c07/judge-2-r1.md は「通す：なし」。だめな理由を示す役が働いている。判定の理由に restriction.md の制限（「GitHub Copilot CLI と Claude Code の両方で使える」）を使った箇所は、grep で見つからなかった。"
+      },
+      {
+        "id": "P4",
+        "title": "先行例の調べ",
+        "ok": false,
+        "evidence": "検索語は英語と日本語で複数ある（combine/c01/prior-r1.md 案1 の検索語5つ、combine/c07/prior-r1.md 案1「single source AGENTS.md…／AIエージェント ルールファイル 一元管理…」）。製品・OSS・arXiv の論文も当たっている（prior-r1.md「arXiv 2606.29111」「CodeProbe（Apache-2.0）」）。しかし特許は、60ファイルのうち特許の語が出るのは10ファイルだけで、きちんと検索したのは combine/c10/prior-r3.md と prior-r3-2.md（「patent near miss reporting…」「特許：見つからなかった。」）だけ。c02・c03・c05・c06・c07 の prior には特許の語が1つもない。combine/c07/prior-r1.md の出典も、製品・OSS・公式文書だけである。"
+      }
+    ],
+    "attempts": 1,
+    "toolCalls": {
+      "Read": 10,
+      "Grep": 7
+    }
+  },
+  "ideas": [
+    {
+      "file": "explain/1.md",
+      "attempts": 1,
+      "toolCalls": {
+        "WebSearch": 9,
+        "WebFetch": 2
+      },
+      "name": "AI の申し送りを入れる前に、「AI なしの良い形」と並べて3つの形を比べる",
+      "verdict": "fail",
+      "closest": [
+        {
+          "name": "SHIFT Trial (NCT07251907, Penn)",
+          "url": "https://clinicaltrials.gov/study/NCT07251907",
+          "why_close": "LLM で申し送りを下書きする形と、AI なしの普段の手順を比べるランダム化試験。ただし比べるのは2つで、主に時間を測る。"
+        },
+        {
+          "name": "Genes et al., Generative AI Summaries to Facilitate ED Handoff (Appl Clin Inform 2025)",
+          "url": "https://scholars.mssm.edu/en/publications/generative-artificial-intelligence-summaries-to-facilitate-emerge/",
+          "why_close": "I-PASS の形で AI が申し送りを書き、50 件を医療者が評価して抜けと誤った書き方を数えた研究。"
+        },
+        {
+          "name": "Hartman et al., LLM-Generated Emergency Medicine Handoff Notes (JAMA Netw Open 2024)",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11615705",
+          "why_close": "AI の申し送りと医師が書いた申し送りを、正確さ・完全さ・安全の観点で比べた研究。"
+        },
+        {
+          "name": "Tisdale et al., EMR-based handoff tool (BMJ Open Quality 2018)",
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6045731",
+          "why_close": "このアイデアの (a) の形そのもの。事実を自動で入れ、見立てはボタンで選ぶ形にして、見立てが書かれる割合が 1.0% から 98.8% に上がった。"
+        }
+      ],
+      "novelty": {
+        "ok": true,
+        "reason": "AI の全体下書き・カルテから自動で入れる型・事実だけ AI の3つを、欄ごとの漏れで比べた例は見つからなかった。ただし AI なしの基準と比べること自体は評価の定石で、違いは比べる相手の選び方くらいにとどまる。"
+      },
+      "usefulness": {
+        "ok": false,
+        "reason": "AI の申し送りでの抜けや誤りは報告があり、困りごとには根拠がある。しかし正解の作り方、判定する人、受け手役の条件、件数が足りるかなど、結果を左右する点がほとんど決まっておらず、使える手順になっていない。"
+      },
+      "value": {
+        "ok": false,
+        "reason": "中心の心配である『AI を入れると見立てが書かれる割合が落ちる』には根拠が示されておらず、自分で探しても見つからなかった。BMJ 2018 で効いたのは見立てを必ず入れるボタン欄で、(b) の形にも同じ欄を置ける。もとの数字は研修医が書いた AI なしの例で、看護に当てはまるかも分からない。Genes ほかの『抜け6件・不同意8件』も抄録では確かめられなかった（抄録では安全上の懸念 6%）。"
+      },
+      "queries": [
+        "LLM generated I-PASS handoff omissions clinician agreement illness severity Genes",
+        "comparison AI-drafted handoff vs EHR auto-populated handoff template vs human handoff three-arm simulation",
+        "BMJ Open Quality 2018 handover illness severity documented 1.0% 98.8% electronic",
+        "NCT07251907 SHIFT AI handoff",
+        "nursing shift handoff AI-generated vs structured EHR template comparison omissions evaluation pre-implementation",
+        "HCA Healthcare nurse handoff AI 99,000 nurses Becker's",
+        "Genes \"Generative Artificial Intelligence Summaries to Facilitate Emergency Department Handoff\" Applied Clinical Informatics",
+        "large language model handoff generation I-PASS 50 handoffs omissions medications illness severity disagreement study 2025",
+        "Genes LLM I-PASS handoff illness severity physicians disagreed 50 handoffs"
+      ],
+      "reasons": [
+        "価値の大きさに根拠がない：『AI を入れると見立てが書かれる割合が落ちる』という中心の心配に根拠がない。BMJ の効果は必ず入れる欄の作りによるもので、AI の形にも同じ欄を置けば済む可能性がある。",
+        "役立つか：正解の作り方・判定する人・件数など、比べ方の要の部分が決まっておらず、病院がすぐ使える手順になっていない。",
+        "新しさは一応あるが、AI なしの基準と比べるという評価の定石を、相手の選び方で少し変えた程度にとどまる。"
+      ],
+      "pass": false
+    }
+  ],
+  "ok": false
+}

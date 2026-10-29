@@ -2,10 +2,15 @@
 
 - 既定のパラメーター（skills/make-idea/assets/params.json）が、仕様書 REQ-073 の表と同じ名前・同じ既定の値で、値の扱いの決まりに合う。
 - 6つの柱の名前と順番が、憲章 第26条、仕様書 1章、SKILL.md で同じ（憲章 第26条3項。承認なしに変えない）。
+- SKILL.md の6つの柱の中身が、仕様書 1章の表の文と一字一句同じ（縮めて写さない）。
+- 制限の決定で決める項目が、目的と範囲だけ（REQ-065）。
 - 3つのエージェントの tools が設計どおり（読み手はファイルを読めない、検討役は Web を持たない、どれも skill を持たない）。
+  調査役と検討役は model を書かず、ユーザーが選んだモデルを継ぐ。
 - make-idea が、make-plugin・change-plugin・test-plugin の仕組み（plugin-creator_ のツール、読み取り役、作業エージェント）を使うよう書いていない（REQ-076）。
 - README に、データの置き場所と消し方がある（REQ-074）。
 - 手順のファイルが名指しするエージェントと知識・経験のファイルが、そろっている。
+- 手順のファイル（references）が、すべて SKILL.md に名指しされ、20,000 バイト未満である。
+- 手順のファイルに書いた記録のファイルの名前が、ANALYSIS・REPORT・SUMMARY・FINDINGS で始まらない（Claude Code が書くのを断る）。
 - Claude Code 向けの置き換え（convert.py）で、エージェントのツールと本文の task の引数が置き換わる。
 
 動かし方（リポジトリの根で）:  python3 -m unittest discover -s tests/creator/make-idea -p "test_*.py"
@@ -43,7 +48,14 @@ AGENT_COUNTS = [
     ("アイデアの説明", "説明を読む第三者のエージェントの数"),
     ("知識・経験の蓄積", "振り返りのエージェントの数"),
 ]
+UPPER_LIMITS = (   # 値の扱いで、大きすぎると止める項目と、比べる相手
+    ("徹底的な事前調査", "1体が掘り下げる作品の数"),
+    ("知識・経験の蓄積", "まとめ始める大きさの割合（%）"),
+    ("アイデアの説明", "選ぶ一覧で詳しく示す案の数"),
+)
 IDEA_AGENTS = ("idea-researcher", "idea-thinker", "idea-reader")
+REFUSED_NAME = re.compile(r"(analysis|report|summary|findings)", re.I)   # Claude Code がサブエージェントに書かせない名前の頭
+READ_LIMIT = 20000   # Copilot CLI のファイルを読むツールが読む大きさ（アイデア創出の設計 2章）
 
 
 def read(path):
@@ -83,6 +95,11 @@ def spec_param_rows():
     return rows
 
 
+def spec_pillar_rows():
+    """仕様書 1章の6つの柱の表の行：[(番号, 名前, 中身)]"""
+    return re.findall(r"^\| (\d)\. ([^|]+?) \| ([^|]+?) \|$", read(SPEC), re.M)
+
+
 def numbers(text):
     return [int(n) for n in re.findall(r"\d+", text)]
 
@@ -91,7 +108,7 @@ class Params(unittest.TestCase):
     def test_REQ_073_names_and_defaults_match_the_spec_table(self):
         p = params()
         rows = spec_param_rows()
-        self.assertEqual(23, len(rows), rows)
+        self.assertEqual(27, len(rows), rows)
         listed = {(pillar, name) for pillar, name, _ in rows}
         in_file = {(pillar, name) for pillar, group in p.items() if isinstance(group, dict) for name in group}
         self.assertEqual(listed, in_file)
@@ -121,6 +138,9 @@ class Params(unittest.TestCase):
         for pillar, name in AGENT_COUNTS:
             self.assertGreaterEqual(p[pillar][name], 2, name)
         self.assertGreaterEqual(p["本質の見極め"]["本質の数"], size["最大"])
+        self.assertLessEqual(p["徹底的な事前調査"]["1体が掘り下げる作品の数"], 20)
+        self.assertLessEqual(p["知識・経験の蓄積"]["まとめ始める大きさの割合（%）"], 100)
+        self.assertGreaterEqual(p["アイデアの説明"]["選ぶ一覧で詳しく示す案の数"], p["アイデアの説明"]["説明するアイデアの数の上限"])
 
     def test_REQ_073_developer_values(self):
         """開発者が決めた初期値（ナレッジ「アイデア創出（6つの柱）」）"""
@@ -136,6 +156,15 @@ class Params(unittest.TestCase):
         start = read(os.path.join(SKILL_DIR, "references", "start.md"))
         for _, name in AGENT_COUNTS:
             self.assertIn(name, start)
+
+    def test_start_reference_and_params_description_list_every_upper_limit(self):
+        """大きすぎると止める値が、確かめの手順と、パラメーターのファイルの頭の説明にある（アイデア創出の設計 4章）"""
+        start = read(os.path.join(SKILL_DIR, "references", "start.md"))
+        start = start[start.index("## パラメーターの確かめ"):]
+        description = params()["説明"]
+        for _, name in UPPER_LIMITS:
+            self.assertIn("「%s」" % name, start)
+            self.assertIn(name, description)
 
 
 class Pillars(unittest.TestCase):
@@ -156,6 +185,15 @@ class Pillars(unittest.TestCase):
         found = re.findall(r"^\d\. ([^：]+)：", part, re.M)
         self.assertEqual(PILLARS, found)
         self.assertIn("名前・順番・中身は変えない", part)
+
+    def test_skill_copies_the_spec_table_text_of_each_pillar_verbatim(self):
+        """縮めて写すと言葉が抜け、手順に届かない（仕様書 1章。「時間をかけて」が抜けた）"""
+        text = read(os.path.join(SKILL_DIR, "SKILL.md"))
+        lines = text[text.index("## 6つの柱"):text.index("## 先頭の決まり")].splitlines()
+        rows = spec_pillar_rows()
+        self.assertEqual(PILLARS, [name for _, name, _ in rows])
+        for number, name, content in rows:
+            self.assertIn("%s. %s：%s。" % (number, name, content), lines, name)
 
 
 class Agents(unittest.TestCase):
@@ -183,9 +221,43 @@ class Agents(unittest.TestCase):
             meta, _ = agent_meta(agent_id)
             self.assertIn("make-idea の手順の中で", meta["description"], agent_id)
 
-    def test_thinker_inherits_the_users_model(self):
-        meta, _ = agent_meta("idea-thinker")
-        self.assertNotIn("model", meta)
+    def test_researcher_and_thinker_inherit_the_users_model(self):
+        """調査役も、費用の低いモデルにしない。前の版は掘り下げが浅くなった（アイデア創出の設計 3.4）"""
+        for agent_id in ("idea-researcher", "idea-thinker"):
+            meta, _ = agent_meta(agent_id)
+            self.assertNotIn("model", meta, agent_id)
+
+
+class References(unittest.TestCase):
+    def test_every_reference_is_named_by_the_skill_and_readable(self):
+        skill = read(os.path.join(SKILL_DIR, "SKILL.md"))
+        refs = os.path.join(SKILL_DIR, "references")
+        for name in sorted(os.listdir(refs)):
+            if not name.endswith(".md"):
+                continue
+            self.assertIn("`references/%s`" % name, skill, name)
+            self.assertLess(os.path.getsize(os.path.join(refs, name)), READ_LIMIT, name)
+
+    def test_REQ_065_restriction_decides_only_purpose_and_scope(self):
+        text = read(os.path.join(SKILL_DIR, "references", "restriction.md"))
+        part = text[text.index("## 決める項目"):]
+        part = part[:part.index("\n## ", 1)]
+        items = [line.split("|")[1].strip() for line in part.splitlines() if line.startswith("|")]
+        self.assertEqual(["目的", "範囲"], [i for i in items if i not in ("項目", "---")])
+        template = re.search(r"```markdown\n(.*?)```", text, re.S).group(1)
+        self.assertEqual(["目的", "範囲"], re.findall(r"^\s*## (.+)$", template, re.M))
+
+    def test_record_file_names_do_not_start_with_names_claude_code_refuses(self):
+        """Claude Code は、サブエージェントが名前の頭が ANALYSIS・REPORT・SUMMARY・FINDINGS の .md を書くのを断る（アイデア創出の設計 3.5）"""
+        names = set()
+        for path in skill_files():
+            text = read(path)
+            names.update(p.rsplit("/", 1)[-1] for p in re.findall(r"<回のフォルダ>/([^`\s）)、。]+)", text))
+            names.update(p.rsplit("/", 1)[-1] for p in re.findall(r"`([^`\s]+\.md)`", text))
+        self.assertIn("whys-c01-a1.md", names)   # 探し方が名前を拾えている
+        self.assertIn("overview.md", names)
+        for name in sorted(names):
+            self.assertIsNone(REFUSED_NAME.match(name), name)
 
 
 class Separation(unittest.TestCase):
@@ -257,7 +329,7 @@ class Conversion(unittest.TestCase):
         researcher = self.converted_agent("idea-researcher")
         self.assertIn("WebSearch", researcher["tools"])
         self.assertIn("WebFetch", researcher["tools"])
-        self.assertEqual("claude-haiku-5-5", researcher["model"])
+        self.assertEqual("inherit", researcher["model"])
 
     def test_skill_body_uses_claude_code_tool_names(self):
         body = read(os.path.join(self.root, "skills", "make-idea", "SKILL.md"))
