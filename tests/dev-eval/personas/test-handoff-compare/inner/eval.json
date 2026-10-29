@@ -1,0 +1,16 @@
+{
+  "id": "T-01",
+  "prompt": "inputs/reference.xlsx（正解の一覧）、inputs/handoffs.docx（申し送りの文）、inputs/judgments.xlsx（判定シート）、inputs/timelog.xlsx（時間の記録）から、3つの形の申し送りの比較報告を作ってください。",
+  "inputs": ["inputs/reference.xlsx", "inputs/handoffs.docx", "inputs/judgments.xlsx", "inputs/timelog.xlsx"],
+  "criteria": [
+    { "id": "C-01", "knowledge": "output", "text": "成果物は compare_report.md という名前のファイルである", "grading": "program", "check": { "type": "file_exists", "file": "compare_report.md" } },
+    { "id": "C-02", "knowledge": "assessment-veto", "text": "結論が (c) である（(b) は漏れと時間の条件に当てはまり漏れの合計も最も少ないが、見立ての不同意が3件で (a) の1件より多いので入れない）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "(?:^|\\n)[ \\t>#*_-]*結論[：:][ \\t*_]*[（(]c[)）]" } },
+    { "id": "C-03", "knowledge": "omission-count", "text": "(b) の行の欄ごとの内訳で、病状の重さの漏れが2件と数えられている（判定シートの項目番号を、正解の一覧で欄に引いて数える）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]b[)）][^\\n]*病状の重さ[^\\n0-9]{0,8}2(?![0-9.])" } },
+    { "id": "C-04", "knowledge": "consensus", "text": "(a) の行の漏れの合計が10件である（判定者2人の判定が分かれた4つの項目は、合議の列の判定を使う）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]a[)）][^\\n]*漏れ[^\\n0-9]{0,8}10(?![0-9.])" } },
+    { "id": "C-05", "knowledge": "blind-key", "text": "(b) の行の漏れの合計が5件である（判定シートの記号を、記号の対応のシートで患者ごとに形に戻して数える）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]b[)）][^\\n]*漏れ[^\\n0-9]{0,8}5(?![0-9.])" } },
+    { "id": "C-06", "knowledge": "receiver-synthesis", "text": "(c) の行の漏れの合計が6件である（受け手の要約の欄の漏れ2件は数えない）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]c[)）][^\\n]*漏れ[^\\n0-9]{0,8}6(?![0-9.])" } },
+    { "id": "C-07", "knowledge": "time-average", "text": "(c) の行の1件あたりの時間が7.4分である（書く時間と直す時間を足し、備考に「中断」とある P-13 の件を平均から外す）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]c[)）][^\\n]*(?<![0-9.])7\\.4(?![0-9])" } },
+    { "id": "C-08", "knowledge": "decision-rule", "text": "理由に、決めておいた条件（(a) と比べて漏れの合計が3件以上少ない・1件あたりの時間の増え方が2分以内）を当てはめたことが書かれている", "grading": "model", "check": { "files": ["compare_report.md"] } },
+    { "id": "C-09", "knowledge": "output", "text": "(b) の行に、受け手が気づいた欠けの数が1件と書かれている（判定シートの受け手のシートの数を使う）", "grading": "program", "check": { "type": "regex", "file": "compare_report.md", "pattern": "[（(]b[)）][^\\n]*(?:気づいた欠け|欠けに気づいた(?:数)?)[^\\n0-9]{0,6}1(?![0-9.])" } }
+  ]
+}
