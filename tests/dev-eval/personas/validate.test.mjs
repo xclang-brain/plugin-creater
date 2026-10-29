@@ -568,6 +568,70 @@ test('REQ-056 expect.screenAsked は、画面の問いを言い換えても当�
   ]) assert.doesNotMatch(q, screen);
 });
 
+test('REQ-056 expect.notAsked は、頼みにあるスキルと直すプラグインの場所を聞き直す問いに当たり、頼みにないファイルを聞く問いやほかの段階の問いに当たらない', () => {
+  const p = readPersona(EDL);
+  // 頼みに、直すプラグインのフォルダと、組み込みたいスキルの場所が書いてある
+  assert.ok(p.request.includes(p.target) && p.request.includes(p.expect.userSkills));
+  const notAsked = p.expect.notAsked.map((e) => new RegExp(e));
+  const reasks = (q) => notAsked.some((re) => re.test(q));
+  // 実物を受け取るの問いの例に、今使っているスキルを足したもの（頼みにある場所を、もう一度書かせる）
+  const [receive] = exampleQuestions('receive.md');
+  const withSkills = receive.replace('スクリプトなど）', 'スクリプト、今使っているスキルなど）');
+  assert.notEqual(withSkills, receive, 'receive.md の問いの例が変わった');
+  for (const q of [
+    withSkills,
+    // 設計の調べ（wip/change-plugin/research/skillflow.md 2.5）の、実物を受け取るの問いの例
+    'KX-200 のビルドとデプロイで今使っているスキル（Copilot CLI や Claude Code のスキルのフォルダ）、手順書、スクリプトと、最近その作業をしたときに受け取ったファイル・作ったファイルは、どこにありますか？ファイルやフォルダの場所（パス）か @ で書いてください。ない場合は「ない」と書いてください。',
+    'KX-200 のクロスコンパイルとデプロイで今使っているスキルは、どこにありますか？',
+    'クロスコンパイルとデプロイのスキルの場所を教えてください。',
+    '組み込みたいスキルのフォルダを、パスか @ で書いてください。',
+    'ファイル 組み込むスキルのパスは？',
+    // 設計の調べの、直すフォルダが分からないときの問いの例
+    '直すプラグインのフォルダが分からないと、どのファイルを直すか決められません。直したいプラグインのフォルダの場所はどこですか？',
+    '直すプラグインの場所を教えてください。',
+  ]) assert.ok(reasks(q), q);
+  const t = p.userRoleTests;
+  for (const q of [
+    // 2回目・3回目の記録の問い（スキルのほかのファイルを聞く実物を受け取るの問い、範囲、決まりの一覧、前回の1回、つまずき、決まりの確かめ）
+    ...Object.keys(RUN2).map((seq) => askedText(RUN2[seq])),
+    ...Object.keys(RUN3).map((seq) => askedText(RUN3[seq])),
+    // 5回目の問い（wip/change-plugin/runs/final-review-flow-and-conversation.md 3.2 の引用。やり直しの問いは、引用の「…」を補った）
+    'ソースを最新にするのは、だれが、どの時点で、何をすることですか？',
+    '『KX-200 で取ったコンソールの文字は、頼まれた場所にログとして保存する』という決まりですか？',
+    'ログが取れないときに1回 reboot した後、どこからやり直しますか？',
+    // 頼みにない、変えるところの作業のファイル（ソースなど）を聞く問い。頼みにあるスキルを示してから聞く問い
+    '最近 KX-200 でビルドとデプロイをしたときに受け取ったファイルと作ったファイル（ソース、ログなど）は、どこにありますか？',
+    'cross-compile と deploy のスキルは読みます。最近 KX-200 でビルドしたソースのフォルダは、どこにありますか？',
+    'KX-200 のスキルでビルドするソースは、どこにありますか？',
+    '直した後のプラグインを試しに動かすときの入力になるので、最近 KX-200 でデバッグしたときのファイルは、どこにありますか？',
+    // 決まりの一覧の問いの初めの2行（今回変えることと、引き継ぐこと）、決まりの確かめ、承認
+    `今回変えること：KX-200 のボードで使えるように、${p.expect.userSkills} の cross-compile と deploy のスキルを組み込む\nほかは、今できていることをすべて引き継ぎます（できていることの一覧は、直す前の確認で示します）`,
+    'deploy のスキルは、SKILL.md のあるフォルダのパスを前に付けて動かす、という決まりですか？',
+    'cross-compile と deploy のスキル、どちらですか？',
+    'よいと答えると、元のプラグインのフォルダのファイルを直し始めます。この内容で直してよいですか？',
+    // ヒアリングの段階の手順書の問いの例と、ユーザー役の試験の問い
+    ...['start.md', 'receive.md', 'read.md', 'last-time.md', 'deepen.md', 'rules.md', 'items.md', 'assets.md', 'screen.md', 'confirm.md'].flatMap((name) => exampleQuestions(name)),
+    ...t.generic, ...t.recall.flatMap((r) => r.questions), ...t.compound.map((c) => c.question), ...t.unknown,
+    ...t.context.flatMap((c) => c.turns), ...t.options.map((o) => o.question), ...t.confirm.map((c) => c.question),
+  ]) assert.ok(!reasks(q), q);
+});
+
+test('REQ-056 expect.notAsked は正規表現の並びで書く。省くか空なら誤りにしない', async () => {
+  const text = await mutate(EDL, (q) => {
+    q.expect.notAsked = 'スキル.*どこ';
+  });
+  assert.ok(hasError(text, 'expect.notAsked は、頼みにあることを聞き直す問いに当たる正規表現の並びで書く'), text.errors.join('\n'));
+  const bad = await mutate(EDL, (q) => {
+    q.expect.notAsked = ['スキル(', ''];
+  });
+  assert.ok(hasError(bad, 'expect.notAsked[0] が正規表現として読めない'), bad.errors.join('\n'));
+  assert.ok(hasError(bad, 'expect.notAsked[1] は、正規表現を空でない文字で書く'), bad.errors.join('\n'));
+  for (const change of [(q) => { q.expect.notAsked = []; }, (q) => { delete q.expect.notAsked; }]) {
+    const r = await mutate(EDL, change);
+    assert.deepEqual(r.errors, []);
+  }
+});
+
 test('REQ-060 expect.explained の版の正規表現は、版に当たり、機器の IP アドレスに当たらない', () => {
   const p = readPersona(EDL);
   const version = p.expect.explained.map((e) => new RegExp(e)).find((re) => re.test('0.2.0'));

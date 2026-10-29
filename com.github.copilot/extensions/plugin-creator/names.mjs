@@ -39,23 +39,26 @@ export const ITEMS = Object.freeze([
   Object.freeze({ key: 'last_case', name: '前回の1回', group: 'other' }),
   // 候補の確かめ：状態はエクステンションが計算する。ツールでは変えられない
   Object.freeze({ key: 'candidate_check', name: '候補の確かめ', group: 'other', computed: true }),
-  Object.freeze({ key: 'assets', name: '資産', group: 'other' }),
-  Object.freeze({ key: 'oss', name: '標準機能と公開のプラグイン', group: 'other' }),
-  Object.freeze({ key: 'settings', name: '開始前に設定したいこと', group: 'other' }),
-  Object.freeze({ key: 'running_view', name: '実行中に見たいこと', group: 'other' }),
-  Object.freeze({ key: 'result_view', name: '終わった後に見たい結果と見せ方', group: 'other' }),
+  // draftable：今のプラグインを直すときに、状態「聞かずに案で示す」にできる項目（REQ-056、REQ-057）
+  Object.freeze({ key: 'assets', name: '資産', group: 'other', draftable: true }),
+  Object.freeze({ key: 'oss', name: '標準機能と公開のプラグイン', group: 'other', draftable: true }),
+  Object.freeze({ key: 'settings', name: '開始前に設定したいこと', group: 'other', draftable: true }),
+  Object.freeze({ key: 'running_view', name: '実行中に見たいこと', group: 'other', draftable: true }),
+  Object.freeze({ key: 'result_view', name: '終わった後に見たい結果と見せ方', group: 'other', draftable: true }),
   // 作り直しのときだけ
   Object.freeze({ key: 'rebuild_check', name: 'できていたことの確認', group: 'other', rebuildOnly: true }),
 ]);
 
 // 項目の状態（hearing.md 7.2）
 // unchanged：今のプラグインを直すときだけ。変えるところに関わらないので聞かない項目（REQ-056。BLUEPRINT 4.1）
+// drafted：今のプラグインを直すときだけ。聞かずに、案を作るか調べた結果を、直す前の確認で示す項目（REQ-056、REQ-057）。済んだ項目に数える
 export const ITEM_STATUSES = table([
   ['todo', '未着手'],
   ['asked', '聞いた'],
   ['none', '決まりなし'],
   ['pending', '保留'],
   ['unchanged', '変えないので聞かない'],
+  ['drafted', '聞かずに案で示す'],
 ]);
 
 // ナレッジの種類（hearing.md 7.3。記号は tests/knowledge.json の kind と同じ）
@@ -145,6 +148,9 @@ export const knowledgeStatusDisplay = (key) => (key === 'candidate' ? '確かめ
 
 /** 仕様 REQ-015 の10項目（ナレッジの項目になれるもの） */
 export const MAIN_ITEMS = Object.freeze(ITEMS.filter((i) => i.group === 'main10'));
+
+/** 状態「聞かずに案で示す」にできる項目（資産、標準機能と公開のプラグイン、画面の3つ） */
+export const DRAFTABLE_ITEMS = Object.freeze(ITEMS.filter((i) => i.draftable));
 
 /** 日本語の名前を、「、」でつないだ文にする（誤りのときに使える値を示すため） */
 export const listNames = (rows) => rows.map((r) => r.name).join('、');

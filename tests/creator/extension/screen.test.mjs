@@ -559,6 +559,21 @@ describe('今のプラグインを直すときの画面の状態', () => {
     });
   });
 
+  test('REQ-056 REQ-057 REQ-043 「聞かずに案で示す」項目は、済んだもの（変えないので聞かない項目とは分けて）としてその状態で持つ。作っていないプラグインでも、変えないので聞かない項目を分けて持つ', async () => {
+    await withRun(async (run) => {
+      const url = await openScreen(run);
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+      await run.call('progress', { items: [{ item: '実行中に見たいこと', status: '聞かずに案で示す', quote: '画面はおまかせ' }, { item: '資産', status: '聞かずに案で示す', quote: '頼みに書いたスキル' }, { item: '作業の目的', status: '変えないので聞かない', quote: '目的は今のまま' }] });
+      const view = await viewOf(url);
+      assert.equal(view.hearing.change.generated, false);
+      assert.deepEqual(view.hearing.items.find((i) => i.name === '実行中に見たいこと'), { name: '実行中に見たいこと', status: '聞かずに案で示す', done: true, main: false, skipped: false, holder: null });
+      assert.deepEqual(view.hearing.items.find((i) => i.name === '資産'), { name: '資産', status: '聞かずに案で示す', done: true, main: false, skipped: false, holder: null });
+      assert.deepEqual(view.hearing.skippedItems, ['作業の目的']);
+      assert.ok(!view.hearing.notAskedItems.includes('作業の目的'));
+      assert.deepEqual(stringValues(view).flatMap((v) => internalSymbolsIn(v)), []);
+    });
+  });
+
   test('REQ-057 REQ-044 直す前の確認の状態に、直すフォルダ、版（今と案）、引き継ぐことと変わること（下見の結果を含む）、足す・直す・外す決まり、元の番号を引き継いだ合格の条件がある', async () => {
     await withRun(async (run) => {
       const url = await openScreen(run);

@@ -5,11 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { describe, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 import {
   MAIN_ITEM_NAMES,
   PLUGIN_EVALS,
   PLUGIN_KNOWLEDGE,
+  REPO_ROOT,
   SETTABLE_ITEMS,
   UNCHANGED_ITEMS,
   answerEverything,
@@ -1114,10 +1116,12 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
   // 新しく記録を作ったときの返り値の初め：1行目にこれからの流れの文そのもの、2行目にそれだけをそのまま書く指示（画面を開くツールと同じ並び。hearing.md 3.4・7.5）。
   // 記録の知らせは3行目から。「スキル」と言わず「今使っているファイル」と書く（ユーザーの言い方は分からず、words.md は「スキル」を話さないため）
   const FLOW_ASK = '\n上の1行（これから、次の順に…）だけを、ほかのツールを呼ぶ前に、そのままチャットの文に書いて、ユーザーに示してください。\n';
+  // 流れは、頼みにあることと読めば分かることを聞かない流れ（REQ-056）。作っていないプラグインでも、最近の1回は変えるところに関わる作業だけで、
+  // 作業の画面は聞かずに、直す前の確認で見本を示す
   const FLOW_GENERATED =
-    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 今の決まりの一覧を確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具（作業の画面を変えるときは、画面で見たいことも） → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+    'これから、次の順に進めます。今使っているファイルを教えてもらう（要るときだけ） → プラグインを読み、今の決まりの一覧と変えるところを確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりのうち、まだ伺っていないものを確かめる → まだ分からないことだけを聞く → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
   const FLOW_NOT_GENERATED =
-    'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 作業の最初から最後まで、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具 → 作業の画面で見たいこと → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+    'これから、次の順に進めます。今使っているファイルやほかのプラグインのうち、頼みにないものを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりのうち、まだ伺っていないものを確かめる → まだ分からないことだけを聞く → 直す前に、まとめと作業の画面の見本を確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
   const CHANGE_KEYS = ['folder', 'manifest', 'name', 'version', 'generated', 'carried', 'removed', 'maxId', 'criteriaIds', 'evalPrompts', 'wants', 'startedAt'];
   const ALL_IDS = PLUGIN_KNOWLEDGE.map((k) => k.id);
 
@@ -1154,6 +1158,31 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       const again = await run.callSafe('change', { folder, wants: ['別の言い方'] });
       assert.equal(again.ok, true, again.error);
     });
+  });
+
+  test('REQ-056 REQ-015 これからの流れは1行で、「これから、次の順に進めます。」で始まり、段階を矢印でつなぐ（外側の EVAL の流れの見分け方に当たる）。頼みにあることは聞かない流れで、作っていないプラグインでも作業の最初から最後までは聞かない', async () => {
+    const { isFlowText } = await import(pathToFileURL(path.join(REPO_ROOT, 'tests', 'dev-eval', 'runner', 'outer-grade.mjs')).href);
+    // 1つ目：作ったプラグインでは、今使っているファイルは要るときだけ聞く（役割の分け直しなどでは聞かないので、「頼みにないときだけ」とは告げない）。
+    // 作っていないプラグインでは、頼みにないものを聞く
+    for (const [plugin, flow, firstStep] of [
+      [{}, FLOW_GENERATED, '今使っているファイルを教えてもらう（要るときだけ） →'],
+      [{ knowledge: null, task: null, evals: [] }, FLOW_NOT_GENERATED, '頼みにないものを教えてもらう →'],
+    ]) {
+      await withRun(async (run) => {
+        const { text } = await startChange(run, { plugin });
+        const first = text.split('\n')[0];
+        assert.equal(first, flow);
+        assert.ok(first.startsWith('これから、次の順に進めます。'));
+        assert.ok((first.match(/→/g) ?? []).length >= 2);
+        assert.equal(isFlowText(first), true);
+        assert.deepEqual(leftWordsIn(first), []);
+        assert.ok(!first.includes('最初から最後まで'), '作っていないプラグインでも、最近の1回は変えるところに関わる作業だけ');
+        assert.ok(!first.includes('聞き直しません'), '言い切らない（確かめる決まりがあるため）');
+        assert.ok(first.includes(firstStep));
+      });
+    }
+    assert.ok(FLOW_GENERATED.includes('今の決まりの一覧と変えるところを確かめる'));
+    assert.ok(FLOW_NOT_GENERATED.includes('作業の画面の見本'), '作っていないプラグインでは、作業の画面は聞かずに、直す前の確認で見本を示す');
   });
 
   test('REQ-052 plugin.json は、直下・.plugin/・.github/plugin/・.claude-plugin/ の順に探す。見つけた場所を記録する', async () => {
@@ -1474,7 +1503,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       assert.deepEqual([r.generated, r.carried, r.rows, r.criteriaIds, r.evalPrompts], [false, [], 0, {}, []], JSON.stringify(plugin));
       assert.equal(
         r.text,
-        `${FLOW_NOT_GENERATED}${FLOW_ASK}直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）と com.github.copilot/extensions/edl-sample/task.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。新しい決まりは K-${String(r.maxId + 1).padStart(2, '0')} から付きます。`,
+        `${FLOW_NOT_GENERATED}${FLOW_ASK}直すプラグインとして記録しました（edl-sample、今の版 0.1.0）。決まりの一覧（tests/knowledge.json）と com.github.copilot/extensions/edl-sample/task.json がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、頼みの文や答えで決まりとして述べられていないものを、1件ずつ確かめてください。新しい決まりは K-${String(r.maxId + 1).padStart(2, '0')} から付きます。`,
         JSON.stringify(plugin),
       );
       assert.deepEqual(leftWordsIn(r.text), [], JSON.stringify(plugin));
@@ -1507,7 +1536,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     });
   });
 
-  test('REQ-056 「変えないので聞かない」は、直すときだけ、未着手からだけ使える。「前回の1回」には使えない', async () => {
+  test('REQ-056 「変えないので聞かない」は、直すときだけ、まだ聞いていない状態からだけ使える。「前回の1回」には使えない', async () => {
     await withRun(async (run) => {
       const notChange = await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: 'x' }] });
       assert.equal(notChange.ok, false);
@@ -1524,7 +1553,7 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
       assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '今のまま' }] })).ok, true);
       await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
       const fromAsked = await run.callSafe('progress', { items: [{ item: '進め方', status: '変えないので聞かない', quote: 'x' }] });
-      assert.equal(fromAsked.error, '「進め方」は、もう聞いているので（今の状態：聞いた）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、状態が「未着手」のものだけです。');
+      assert.equal(fromAsked.error, '「進め方」は、もう聞いているので（今の状態：聞いた）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、まだ聞いていない状態（未着手、変えないので聞かない、聞かずに案で示す）のものだけです。');
       const lastCase = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '変えないので聞かない', quote: 'x' }] });
       assert.equal(lastCase.error, '「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
       // 変えないので聞かない → 聞いた、には変えられる（聞くことになったとき）
@@ -1533,30 +1562,173 @@ describe('今のプラグインを直す（plugin-creator_change と、直すと
     });
   });
 
-  test('REQ-056 「変えないので聞かない」に変えるときも、そこから変えるときも、抜き書きがユーザーの答えの中にあることを確かめる', async () => {
+  test('REQ-056 「変えないので聞かない」に変えるときも、そこから変えるときも、抜き書きがユーザーの答えか頼みの文の中にあることを確かめる', async () => {
     await withRun(async (run) => {
       await startChange(run);
       await run.fake.askUser({ message: '変えるのはデプロイのところです。ほかは今のまま引き継ぎます。違うところはありますか？', answer: 'User responded: ない。画面と成果物は今のままでいい' });
       const bad = await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '成果物は変えない' }] });
       assert.equal(bad.ok, false);
-      assert.match(bad.error, /^「成果物」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。/);
+      assert.equal(bad.error, '「成果物」の抜き書き（quote）が、ユーザーの答えと頼みの文の中に見つかりません。1つの答えか頼みの文の言葉を、そのまま写してください（要約しない。間を省くときは「…」でつなぐ）。');
       assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '変えないので聞かない', quote: '画面と成果物は今のままでいい' }] })).ok, true);
       // 変えないので聞かない → 聞いた：答えの中にない抜き書きは断る（変えないので聞かないを経由して、確かめをすり抜けない）
       const skipped = await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '聞いていない言葉' }] });
       assert.equal(skipped.ok, false);
-      assert.match(skipped.error, /^「成果物」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。/);
+      assert.match(skipped.error, /^「成果物」の抜き書き（quote）が、ユーザーの答えと頼みの文の中に見つかりません。/);
     });
   });
 
-  test('REQ-056 plugin-creator が作っていないプラグインを直すときは、どの聞くことも「変えないので聞かない」にできない', async () => {
+  test('REQ-056 直すときは、頼みの文をユーザーの答えと同じに扱い、項目の状態を変える抜き書きに使える（頼みに書いたことを聞き直さないため）', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: 'edl-sample に、KX-200 へのデプロイを足したい。目的は、手で送る手間をなくすこと。送り先は必ず 192.168.7.2 にする' });
+      await startChange(run);
+      await run.fake.askUser({ message: '今の決まりは次のとおりです。違うものはありますか？', answer: 'User responded: ない' });
+      const fromRequest = await run.callSafe('progress', {
+        items: [
+          { item: '作業の目的', status: '聞いた', quote: '目的は、手で送る手間をなくすこと' },
+          { item: '成果物', status: '変えないので聞かない', quote: 'KX-200 へのデプロイを足したい' },
+          { item: '決まった書き方やルール', status: '聞いた', quote: '送り先は必ず 192.168.7.2 にする' },
+        ],
+      });
+      assert.equal(fromRequest.ok, true, fromRequest.error);
+      assert.deepEqual(['purpose', 'output', 'rules'].map((k) => run.readState().items[k].status), ['asked', 'unchanged', 'asked']);
+      // 頼みの文にも答えにもない言葉は、今までどおり断る（要約や言い換えにしない）
+      const summary = await run.callSafe('progress', { items: [{ item: '受け取るもの', status: '聞いた', quote: 'デプロイの手間をなくしたい' }] });
+      assert.equal(summary.ok, false);
+      assert.match(summary.error, /^「受け取るもの」の抜き書き（quote）が、ユーザーの答えと頼みの文の中に見つかりません。/);
+      // 頼みの文と答えをつなぎ合わせた抜き書きは断る（1つの文の中にあること）
+      assert.equal((await run.callSafe('progress', { items: [{ item: '受け取るもの', status: '聞いた', quote: 'デプロイを足したい…ない' }] })).ok, false);
+    });
+  });
+
+  test('REQ-056 REQ-016 直すときも、「前回の1回」は頼みの文の抜き書きでは閉じない（最近の1回は、問いへの答えから写す）', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: 'デプロイを足したい。いつもは 1. クロスコンパイル 2. kxtool で送る 3. ログを見る、の順です' });
+      await startChange(run);
+      await run.fake.askUser({ message: '最近デプロイした1回で、この流れに書かれていないことは何ですか？', answer: 'User responded: 送る前に、機器の電源を入れ直しました' });
+      const fromRequest = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '聞いた', quote: 'kxtool で送る' }] });
+      assert.equal(fromRequest.ok, false);
+      assert.equal(
+        fromRequest.error,
+        '「前回の1回」の抜き書きは、頼みの文からは取れません。最近の1回の流れを聞いた問いへの、ユーザーの答えの言葉を、そのまま写してください。頼みに流れが書いてあれば、それを示して、足りないことを聞いてください。',
+      );
+      // 頼みの文にも答えにもない言葉は、ほかの項目と同じ断り（頼みの文は数えないので、答えだけを言う）
+      const neither = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '聞いた', quote: '聞いていない言葉' }] });
+      assert.match(neither.error, /^「前回の1回」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。1つの答えの言葉を、/);
+      assert.equal((await run.callSafe('progress', { items: [{ item: '前回の1回', status: '聞いた', quote: '機器の電源を入れ直しました' }] })).ok, true);
+      assert.equal(run.readState().items.last_case.status, 'asked');
+      // ほかの項目は、同じ頼みの文から写せる
+      assert.equal((await run.callSafe('progress', { items: [{ item: '進め方', status: '聞いた', quote: '1. クロスコンパイル 2. kxtool で送る' }] })).ok, true);
+    });
+  });
+
+  test('REQ-056 作るときは、頼みの文を項目の状態を変える抜き書きに使えない（作る流れは変えない）', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: '週報づくりを自動化したい。目的は、金曜の手間を減らすこと' });
+      await run.call('progress', { stage: '始まり' });
+      await run.fake.askUser({ message: '成果物は何ですか？', answer: 'User responded: 週報の Word ファイルです' });
+      const fromRequest = await run.callSafe('progress', { items: [{ item: '作業の目的', status: '聞いた', quote: '目的は、金曜の手間を減らすこと' }] });
+      assert.equal(fromRequest.ok, false);
+      assert.equal(fromRequest.error, '「作業の目的」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。1つの答えの言葉を、そのまま写してください（要約しない。間を省くときは「…」でつなぐ）。');
+      assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '週報の Word ファイルです' }] })).ok, true);
+    });
+  });
+
+  test('REQ-056 直すときも、問答の記録にユーザーの言葉（頼みの文を除く）が1件もなければ、抜き書きを確かめずに通す（今までと同じ）', async () => {
+    await withRun(async (run) => {
+      await run.hook('onUserPromptSubmitted', { prompt: 'デプロイを足したい' });
+      await startChange(run);
+      assert.deepEqual(run.readQa().map((e) => e.type), ['request']);
+      assert.equal((await run.callSafe('progress', { items: [{ item: '成果物', status: '聞いた', quote: '頼みにない言葉' }] })).ok, true);
+    });
+  });
+
+  test('REQ-056 plugin-creator が作っていないプラグインを直すときも、変えるところに関わらない聞くことは「変えないので聞かない」にできる（「前回の1回」を除く）', async () => {
     await withRun(async (run) => {
       await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
-      for (const item of ['作業の目的', '成果物', '開始前に設定したいこと', '実行中に見たいこと', '終わった後に見たい結果と見せ方', '資産']) {
-        const r = await run.callSafe('progress', { items: [{ item, status: '変えないので聞かない', quote: 'x' }] });
-        assert.equal(r.ok, false, item);
-        assert.equal(r.error, 'plugin-creator が作っていないプラグインを直すときは、プラグインの形を変えること自体が変えるところなので、「変えないので聞かない」は使えません。聞くことは、すべて聞いてください。');
-      }
-      assert.deepEqual(run.readState().items, {});
+      await run.fake.askUser({ message: '変えるのはデプロイのところです。ほかは今のまま引き継ぎます。違うところはありますか？', answer: 'User responded: ない。目的も成果物も今のまま' });
+      const ok = await run.callSafe('progress', {
+        items: [
+          { item: '作業の目的', status: '変えないので聞かない', quote: '目的も成果物も今のまま' },
+          { item: '成果物', status: '変えないので聞かない', quote: '目的も成果物も今のまま' },
+        ],
+      });
+      assert.equal(ok.ok, true, ok.error);
+      assert.deepEqual([run.readState().items.purpose.status, run.readState().items.output.status], ['unchanged', 'unchanged']);
+      const lastCase = await run.callSafe('progress', { items: [{ item: '前回の1回', status: '変えないので聞かない', quote: '今のまま' }] });
+      assert.equal(lastCase.error, '「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
+      await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: 'ない' }] });
+      const fromAsked = await run.callSafe('progress', { items: [{ item: '進め方', status: '変えないので聞かない', quote: 'ない' }] });
+      assert.equal(fromAsked.error, '「進め方」は、もう聞いているので（今の状態：聞いた）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、まだ聞いていない状態（未着手、変えないので聞かない、聞かずに案で示す）のものだけです。');
+    });
+  });
+
+  test('REQ-056 REQ-057 「聞かずに案で示す」は、直すときだけ、まだ聞いていない状態からだけ、資産・標準機能と公開のプラグイン・画面の3つの項目にだけ使える', async () => {
+    const DRAFTABLE = ['資産', '標準機能と公開のプラグイン', '開始前に設定したいこと', '実行中に見たいこと', '終わった後に見たい結果と見せ方'];
+    const NOT_DRAFTABLE_MESSAGE = (name) =>
+      `「聞かずに案で示す」にできるのは、資産、標準機能と公開のプラグイン、開始前に設定したいこと、実行中に見たいこと、終わった後に見たい結果と見せ方だけです。「${name}」は、聞いてから記録してください。`;
+    // 作るときは使えない（記録も作らない）
+    await withRun(async (run) => {
+      const r = await run.callSafe('progress', { items: [{ item: '資産', status: '聞かずに案で示す', quote: 'x' }] });
+      assert.equal(r.ok, false);
+      assert.equal(r.error, '「聞かずに案で示す」は、今のプラグインを直すときだけ使えます。「資産」は、聞いてから記録してください。');
+      assert.equal(fs.existsSync(run.statePath()), false);
+      await run.call('progress', { stage: '始まり' });
+      assert.equal((await run.callSafe('progress', { items: [{ item: '実行中に見たいこと', status: '聞かずに案で示す', quote: 'x' }] })).error, '「聞かずに案で示す」は、今のプラグインを直すときだけ使えます。「実行中に見たいこと」は、聞いてから記録してください。');
+    });
+    // 作ったプラグインと、作っていないプラグインの、どちらを直すときも使える
+    for (const plugin of [{}, { knowledge: null, task: null, evals: [] }]) {
+      await withRun(async (run) => {
+        await run.hook('onUserPromptSubmitted', { prompt: 'このプラグインに、KX-200 へのデプロイを足したい' });
+        await startChange(run, { plugin });
+        await run.fake.askUser({ message: '変えるところはデプロイです。違うところはありますか？', answer: 'User responded: ない' });
+        const ok = await run.callSafe('progress', { items: DRAFTABLE.map((item) => ({ item, status: '聞かずに案で示す', quote: 'KX-200 へのデプロイを足したい' })) });
+        assert.equal(ok.ok, true, ok.error);
+        assert.match(ok.text, /^記録しました。まだ聞いていないこと：/);
+        for (const name of DRAFTABLE) assert.ok(!ok.text.includes(name), `済んだものに数えない：${name}`);
+        const state = run.readState();
+        assert.deepEqual(['assets', 'oss', 'settings', 'running_view', 'result_view'].map((k) => state.items[k].status), Array(5).fill('drafted'));
+        assert.match(await run.call('state'), /^ {2}資産：聞かずに案で示す$/m);
+        // ほかの聞くことには使えない（「前回の1回」を含む）
+        for (const item of ['作業の目的', '成果物', '使う道具と環境', '前回の1回']) {
+          const r = await run.callSafe('progress', { items: [{ item, status: '聞かずに案で示す', quote: 'ない' }] });
+          assert.equal(r.error, NOT_DRAFTABLE_MESSAGE(item), item);
+        }
+        // 同じ状態にし直すのはよい。聞かずに案で示す → 聞いた、には変えられる（確認で直されて聞くことになったとき）。抜き書きは確かめる
+        assert.equal((await run.callSafe('progress', { items: [{ item: '資産', status: '聞かずに案で示す', quote: 'ない' }] })).ok, true);
+        assert.match((await run.callSafe('progress', { items: [{ item: '資産', status: '聞いた', quote: '聞いていない言葉' }] })).error, /^「資産」の抜き書き（quote）が、/);
+        assert.equal((await run.callSafe('progress', { items: [{ item: '資産', status: '聞いた', quote: 'ない' }] })).ok, true);
+        // 聞いたなどの後からは、できない
+        const fromAsked = await run.callSafe('progress', { items: [{ item: '資産', status: '聞かずに案で示す', quote: 'ない' }] });
+        assert.equal(fromAsked.error, '「資産」は、もう聞いているので（今の状態：聞いた）、「聞かずに案で示す」にはできません。「聞かずに案で示す」にできるのは、まだ聞いていない状態（未着手、変えないので聞かない、聞かずに案で示す）のものだけです。');
+        // 変えないので聞かない → 聞かずに案で示す、と、その逆はできる（どちらも聞いていない状態）
+        await run.call('progress', { items: [{ item: '開始前に設定したいこと', status: '変えないので聞かない', quote: 'ない' }] });
+        assert.equal((await run.callSafe('progress', { items: [{ item: '開始前に設定したいこと', status: '聞かずに案で示す', quote: 'ない' }] })).ok, true);
+        // 抜き書きは要る
+        assert.match((await run.callSafe('progress', { items: [{ item: '実行中に見たいこと', status: '聞かずに案で示す' }] })).error, /抜き書き（quote）を添えてください/);
+      });
+    }
+  });
+
+  test('REQ-056 REQ-057 「聞かずに案で示す」の聞くことは未着手に数えず、直す前の確認を受け付ける', async () => {
+    await withRun(async (run) => {
+      await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
+      await run.fake.askUser({ message: '変えるところはデプロイです。違うところはありますか？', answer: 'User responded: ない' });
+      const screen = ['開始前に設定したいこと', '実行中に見たいこと', '終わった後に見たい結果と見せ方', '資産', '標準機能と公開のプラグイン'];
+      await run.call('progress', { items: screen.map((item) => ({ item, status: '聞かずに案で示す', quote: 'ない' })) });
+      const done = await run.call('progress', { items: SETTABLE_ITEMS.filter((n) => !screen.includes(n)).map((item) => ({ item, status: '聞いた', quote: 'ない' })) });
+      assert.match(done, /まだ聞いていないことはありません。$/);
+      await run.call('record', { knowledge: [knowledge({ kind: '合否の決め方', item: '合否の決め方', text: 'kxtool で送っていれば合格', quote: 'ない' })] });
+      writeDraft(run.cwd);
+      const r = await run.callSafe('confirm', confirmArgs({
+        knowledgeIds: ['K-01'],
+        evalTasks: [
+          { prompt: 'センサーの平均値の誤りを、最初から最後まで直してください。', criteria: ['K-01'], settings: { task: { week: 'W42' } } },
+          { prompt: 'KX-200 にデプロイしてください。', criteria: ['K-01'], settings: { task: { week: 'W42' } } },
+        ],
+        rebuild: { keep: ['デバッグの流れ'], change: ['生成プラグインの形にする'] },
+        version: '1.0.0',
+      }));
+      assert.equal(r.ok, true, r.error);
     });
   });
 

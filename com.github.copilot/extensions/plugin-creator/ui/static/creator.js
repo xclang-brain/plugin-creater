@@ -26,7 +26,7 @@
   const sections = {};
 
   // 項目の状態 → 札の色（文字がいつも付くので、色は補助）
-  const STATUS_TONE = { 未着手: 'standby', 聞いた: 'completed', 決まりなし: 'info', 保留: 'warn', 変えないので聞かない: 'neutral' };
+  const STATUS_TONE = { 未着手: 'standby', 聞いた: 'completed', 決まりなし: 'info', 保留: 'warn', 変えないので聞かない: 'neutral', 聞かずに案で示す: 'info' };
   const RESULT_TONE = { 合格: 'completed', 不合格: 'failed', 止まった: 'stopped', 試験なし: 'standby', 対象外: 'standby' };
 
   // ---- 小さな部品 --------------------------------------------------------------------------------
@@ -117,7 +117,7 @@
     const hearing = view.hearing;
     if (!hearing.exists) return [h('h2', null, 'お話を聞くことの進み具合'), none('お話を聞くことが始まると、聞くことの進み具合がここに出ます。')];
     // 変えないので聞かないもの（今のプラグインを直すとき。REQ-056）は、まだ聞いていないものとも、聞いたものとも分けて示す。
-    // 欄は、plugin-creator が作ったプラグインを直すときだけ出す（作っていないプラグインでは、すべて聞くので使わない）
+    // 欄は、今のプラグインを直すときに出す（作っていないプラグインでも使う）。聞かずに案で示すものは、済んだものとして、その札で示す
     const skipped = hearing.items.filter((i) => i.skipped);
     const main = hearing.items.filter((i) => i.main && !i.skipped);
     const asked = main.filter((i) => i.done);
@@ -140,7 +140,7 @@
           h('h3', null, `聞いたこと（${asked.length}）`),
           asked.length ? h('ul', { class: 'item-list' }, asked.map(itemRow)) : none('まだありません'),
         ),
-        hearing.change?.generated || skipped.length
+        hearing.change || skipped.length
           ? h(
               'section',
               { class: 'item-column', id: 'skipped' },

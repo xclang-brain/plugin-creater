@@ -83,7 +83,7 @@ describe('ツールの登録', () => {
       const progress = run.fake.tool(T('progress')).parameters;
       assert.deepEqual(progress.properties.stage.enum, STAGE_NAMES);
       assert.deepEqual(progress.properties.items.items.properties.item.enum, ITEM_NAMES);
-      assert.deepEqual(progress.properties.items.items.properties.status.enum, ['聞いた', '決まりなし', '保留', '変えないので聞かない']);
+      assert.deepEqual(progress.properties.items.items.properties.status.enum, ['聞いた', '決まりなし', '保留', '変えないので聞かない', '聞かずに案で示す']);
 
       const record = run.fake.tool(T('record')).parameters.properties.knowledge.items.properties;
       assert.deepEqual(record.kind.enum, ['合否の決め方', 'それ以外']);

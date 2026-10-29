@@ -24,6 +24,8 @@ function goodCase() {
     expect: {
       carriedMax: 2, replaced: 'K-02', deviceTool: 'kxtool', userSkills: 'tools/skills',
       screenAsked: '画面で[^。？]{0,20}(?:設定したい|見たい)', lastTimeAsked: '最近[^。？]{0,20}1回', explained: ['revert', '起動し直', '\\d+\\.\\d+\\.\\d+'],
+      // 頼みに書いたスキルの場所を、もう一度聞く問い（REQ-056）
+      notAsked: ['スキル[^。？\\n]{0,20}(?:どこにあり|場所を(?:教えて|書))'],
     },
     files: [
       { place: 'tools/skills/build/SKILL.md', role: 'skill' },
@@ -157,7 +159,7 @@ test('REQ-052〜062 作り例：すべての観点に合格する。観点はす
   assert.deepEqual(grading.grades.map((g) => g.id), [
     'change-skill-used', 'no-new-folder', 'screen-url-shown', 'unchanged-before-approval', 'confirm-contents', 'version-approved', 'rules-list-once', 'rule-replaced', 'ids-kept',
     'added-rule-confirmed', 'embedded:cc-gcc', 'not-embedded:cc-pull', 'embedded:log-dbg', 'embedded:k15-now', 'skill-names-differ', 'user-skills-unchanged',
-    'assets-reused', 'unchanged-items', 'no-screen-questions', 'last-time-asked', 'stage1', 'stage2', 'tests-added', 'commit-scoped', 'nothing-outside',
+    'assets-reused', 'unchanged-items', 'no-screen-questions', 'last-time-asked', 'request-not-reasked', 'stage1', 'stage2', 'tests-added', 'commit-scoped', 'nothing-outside',
     'not-pushed', 'explained', 'main-model', 'worker-model',
   ]);
   assert.equal(grading.trace.length, 4);
@@ -482,6 +484,54 @@ test('REQ-056 unchanged-items：見る画面の項目は expect.screenUnchanged�
   expectOnlyFails((a) => { a.persona.expect.screenUnchanged = []; a.state.items = { procedure: { status: 'asked' } }; }, ['unchanged-items']);
 });
 
+/** 問いと答えを1組足す（seq の順に並べ直す）。text なら文章の問い（creator.question-text）にする */
+function addQuestion(a, seq, question, { header = 'ファイル', options = [{ label: 'ない', description: '' }], text = false } = {}) {
+  a.items.push(
+    text ? { seq, kind: 'creator.question-text', text: question, turn: 9 } : { seq, kind: 'creator.question', header, question, options },
+    { seq: seq + 0.01, kind: 'user.answer', index: 9, via: text ? 'text' : 'AskUserQuestion', question, answer: 'tools/skills にあります' },
+  );
+  a.items.sort((x, y) => x.seq - y.seq);
+}
+
+test('REQ-056 request-not-reasked：確認より前の問いそのもの（見出し・問い・選択肢）が expect.notAsked に当たると落ちる', () => {
+  // 頼みに書いたスキルの場所を、実物を受け取るところで、もう一度聞いた
+  const g = expectOnlyFails((a) => addQuestion(a, 1.8, '組み込みたいスキルは、どこにありますか？'), ['request-not-reasked']);
+  assert.match(g['request-not-reasked'].detail, /\[1\.8\]「スキルは、どこにあり/);
+  // 文章の問いも、選択肢も見る
+  expectOnlyFails((a) => addQuestion(a, 1.8, '組み込みたいスキルの場所を教えてください。', { text: true }), ['request-not-reasked']);
+  expectOnlyFails((a) => addQuestion(a, 1.8, '組み込むものを、どう渡しますか？', { options: [{ label: '場所を書く', description: 'スキルの場所を書いてください' }] }), ['request-not-reasked']);
+  // 確認より前なら、決まりの確かめのあとの問いでも数える
+  expectOnlyFails((a) => addQuestion(a, 8.5, 'スキルの場所を教えてください。'), ['request-not-reasked']);
+});
+
+test('REQ-056 request-not-reasked：前の文と、確認より後の問いは見ない。expect.notAsked がないか空なら、見ずに合格にしてそう残す', () => {
+  // 前の文で、頼みにあったことを示すのは聞き直しではない
+  const notes = goodCase();
+  notes.items.splice(notes.items.findIndex((i) => i.seq === 2), 0, { seq: 1.8, kind: 'creator.text', text: '組み込みたいスキルの場所を教えていただいたので、そこを読みます。' });
+  const n = gradesOf(notes)['request-not-reasked'];
+  assert.equal(n.ok, true, n.detail);
+  assert.match(n.detail, /確認より前の 3 の問いは、expect\.notAsked の 1 件のどれにも当たらない/);
+  // 確認より後（直す前の確認を示すところ）の問いは見ない
+  const after = goodCase();
+  addQuestion(after, 16.5, 'スキルの場所を書いてください。');
+  assert.equal(gradesOf(after)['request-not-reasked'].ok, true);
+  // 受け付けられた確認がなければ、すべての問いを見る（確認の記録がないので confirm-contents も落ちる）
+  expectOnlyFails((a) => {
+    addQuestion(a, 16.5, 'スキルの場所を書いてください。');
+    a.toolEvents.find((e) => e.tool === 'confirm' && e.type === 'tool.result').isError = true;
+  }, ['request-not-reasked', 'confirm-contents']);
+  // expect.notAsked がないか空なら、当たる問いがあっても見ない
+  for (const notAsked of [undefined, []]) {
+    const none = goodCase();
+    if (notAsked) none.persona.expect.notAsked = notAsked;
+    else delete none.persona.expect.notAsked;
+    addQuestion(none, 1.8, '組み込みたいスキルは、どこにありますか？');
+    const r = gradesOf(none)['request-not-reasked'];
+    assert.equal(r.ok, true);
+    assert.match(r.detail, /expect\.notAsked がない/);
+  }
+});
+
 test('REQ-055 embedded・not-embedded：ユーザーのスキルの決まりは、ルールのスキル（入口のスキルを除く SKILL.md と references/）の足した行だけで見る', () => {
   const AGENT = 'com.github.copilot/agents/worker.agent.md';
   // エージェントの定義にだけ書いた決まりは数えない
@@ -635,6 +685,27 @@ test('REQ-060 explained：本物の模擬ユーザー（edl-change）の版の�
   }, ['explained']);
   assert.match(g.explained.detail, /確認の版 0\.2\.0/);
   assert.doesNotMatch(g.explained.detail, /revert|起動し直|marketplace/);
+});
+
+/** 外側の EVAL〔改善〕3回目の、実物を受け取るの問い（記録のとおり）。頼みにあったスキルを受け取ったと示してから、ほかのファイルを聞く */
+const RUN3_RECEIVE = 'クロスコンパイルとデプロイのスキル（kx200-firmware/.github/skills の cross-compile と deploy）は受け取りました。ほかにも実際のファイルがあると、AI が KX-200 での書き方や決まりを取り違えにくくなり、直した後のプラグインを試しに動かすときの入力にも使えます。最近 KX-200 のボードでデバッグをしたときに受け取ったファイルと作ったファイル（ログ、ビルドの出力など）、いつも使っているファイル（手順書、設定ファイル、スクリプトなど）は、どこにありますか？ファイルの場所（パス）か @ で書いてください。2つのスキルのほかにない場合は「ない」と書いてください。';
+
+test('REQ-056 request-not-reasked：本物の模擬ユーザー（edl-change）の expect.notAsked は、頼みにあるスキルの場所を聞き直す問いで落ち、頼みにないファイルを聞く問いでは落ちない', { skip: !existsSync(REAL_PERSONA) && 'edl-change がない' }, () => {
+  const { notAsked } = JSON.parse(readFileSync(REAL_PERSONA, 'utf8')).expect;
+  assert.ok(Array.isArray(notAsked) && notAsked.length > 0);
+  const real = (a) => { a.persona.expect.notAsked = notAsked; };
+  for (const q of [
+    '今使っているクロスコンパイルとデプロイのスキルは、どこにありますか？',
+    '最近この作業をしたときに受け取ったファイルと作ったファイル、いつも使っているファイル（テンプレート、手順書、スクリプト、今使っているスキルなど）は、どこにありますか？ファイルの場所（パス）か @ で書いてください。',
+    '直したいプラグインのフォルダはどこですか？',
+  ]) expectOnlyFails((a) => { real(a); addQuestion(a, 1.8, q); }, ['request-not-reasked']);
+  for (const q of [RUN3_RECEIVE, '最近 KX-200 でビルドとデプロイをしたときのソースのフォルダは、どこにありますか？']) {
+    const ok = goodCase();
+    real(ok);
+    addQuestion(ok, 1.8, q);
+    const r = gradesOf(ok)['request-not-reasked'];
+    assert.equal(r.ok, true, `${q.slice(0, 40)}：${r.detail}`);
+  }
 });
 
 /** 外側の EVAL〔改善〕3回目で not-embedded:dp-ip を落とした2行（作業エージェントが書いた、擬似のボードが前のアドレスに応答しないことの否定の試験） */
