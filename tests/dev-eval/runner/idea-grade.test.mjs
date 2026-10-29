@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { candidatesOf, comboLines, comboReasons, essenceEntries, essenceIds, gradeIdeaRun, indexItems, judgeRounds, knowledgeItems, latestRun, maxParallel, sizeSequenceProblems, uniqueUrls, workSections } from './idea-grade.mjs';
+import { candidatesOf, comboLines, comboReasons, essenceEntries, essenceIds, firstSection, gradeIdeaRun, ideaEntries, indexItems, judgeRounds, knowledgeItems, latestRun, maxParallel, passedIdeas, sizeSequenceProblems, uniqueUrls, workSections } from './idea-grade.mjs';
 import { buildIdeaUserSystem, currentPillar, IDEA_USER_RULES, isFinished, prepareData, recordedInput, SMALL_PARAMS } from './idea.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -26,10 +26,14 @@ const RUN = '20261027-1000';
 const JUDGE = '- 1 通す\n  - 新しさ：先行例との違いが中心\n  - 役立つか：根拠のある困りごとに効く\n  - 価値：大きさに根拠がある\n通す：1\n';
 /** 掘り下げの作品の節（小さな値では、1件に読む情報源は2つ。「、」で並べた URL も分けて数える） */
 const DEEP = (n) => `## ${n} 作品${n}\n- URL：https://example.com/w${n}\n- なぜ評価されているかの材料：「…」（https://review.example.org/w${n}）\n- 読んだ情報源：https://example.com/w${n}、https://review.example.org/w${n}\n`;
-const WHYS = (n) => `## ${n} 作品${n}\n- なぜ評価されているのか → 「…」（${n}）→ なぜか → 困りごと\n- なぜこの形なのか → …\n- たどり着いた本質：S1\n`;
-const ESSENCE = (n, why = `${n} なぜ評価されているのか → 答え → 困りごと`) => `## E${n} 本質${n}\n- 目的：…\n- 仕組み：…\n- なぜ：${why}\n- 裏づけ：${n}\n- 支持：2\n- 印：なし\n`;
+const WHYS = (n) => `## ${n} 作品${n}\n- なぜ評価されているのか → 「…」（${n}）→ なぜか → 困りごと\n- 誰にとって恩恵があるのか → 組み込みの開発者（${n}）\n- その人の生活や仕事の何が、どう良くなったのか → 調べる手間が減った（${n}）\n- なぜこの形なのか → …\n- たどり着いた本質：S1\n`;
+const ESSENCE = (n, why = `${n} なぜ評価されているのか → 答え → 困りごと`) => `## E${n} 本質${n}\n- 誰に：…\n- どんなメリットが：…\n- なぜそうなるか：…\n- なぜ：${why}\n- 裏づけ：${n}\n- 支持：2\n- 印：なし\n`;
 // 小さな値：順 2 → 3、同じ数で試す組は1。c02 がだめで数が3に変わる
-const LOG_LINES = [['c01', '数 2｜E1、E2', '1'], ['c02', '数 2｜E3、E4', 'なし'], ['c03', '数 3｜E1、E5、E6', '2']];
+const LOG_LINES = [['c01', '数 2｜E1、E2', '1（r1）'], ['c02', '数 2｜E3、E4', 'なし'], ['c03', '数 3｜E1、E5、E6', '2（r2）']];
+/** 案の型（設計書 3.6）の案 */
+const IDEA = (n) => `## ${n} 案${n}\n- 誰に：…\n- どんなメリットが：…\n- 困りごと：…\n- 場面：…\n- すること：…\n- 本質の効き方：…\n- 根拠：E1\n`;
+/** combine/log.md の組の行と、その下の「恩恵を受ける人」「選んだ理由」の行 */
+const LOG = (c, mid, passed) => `- ${c}｜${mid}｜作った案 2｜通った案：${passed}\n  - 恩恵を受ける人：…\n  - 選んだ理由：…\n`;
 
 /** 小さなパラメーターで最後まで進んだ回（データと呼び出し）を作る */
 function finishedRun() {
@@ -59,18 +63,24 @@ function finishedRun() {
   }
   write(path.join(run, 'essence', 'whys-2-2.md'), [4, 5, 6].map(WHYS).join('\n'));
   for (const [c] of LOG_LINES) {
-    write(path.join(run, 'combine', c, 'ideas-r0.md'), '案');
-    write(path.join(run, 'combine', c, 'ideas.md'), '案');
+    write(path.join(run, 'combine', c, 'ideas-r0.md'), [1, 2].map(IDEA).join('\n'));
+    write(path.join(run, 'combine', c, 'ideas.md'), [1, 2].map(IDEA).join('\n'));
     write(path.join(run, 'combine', c, 'prior-r1.md'), '## 1 案\n- 検索語：…、…、…\n- 特許：検索語「…」→ 見つからなかった\n');
     write(path.join(run, 'combine', c, 'prior-r2.md'), '## 1 案\n- 検索語：…\n');
     for (const j of ['judge-1-r1.md', 'judge-2-r1.md', 'judge-1-r2.md', 'judge-2-r2.md']) write(path.join(run, 'combine', c, j), JUDGE);
   }
-  write(path.join(run, 'combine', 'log.md'), LOG_LINES.map(([c, mid, passed]) => `- ${c}｜${mid}｜作った案 2｜通った案：${passed}\n  - 選んだ理由：…\n`).join(''));
+  // c01 は案1が1回目で通り、案2だけを直した。c03 は案2が2回目で通った
+  write(path.join(run, 'combine', 'c01', 'ideas-r1.md'), IDEA(2));
+  write(path.join(run, 'combine', 'c01', 'passed-ideas.md'), `## 1 案1（通った回：r1）\n${IDEA(1)}`);
+  write(path.join(run, 'combine', 'c03', 'ideas-r1.md'), [1, 2].map(IDEA).join('\n'));
+  write(path.join(run, 'combine', 'c03', 'passed-ideas.md'), `## 2 案2（通った回：r2）\n${IDEA(2)}`);
+  write(path.join(run, 'combine', 'log.md'), LOG_LINES.map(([c, mid, passed]) => LOG(c, mid, passed)).join(''));
   write(path.join(run, 'reflect', 'candidates.md'), '# 候補\n## 候補1 足す 柱3\n### K3-2 外された本質の1文。\n- 例：…\n## 候補2 足す 柱3\n### K3-1 目的と仕組みで書くと、組み合わせやすい。\n- 例：…\n\n外した番号：1\n');
   write(path.join(run, 'combine', 'passed.md'), '1. 案の名前');
   write(path.join(run, 'combine', 'ranked.md'), '1. 案の名前\n- 新しさ：…\n');
   write(path.join(run, 'selection.md'), '1 を選ぶ。新しく、デバッグする人にとても役立つから');
-  write(path.join(run, 'explain', '1.md'), '# 説明');
+  write(path.join(run, 'explain', '1.md'), '# 説明\n## 誰に、どんなメリットがあるか\n組み込みの開発者が、…\n## 誰が、どの場面で、何に困っているか\n…\n');
+  for (const r of [1, 2]) write(path.join(run, 'explain', '1', `reading-${r}-1.md`), '## 1. 言い直し\n…\n## 2. 誰にどんなメリットがあるか\n組み込みの開発者が、…\n');
   write(path.join(run, 'knowledge-used.md'), `# 使った知識・経験\n${[1, 2, 3, 4, 5, 6].map((n) => `## 柱${n}\nなし\n`).join('')}`);
   write(path.join(dataDir, 'knowledge', '3-essence.md'), `# 本質の見極めの知識・経験\n${ITEM(1)}`);
 
@@ -120,8 +130,8 @@ function finishedRun() {
   agent(T, '役：本質の集約', (g += 1));
   // 柱4：組ごとに、案を作る前に、組の行と選んだ理由を「（判定の前）」で書く
   LOG_LINES.forEach(([c, mid], i) => {
-    const before = LOG_LINES.slice(0, i).map(([cc, mm, pp]) => `- ${cc}｜${mm}｜作った案 2｜通った案：${pp}\n  - 選んだ理由：…\n`).join('');
-    tool('main', 'Write', { file_path: `${run}/combine/log.md`, content: `${before}- ${c}｜${mid}｜作った案 2｜通った案：（判定の前）\n  - 選んだ理由：…\n` });
+    const before = LOG_LINES.slice(0, i).map(([cc, mm, pp]) => LOG(cc, mm, pp)).join('');
+    tool('main', 'Write', { file_path: `${run}/combine/log.md`, content: `${before}${LOG(c, mid, '（判定の前）')}` });
     agent(T, '役：案を作る', (g += 1));
     agent(R, '役：先行例を探す', (g += 1));
     g += 1;
@@ -146,14 +156,52 @@ function finishedRun() {
 }
 
 const failed = (r) => r.checks.filter((c) => !c.ok).map((c) => c.id);
-/** combine/log.md の組の行のそれぞれに、選んだ理由の行を足す */
-const withReasons = (log) => log.replace(/^(- c\d+｜.*)$/gm, '$1\n  - 選んだ理由：…');
+/** combine/log.md の組の行のそれぞれに、恩恵を受ける人と選んだ理由の行を足す */
+const withReasons = (log) => log.replace(/^(- c\d+｜.*)$/gm, '$1\n  - 恩恵を受ける人：…\n  - 選んだ理由：…');
 
 test('最後まで進んだ回は、すべての採点に合格する', () => {
   const { dataDir, calls } = finishedRun();
   const r = gradeIdeaRun({ dataDir, calls });
   assert.deepEqual(failed(r), []);
   assert.equal(r.ok, true);
+});
+
+test('REQ-067 作品の節に「誰にとって恩恵があるのか」がないと落ち、本質に「誰に」「どんなメリットが」がないと落ちる', () => {
+  const { dataDir, calls, run } = finishedRun();
+  fs.writeFileSync(path.join(run, 'essence', 'whys-2-2.md'), [4, 5, 6].map(WHYS).join('\n').replace(/^- 誰にとって恩恵があるのか.*\n/gm, ''));
+  fs.writeFileSync(path.join(run, 'essence', 'index-2.md'), [5, 6].map((n) => ESSENCE(n)).join('\n').replace(/^- どんなメリットが.*\n/gm, ''));
+  const r = gradeIdeaRun({ dataDir, calls });
+  assert.deepEqual(failed(r), ['essence-whys-benefit', 'essence-benefit']);
+  assert.match(r.checks.find((c) => c.id === 'essence-benefit').detail, /E5、E6/);
+});
+
+test('REQ-068 案に「誰に」がないと落ち、組に「恩恵を受ける人」がないと落ちる', () => {
+  const { dataDir, calls, run } = finishedRun();
+  fs.writeFileSync(path.join(run, 'combine', 'c02', 'ideas-r0.md'), IDEA(1) + IDEA(2).replace(/^- 誰に.*\n/m, ''));
+  fs.writeFileSync(path.join(run, 'combine', 'log.md'), LOG_LINES.map(([c, mid, passed]) => LOG(c, mid, passed)).join('').replace('  - 恩恵を受ける人：…\n', ''));
+  const r = gradeIdeaRun({ dataDir, calls });
+  assert.deepEqual(failed(r), ['combine-idea-benefit', 'combine-reason']);
+  assert.match(r.checks.find((c) => c.id === 'combine-idea-benefit').detail, /c02：2/);
+});
+
+test('REQ-068 通った案を後で直すと落ち、通った組に passed-ideas.md がないと落ちる', () => {
+  const { dataDir, calls, run } = finishedRun();
+  fs.writeFileSync(path.join(run, 'combine', 'c01', 'ideas-r1.md'), [1, 2].map(IDEA).join('\n'));
+  let r = gradeIdeaRun({ dataDir, calls });
+  assert.deepEqual(failed(r), ['combine-fixed']);
+  assert.match(r.checks.find((c) => c.id === 'combine-fixed').detail, /c01：案 1（r1 で通った）が ideas-r1\.md/);
+  fs.writeFileSync(path.join(run, 'combine', 'c01', 'ideas-r1.md'), IDEA(2));
+  fs.rmSync(path.join(run, 'combine', 'c03', 'passed-ideas.md'));
+  r = gradeIdeaRun({ dataDir, calls });
+  assert.deepEqual(failed(r), ['combine-fixed']);
+  assert.match(r.checks.find((c) => c.id === 'combine-fixed').detail, /c03：passed-ideas\.md がない/);
+});
+
+test('REQ-070 説明の最初の節がメリットでないと落ち、読み手の返事にメリットの1文がないと落ちる', () => {
+  const { dataDir, calls, run } = finishedRun();
+  fs.writeFileSync(path.join(run, 'explain', '1.md'), '# 説明\n## ひとことで言うと\n3つの形を比べる方法です。\n');
+  fs.writeFileSync(path.join(run, 'explain', '1', 'reading-2-1.md'), '## 1. 言い直し\n…\n');
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['explain-benefit-first', 'explain-reader-benefit']);
 });
 
 test('REQ-070 読み手がファイルを読むと落ちる', () => {
@@ -342,11 +390,11 @@ test('REQ-067 作品の節に「なぜ評価されているのか」がないと
   fs.appendFileSync(path.join(run, 'essence', 'whys-2-2.md'), '\n## 7 作品7\n- なぜこの形なのか → 答え → 原理\n');
   fs.writeFileSync(path.join(run, 'essence', 'index-2.md'), `${ESSENCE(5, '5 なぜ評価されているのか → 答え')}${ESSENCE(6).replace(/^- なぜ：.*\n/m, '')}`);
   const r = gradeIdeaRun({ dataDir, calls });
-  assert.deepEqual(failed(r), ['essence-why-chain', 'essence-whys-first']);
+  assert.deepEqual(failed(r), ['essence-why-chain', 'essence-whys-first', 'essence-whys-benefit']);
   assert.equal(r.checks.find((c) => c.id === 'essence-why-chain').detail, '足りない本質：E5、E6');
   assert.equal(r.checks.find((c) => c.id === 'essence-whys-first').detail, 'ない節：whys-2-2.md 7');
-  // 「なぜ評価されているか」と書いた節もよい
-  fs.appendFileSync(path.join(run, 'essence', 'whys-2-2.md'), '- なぜ評価されているか → 「…」（7）→ 困りごと\n');
+  // 「なぜ評価されているか」「誰にとって恩恵があるか」と書いた節もよい
+  fs.appendFileSync(path.join(run, 'essence', 'whys-2-2.md'), '- なぜ評価されているか → 「…」（7）→ 困りごと\n- 誰にとって恩恵があるか → 開発者（7）\n');
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['essence-why-chain']);
 });
 
@@ -373,7 +421,7 @@ test('REQ-067 まとまりに分けた分析（whys-c01-a1.md）は、まとま�
 test('REQ-068 選んだ理由の行がないと落ち、判定の前に書いた記録がないと落ちる', () => {
   const { dataDir, calls, run } = finishedRun();
   const log = path.join(run, 'combine', 'log.md');
-  fs.writeFileSync(log, fs.readFileSync(log, 'utf8').replace(/(c02.*\n)  - 選んだ理由：…\n/, '$1'));
+  fs.writeFileSync(log, fs.readFileSync(log, 'utf8').replace(/(c02.*\n  - 恩恵を受ける人：…\n)  - 選んだ理由：…\n/, '$1'));
   assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-reason']);
   const other = finishedRun();
   const rest = other.calls.filter((c) => !(c.name === 'Write' && /c02｜[^\n]*（判定の前）/.test(c.input?.content ?? '')));
@@ -513,4 +561,12 @@ test('REQ-069 ユーザー役は、制限ではなく、新しさ・役立つか
   assert.match(rule, /価値/);
   assert.match(rule, /番号/);
   assert.doesNotMatch(rule, /制限/);
+});
+
+test('部品：本質の誰に・メリット、案の型、通った案、説明の最初の節', () => {
+  assert.deepEqual(essenceEntries('## E1 A\n- **誰に**：開発者\n- どんなメリットが：手間が減る\n- なぜ：1 → 2 → 3\n').map((e) => [e.who, e.benefit]), [['開発者', '手間が減る']]);
+  assert.deepEqual(ideaEntries('## 1 案\n- 誰に：a\n- どんなメリット：b\n## 2 案\n- 誰に：c\n'), [{ n: 1, who: 'a', benefit: 'b' }, { n: 2, who: 'c', benefit: null }]);
+  assert.deepEqual(passedIdeas('## 6 名前（通った回：r3）\n本文\n## 2 x（通った回: r1）\n## 3 通っていない\n'), [{ n: 6, round: 3 }, { n: 2, round: 1 }]);
+  assert.equal(firstSection('# 題\n本文\n### 小見出し\n## 誰に、どんなメリットがあるか\n…\n## 次\n'), '誰に、どんなメリットがあるか');
+  assert.equal(firstSection('# 題だけ'), '');
 });

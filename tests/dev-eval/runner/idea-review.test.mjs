@@ -56,6 +56,7 @@ function sampleRun() {
   write(path.join(runDir, 'essence', 'index.md'), '## E1 …\n- なぜ：… → … → …\n');
   for (const c of ['c01', 'c02']) {
     write(path.join(runDir, 'combine', c, 'ideas-r0.md'), '案');
+    write(path.join(runDir, 'combine', c, 'passed-ideas.md'), '## 1 案（通った回：r1）\n');
     write(path.join(runDir, 'combine', c, 'prior-r1.md'), 'PRIOR-MARK');
     for (const p of [1, 2]) write(path.join(runDir, 'combine', c, `judge-${p}-r1.md`), 'JUDGE-MARK 新しさ 役立つ 価値');
   }
@@ -83,6 +84,8 @@ const IDEA = (name, verdict = 'pass', extra = {}) => ({
     novelty: { ok: verdict === 'pass', reason: '違いが価値の中心' },
     usefulness: { ok: true, reason: '困りごとの声がある' },
     value: { ok: true, reason: '利用者が多い' },
+    benefit: { ok: true, sentence: '一人で暮らす高齢の親を持つ人が、離れていても安心できる', reason: 'メリットが1文で言える' },
+    readability: { ok: true, unclear: [], reason: '分からない言葉はない' },
     queries: ['言い方1', '言い方2', '言い方3'],
     reasons: [],
     ...extra,
@@ -130,7 +133,10 @@ test('REQ-077 プロセスの中身の頼みの文：7.2 の項目と、読む�
   assert.match(prompt, /制限を判定に使っていない/);
   assert.match(prompt, /だめな理由を示す役が働いている/);
   assert.match(prompt, /製品・OSS・論文・特許/);
+  assert.match(prompt, /誰にとって恩恵があるのか/);
+  assert.match(prompt, /通った後に直されたり/);
   for (const f of ['essence/whys-1.md', 'essence/whys-2.md', 'essence/opinion-1-r1.md', 'essence/index.md', 'combine/c01/judge-1-r1.md', 'combine/c02/judge-2-r1.md',
+    'combine/c01/ideas-r0.md', 'combine/c02/passed-ideas.md',
     'combine/c01/prior-r1.md', 'combine/c02/prior-r1.md', 'research/plan.md', 'research/index.md', 'research/deep-1.md']) {
     assert.ok(prompt.includes(f), f);
   }
@@ -164,6 +170,10 @@ test('REQ-077 アイデアの良さの頼みの文：説明の文と 7.2 の判�
     assert.match(s.prompt, /新しさ/);
     assert.match(s.prompt, /役立つか/);
     assert.match(s.prompt, /価値/);
+    assert.match(s.prompt, /誰にどんなメリットか/);
+    assert.match(s.prompt, /専門外の人が辞書や検索なしに一度読んで分からない/);
+    assert.match(s.prompt, /"benefit"/);
+    assert.match(s.prompt, /"readability"/);
     assert.match(s.prompt, /"verdict"/);
     assert.match(s.prompt, /"queries"/);
     for (const mark of INTERNAL_MARKS) assert.ok(!s.prompt.includes(mark), mark);
@@ -214,6 +224,10 @@ test('返事の形：項目の欠け、ok が真偽でない、根拠がない�
   assert.throws(() => normalizeIdea({ ...good, closest: [] }), /いちばん近い既存のもの/);
   assert.throws(() => normalizeIdea({ ...good, closest: [{ name: 'URL なし' }] }), /いちばん近い既存のもの/);
   assert.throws(() => normalizeIdea({ ...good, queries: ['1つ', '2つ'] }), /検索語/);
+  assert.throws(() => normalizeIdea({ ...good, benefit: { reason: 'x' } }), /benefit\.ok/);
+  assert.throws(() => normalizeIdea({ ...good, benefit: { ok: true, sentence: '' } }), /benefit\.sentence/);
+  assert.throws(() => normalizeIdea({ ...good, readability: { ok: true } }), /readability\.unclear/);
+  assert.deepEqual(normalizeIdea({ ...good, readability: { ok: false, unclear: ['I-PASS', ''], reason: '略語' } }).readability.unclear, ['I-PASS']);
 });
 
 test('合否のまとめ：プロセスの項目がすべて満たし、アイデアがすべて合格のときだけ ok。誤り・観点の欠け・アイデアなしは ok にしない', () => {
@@ -227,6 +241,9 @@ test('合否のまとめ：プロセスの項目がすべて満たし、アイ�
   // verdict が pass でも、観点のどれかが満たされていなければ合格にしない
   const odd = { ...pass, usefulness: { ok: false, reason: '根拠がない' } };
   assert.equal(ideaPassed(odd), false);
+  // 誰にどんなメリットかが分からない、分からない言葉や文が挙がっているときも合格にしない
+  assert.equal(ideaPassed({ ...pass, benefit: { ok: false, sentence: '', reason: '手法の説明だけ' } }), false);
+  assert.equal(ideaPassed({ ...pass, readability: { ok: true, unclear: ['見立て'], reason: '' } }), false);
   assert.equal(aggregateOk(proc, [odd]), false);
   assert.equal(aggregateOk(proc, [{ file: 'explain/1.md', pass: false, error: '読めません' }]), false);
   assert.equal(aggregateOk(proc, []), false);

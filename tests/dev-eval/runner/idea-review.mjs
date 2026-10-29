@@ -5,7 +5,8 @@
 //   1. プロセスの中身：1つのセッションが、回のフォルダのなぜなぜ分析・意見・本質の一覧・壁打ちの判定・先行例・調査の記録を読み、
 //      項目（PROCESS_ITEMS）ごとに「満たす・満たさない」と根拠を返す。ツールは Read・Grep・Glob だけで、作業フォルダは回のフォルダ。
 //   2. アイデアの良さ：説明したアイデア（explain/<n>.md）ごとに、別々のセッションが、頼みの文に入れた説明の文だけを読み、
-//      いちばん近い既存のものを自分で探して、新しさ・役立つか・価値を判定する。ツールは WebSearch・WebFetch だけで、回のフォルダは見せない。
+//      いちばん近い既存のものを自分で探して、新しさ・役立つか・価値と、誰にどんなメリットがあるか・人が読んで分かる日本語かを判定する。
+//      ツールは WebSearch・WebFetch だけで、回のフォルダは見せない。
 //   3. 返事の最後の ```json のかたまりを読む。読めないときは、短い注意を足して1回だけ呼び直し、それでもだめなら誤りとして記録する。
 //   4. 結果を --out（review.json）に書く。ok は、プロセスの項目をすべて満たし、アイデアがすべて合格のとき真。最後の判断は開発者が行う。
 //
@@ -45,14 +46,24 @@ export const MIN_QUERIES = 3;
 
 /** プロセスの中身の項目（アイデア創出の設計 7.2 の 1） */
 export const PROCESS_ITEMS = Object.freeze([
-  { id: 'P1', title: 'なぜなぜ分析', text: 'なぜの各段が前の段の問いの答えになっていて、根拠がある。機能の言い換えで止まっていない。人の困りごとか仕組みの原理に届いている。' },
+  { id: 'P1', title: 'なぜなぜ分析', text: 'なぜの各段が前の段の問いの答えになっていて、根拠がある。機能の言い換えで止まっていない。作品ごとに「誰にとって恩恵があるのか」を問い、「誰が、どんな場面で、何が良くなるか」に届いている。仕組みの原理だけで止まっていない。' },
   { id: 'P2', title: '掘り下げ', text: '掘り下げに、なぜ評価されているかの材料（利用者の声、レビュー、第三者の評価）が引用で集まっている。' },
   { id: 'P3', title: '壁打ちの判定', text: '壁打ちの判定が、3つの観点（新しさ、役立つか、価値）で根拠つきで書かれ、制限を判定に使っていない。だめな理由を示す役が働いている。' },
   { id: 'P4', title: '先行例の調べ', text: '先行例の調べが、複数の言い方で、製品・OSS・論文・特許を当たっている。' },
+  { id: 'P5', title: '誰にどんなメリットか', text: '本質の一覧と案に、誰に（恩恵を受ける人）、どんなメリットがあるか（生活や仕事の何が、どう良くなるか）が書かれ、手法や仕組みの説明だけになっていない。その文が、専門外の人が一度読んで分かる日本語で書かれている（作品の番号、英語の引用、略語、記号でつないだ文で埋まっていない）。' },
+  { id: 'P6', title: '通った案の固め', text: '壁打ちで通った案（組の passed-ideas.md）が、通った後に直されたり、判定し直されたりしていない（通った回より後の直した案 ideas-r<k>.md と判定に、その案がない）。' },
 ]);
 
 /** アイデアの不合格の条件（アイデア創出の設計 7.2 の 2） */
-export const IDEA_FAIL_CONDITIONS = Object.freeze(['ほぼ同じ既存のものが見つかった。', '困りごとに根拠がない。', '価値の大きさに根拠がない。']);
+export const IDEA_FAIL_CONDITIONS = Object.freeze([
+  'ほぼ同じ既存のものが見つかった。',
+  '困りごとに根拠がない。',
+  '価値の大きさに根拠がない。',
+  '誰にどんなメリットがあるかが分からない（手法や手順の説明だけ）。',
+  '本文（「言葉と出典」の節を除く）に、専門外の人が一度読んで分からない言葉や文がある。',
+]);
+/** アイデアの良さの判定の観点（返事の JSON のキー） */
+export const IDEA_VIEWS = Object.freeze(['novelty', 'usefulness', 'value', 'benefit', 'readability']);
 
 /** 返事が読めなかったときに、呼び直しの頼みの文に足す注意 */
 export const RETRY_NOTE = '注意：前の回の返事は、決まった形で読めませんでした。手順どおりに判定し、返事の最後に、決まった形の JSON を ```json のかたまりで1つだけ書いてください。';
@@ -71,6 +82,8 @@ const IDEA_EXAMPLE = {
     novelty: { ok: true, reason: '新しさの判定の根拠' },
     usefulness: { ok: true, reason: '役立つかの判定の根拠' },
     value: { ok: true, reason: '価値の判定の根拠' },
+    benefit: { ok: true, sentence: '〈どんな人〉が、〈何が、どう良くなる〉', reason: '誰にどんなメリットがあるかの判定の根拠' },
+    readability: { ok: true, unclear: ['専門外の人が分からない言葉や文（そのまま引用）'], reason: '人が読んで分かる日本語かの判定の根拠' },
     queries: ['使った検索語1', '使った検索語2', '使った検索語3'],
     reasons: ['合否の理由（不合格なら、当たった条件）'],
   },
@@ -110,6 +123,7 @@ export function processFiles(runDir) {
     { label: '本質の一覧', files: filesIn(runDir, 'essence', /^index.*\.md$/) },
     { label: '壁打ちの判定（組ごと）', files: combos.flatMap((c) => filesIn(runDir, c, /^judge-.*\.md$/)) },
     { label: '先行例（組ごと）', files: combos.flatMap((c) => filesIn(runDir, c, /^prior-.*\.md$/)) },
+    { label: '案（組ごと。最初の案、直した案、通った案）', files: combos.flatMap((c) => filesIn(runDir, c, /^(?:ideas-r\d+|passed-ideas).*\.md$/)) },
     { label: '調べる計画', files: filesIn(runDir, 'research', /^plan\.md$/) },
     { label: '作品の一覧', files: filesIn(runDir, 'research', /^index.*\.md$/) },
     { label: '掘り下げ（一部を読めばよい）', files: filesIn(runDir, 'research', /^deep-.*\.md$/) },
@@ -151,13 +165,16 @@ export function buildProcessPrompt(runDir) {
 /** アイデアの良さの判定の頼みの文。説明の文だけを入れる（回のフォルダの場所も、作る過程の判定も入れない） */
 export function buildIdeaPrompt(explanation) {
   const steps = [
-    '1. 説明から、誰のどんな困りごとに、何をするアイデアかを読み取る。',
+    '1. 説明から、誰に、どんなメリットがあるか（その人の生活や仕事の何が、どう良くなるか）と、何をするアイデアかを読み取る。',
     `2. WebSearch と WebFetch で、いちばん近い既存のもの（製品、OSS、論文、特許）を探す。少なくとも${MIN_QUERIES}つの違う言い方（アイデアの仕組みを一般的な言葉にした言い方、困りごとの言い方など）で検索する。説明に書かれた「似たものとの違い」をうのみにせず、自分で探す。見つけたものは、元のページを開いて確かめる。`,
     '3. 新しさ・役立つか・価値の3つの観点で判定する。困りごとと価値の大きさの根拠は、説明の文と、自分で探した情報源で確かめる。',
     '   - 新しさ：これまでにないか。いちばん近い既存のものとの違いが、価値の中心になっているか。',
     '   - 役立つか：誰かにとても役立つか。根拠のある困りごとに効くか。',
     '   - 価値：その人や世の中にとっての価値の大きさに、根拠があるか。',
-    '4. 次のどれかに当たれば、不合格（fail）にする。どれにも当たらず、3つの観点をすべて満たすときだけ、合格（pass）にする。',
+    '   あわせて、次の2つも判定する。',
+    '   - 誰にどんなメリットか（benefit）：誰かの生活や仕事が豊かに、便利になるか。「〈どんな人〉が、〈何が、どう良くなる〉」の1文で言えるか。言えたら、その1文を sentence に書く。手法や手順の説明だけで、誰のどんなメリットかが分からなければ満たさない。',
+    '   - 人が読んで分かる日本語か（readability）：本文（「言葉と出典」の節を除く）から、専門外の人が辞書や検索なしに一度読んで分からない言葉や文を、そのまま引用して unclear に挙げる（略語、専門用語、英語、言い換えのない名前、記号でつないだ文、1つの文に多くのことを詰めた文など）。あなたは分かりにくい文も補って読めてしまうので、人が読んだらつまずくかで見る。1つでもあれば満たさない。',
+    '4. 次のどれかに当たれば、不合格（fail）にする。どれにも当たらず、3つの観点と2つの判定をすべて満たすときだけ、合格（pass）にする。',
     ...IDEA_FAIL_CONDITIONS.map((c) => `   - ${c}`),
   ];
   return [
@@ -167,7 +184,7 @@ export function buildIdeaPrompt(explanation) {
     [
       '返し方：判定し終えたら、返事の最後に、次の形の JSON を ```json のかたまりで1つだけ書いてください。',
       'verdict は、合格なら "pass"、不合格なら "fail" にします。closest には、いちばん近い既存のものを、近い順に名前と URL で書きます。',
-      `novelty・usefulness・value の ok は、その観点を満たすなら true にします。queries には、実際に使った検索語を${MIN_QUERIES}つ以上書きます。`,
+      `novelty・usefulness・value・benefit・readability の ok は、満たすなら true にします。benefit.sentence には誰にどんなメリットがあるかの1文（言えなければ空）を、readability.unclear には分からない言葉や文（なければ空の配列）を書きます。queries には、実際に使った検索語を${MIN_QUERIES}つ以上書きます。`,
       jsonBlock(IDEA_EXAMPLE),
     ].join('\n'),
   ].join('\n\n');
@@ -229,10 +246,14 @@ export function normalizeIdea(value) {
   const obj = value?.idea ?? value;
   if (!['pass', 'fail'].includes(obj?.verdict)) throw new Error('verdict が "pass" か "fail" ではありません');
   const views = {};
-  for (const key of ['novelty', 'usefulness', 'value']) {
+  for (const key of IDEA_VIEWS) {
     if (typeof obj[key]?.ok !== 'boolean') throw new Error(`${key}.ok が true か false ではありません`);
     views[key] = { ok: obj[key].ok, reason: String(obj[key].reason ?? '') };
   }
+  views.benefit.sentence = String(obj.benefit.sentence ?? '');
+  if (views.benefit.ok && !views.benefit.sentence.trim()) throw new Error('benefit.sentence（誰にどんなメリットがあるかの1文）がありません');
+  if (!Array.isArray(obj.readability.unclear)) throw new Error('readability.unclear が配列ではありません');
+  views.readability.unclear = obj.readability.unclear.filter(hasText).map(String);
   const closest = Array.isArray(obj.closest) ? obj.closest.filter((c) => hasText(c?.name) && hasText(c?.url)) : [];
   if (!closest.length) throw new Error('いちばん近い既存のもの（closest の名前と URL）がありません');
   const queries = Array.isArray(obj.queries) ? obj.queries.filter(hasText).map(String) : [];
@@ -250,9 +271,9 @@ export function normalizeIdea(value) {
 
 // ---- 合否 ----------------------------------------------------------------------------------------
 
-/** アイデアが合格か。verdict が pass でも、3つの観点のどれかが満たされていなければ合格にしない。誤りの記録は合格にしない */
+/** アイデアが合格か。verdict が pass でも、観点のどれかが満たされていない、分からない言葉や文が挙がっているときは合格にしない。誤りの記録は合格にしない */
 export function ideaPassed(idea) {
-  return !idea?.error && idea?.verdict === 'pass' && ['novelty', 'usefulness', 'value'].every((k) => idea?.[k]?.ok === true);
+  return !idea?.error && idea?.verdict === 'pass' && IDEA_VIEWS.every((k) => idea?.[k]?.ok === true) && !(idea?.readability?.unclear?.length > 0);
 }
 
 /** プロセスの項目がすべて満たされているか。誤りの記録は満たしたことにしない */

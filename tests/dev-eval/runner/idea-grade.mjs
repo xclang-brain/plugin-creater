@@ -72,12 +72,30 @@ export function workSections(text) {
   });
 }
 
-/** essence/index.md の本質（## E<番号> …）：{ id, why }。why は「- なぜ：」の行の中身（太字の「**なぜ**：」も読む。なければ null） */
+/** 「- <名前>：」の行の中身（太字の「**<名前>**：」も読む。なければ null） */
+const fieldOf = (text, name) => String(text).match(new RegExp(`^\\s*[-*]\\s*\\**${name}\\**\\s*[：:]\\**(.*)$`, 'm'))?.[1] ?? null;
+
+/** essence/index.md の本質（## E<番号> …）：{ id, why, who, benefit }。why・who・benefit は「- なぜ：」「- 誰に：」「- どんなメリットが：」の行の中身（なければ null） */
 export function essenceEntries(text) {
   return String(text).split(/^(?=#{2,3}\s)/m).flatMap((p) => {
     const m = p.match(/^#{2,3}\s*(E\d+)\b/);
-    return m ? [{ id: m[1], why: p.match(/^\s*[-*]\s*\**なぜ\**\s*[：:]\**(.*)$/m)?.[1] ?? null }] : [];
+    return m ? [{ id: m[1], why: fieldOf(p, 'なぜ'), who: fieldOf(p, '誰に'), benefit: fieldOf(p, 'どんなメリットが?') }] : [];
   });
+}
+
+/** 案のファイル（ideas-r<k>.md）の案（## <番号> …）：{ n, who, benefit }（設計書 3.6 の型） */
+export function ideaEntries(text) {
+  return workSections(text).map((s) => ({ n: s.n, who: fieldOf(s.text, '誰に'), benefit: fieldOf(s.text, 'どんなメリットが?') }));
+}
+
+/** 組の passed-ideas.md の通った案（## <番号> <名前>（通った回：r<k>））：{ n, round } */
+export function passedIdeas(text) {
+  return [...String(text).matchAll(/^##\s*(\d+)\b.*通った回[：:]\s*r(\d+)/gm)].map((m) => ({ n: Number(m[1]), round: Number(m[2]) }));
+}
+
+/** 説明（explain/<n>.md）の最初の節の見出し（「## 」の最初のもの）。なければ空 */
+export function firstSection(text) {
+  return (String(text).match(/^##(?!#)\s*(.+?)\s*$/m)?.[1] ?? '').trim();
 }
 
 /** 判定のファイルの名前（judge-<p>-r<k>.md。分けたものは -2…）から、判定の回 k ごとの相手の番号 */
@@ -90,11 +108,11 @@ export function judgeRounds(names) {
   return rounds;
 }
 
-/** combine/log.md で、組の行の下に「選んだ理由」の行がある組の番号 */
-export function comboReasons(text) {
+/** combine/log.md で、組の行の下に label（既定は「選んだ理由」）の行がある組の番号 */
+export function comboReasons(text, label = '選んだ理由') {
   return new Set(String(text).split(/^(?=- c\d+｜)/m).flatMap((b) => {
     const m = b.match(/^- (c\d+)｜/);
-    return m && /選んだ理由/.test(b) ? [m[1]] : [];
+    return m && b.includes(label) ? [m[1]] : [];
   }));
 }
 
@@ -302,6 +320,11 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const whysSections = whysFiles.flatMap((f) => workSections(readText(path.join(essenceDir, f))).map((s) => ({ ...s, file: f })));
   const noFirstWhy = whysSections.filter((s) => !/なぜ評価されている(?:の)?か/.test(s.text)).map((s) => `${s.file} ${s.n}`);
   add('essence-whys-first', '柱3：whys-*.md の作品の節のすべてに「なぜ評価されているのか」がある（REQ-067）', whysSections.length > 0 && noFirstWhy.length === 0, noFirstWhy.length ? `ない節：${noFirstWhy.join(', ')}` : `${whysSections.length} 節`);
+  // 2回目の試行では、「誰にとって恩恵があるのか」の問いが、92の分析のファイルで1回だけだった
+  const noBenefitWhy = whysSections.filter((s) => !/誰にとって恩恵がある(?:の)?か/.test(s.text)).map((s) => `${s.file} ${s.n}`);
+  add('essence-whys-benefit', '柱3：whys-*.md の作品の節のすべてに「誰にとって恩恵があるのか」がある（REQ-067）', whysSections.length > 0 && noBenefitWhy.length === 0, noBenefitWhy.length ? `ない節 ${noBenefitWhy.length}：${noBenefitWhy.slice(0, 20).join(', ')}` : `${whysSections.length} 節`);
+  const noBenefit = entries.filter((e) => !String(e.who ?? '').trim() || !String(e.benefit ?? '').trim()).map((e) => e.id);
+  add('essence-benefit', '柱3：本質の一覧のすべての本質に「誰に」と「どんなメリットが」の行がある（REQ-067）', entries.length > 0 && noBenefit.length === 0, noBenefit.length ? `ない本質：${noBenefit.join('、')}` : `${entries.length} 個`);
   const analystIds = new Set(ofType(AGENT.thinker, role('なぜなぜ分析')).map((c) => c.id));
   const writtenByAnalysts = new Set(calls.filter((c) => analystIds.has(c.owner) && WRITES.has(c.name)).map((c) => path.basename(pathOf(c))));
   const notByAnalysts = whysFiles.filter((f) => !writtenByAnalysts.has(f));
@@ -355,6 +378,25 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   }
   const noViews = [...judgeTexts].filter(([, t]) => !JUDGE_VIEWS.every((v) => t.includes(v))).map(([k]) => k);
   add('combine-judge-views', '柱4：判定のファイルのすべてに「新しさ」「役立つ」「価値」がある（REQ-068）', judgeTexts.size > 0 && noViews.length === 0, noViews.length ? `ない判定：${noViews.join(', ')}` : `${judgeTexts.size} ファイル`);
+  // 案の型（設計書 3.6）：最初の案のすべてに「誰に」と「どんなメリットが」の行がある
+  const ideaGaps = combos.flatMap((c) => {
+    const ideas = ideaEntries(joinFiles(r(`combine/${c}`), /^ideas-r0(?:-\d+)?\.md$/));
+    if (!ideas.length) return [`${c}：案がない`];
+    const bad = ideas.filter((i) => !String(i.who ?? '').trim() || !String(i.benefit ?? '').trim()).map((i) => i.n);
+    return bad.length ? [`${c}：${bad.join('、')}`] : [];
+  });
+  add('combine-idea-benefit', '柱4：組ごとの最初の案（ideas-r0.md）のすべてに「誰に」と「どんなメリットが」の行がある（REQ-068）', combos.length > 0 && ideaGaps.length === 0, ideaGaps.join(' / ') || `${combos.length} 組すべて`);
+  // 通った案の固め（設計書 3.6）：通った案が、通った回より後の直した案（ideas-r<j>.md、j ≧ 通った回）に出てこない
+  const passedLines = new Map(comboLines(readText(r('combine/log.md'))).map((l) => [l.combo, l.passed]));
+  const fixProblems = combos.flatMap((c) => {
+    const passedText = joinFiles(r(`combine/${c}`), /^passed-ideas(?:-\d+)?\.md$/);
+    if (passedLines.get(c) && !passedText) return [`${c}：passed-ideas.md がない`];
+    return passedIdeas(passedText).flatMap(({ n, round }) => listDir(r(`combine/${c}`))
+      .filter((f) => Number(f.match(/^ideas-r(\d+)(?:-\d+)?\.md$/)?.[1] ?? -1) >= round)
+      .filter((f) => workSections(readText(r(`combine/${c}/${f}`))).some((s) => s.n === n))
+      .map((f) => `${c}：案 ${n}（r${round} で通った）が ${f} にある`));
+  });
+  add('combine-fixed', '柱4：通った案が passed-ideas.md にあり、通った後に直されていない（REQ-068）', combos.length > 0 && fixProblems.length === 0, fixProblems.join(' / ') || `${combos.length} 組`);
   const noPrior = combos.filter((c) => !/検索語/.test(joinFiles(r(`combine/${c}`), /^prior-r1(?:-\d+)?\.md$/)));
   add('combine-prior', '柱4：組ごとに prior-r1.md があり、検索語の記録がある（REQ-068）', combos.length > 0 && noPrior.length === 0, noPrior.length ? `ない組：${noPrior.join(', ')}` : `${combos.length} 組すべて`);
   // 先行例の種類：組ごとの先行例のファイルに、特許を探した記録がある（2回目の試行では、多くの組で特許を当たっていなかった）
@@ -371,8 +413,9 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const lines = comboLines(logText);
   add('combine-log', `柱4：log.md に、組ごとの決まった形の行がある（設計書 3.6）`, lines.length >= combos.length && lines.length > 0, `行 ${lines.length}、組のフォルダ ${combos.length}`);
   const reasons = comboReasons(logText);
-  const noReason = combos.filter((c) => !reasons.has(c));
-  add('combine-reason', '柱4：log.md に、組ごとに「選んだ理由」の行がある（REQ-068）', combos.length > 0 && noReason.length === 0, noReason.length ? `ない組：${noReason.join(', ')}` : `${combos.length} 組すべて`);
+  const beneficiaries = comboReasons(logText, '恩恵を受ける人');
+  const noReason = combos.filter((c) => !reasons.has(c) || !beneficiaries.has(c));
+  add('combine-reason', '柱4：log.md に、組ごとに「恩恵を受ける人」と「選んだ理由」の行がある（REQ-068）', combos.length > 0 && noReason.length === 0, noReason.length ? `ない組：${noReason.join(', ')}` : `${combos.length} 組すべて`);
   // 判定の前に書いたか：log.md を書いた記録（入口は中身を縮めずに残す）に、その組の行と「（判定の前）」がある
   // シェルで書いたもの（cat >> combine/log.md など）も、コマンドの文から読む
   const logWrites = [
@@ -390,6 +433,11 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   // 柱5
   const explained = listDir(r('explain')).filter((n) => /^\d+\.md$/.test(n));
   add('explain-count', `柱5：説明が1〜${p.maxIdeas} 件（REQ-070）`, explained.length >= 1 && explained.length <= p.maxIdeas, `${explained.length} 件`);
+  const notBenefitFirst = explained.filter((f) => !/誰に.*メリット/.test(firstSection(readText(r(`explain/${f}`))))).map((f) => `${f}（${firstSection(readText(r(`explain/${f}`))) || '見出しなし'}）`);
+  add('explain-benefit-first', '柱5：説明の最初の節が「誰に、どんなメリットがあるか」（REQ-070）', explained.length > 0 && notBenefitFirst.length === 0, notBenefitFirst.join(', ') || `${explained.length} 件`);
+  const readings = explained.flatMap((f) => listDir(r(`explain/${f.replace(/\.md$/, '')}`)).filter((n) => /^reading-.*\.md$/.test(n)).map((n) => `${f.replace(/\.md$/, '')}/${n}`));
+  const noBenefitLine = readings.filter((f) => !/誰に.*メリット/.test(readText(r(`explain/${f}`))));
+  add('explain-reader-benefit', '柱5：読み手の返事のすべてに、誰にどんなメリットがあるかの1文の見出しがある（REQ-070）', readings.length > 0 && noBenefitLine.length === 0, noBenefitLine.length ? `ない返事：${noBenefitLine.join(', ')}` : `${readings.length} 件`);
   const readerCalls = ofType(AGENT.reader);
   addCall('explain-readers', `柱5：読み手を説明ごとに ${p.readers} 者以上（REQ-070）`, readerCalls.length >= explained.length * p.readers && maxParallel(calls, AGENT.reader) >= p.readers, `${readerCalls.length} 回、同時に最大 ${maxParallel(calls, AGENT.reader)} 体`);
   const readerIds = new Set(readerCalls.map((c) => c.id));
