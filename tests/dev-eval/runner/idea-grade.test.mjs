@@ -61,7 +61,7 @@ function finishedRun() {
   for (const [c] of LOG_LINES) {
     write(path.join(run, 'combine', c, 'ideas-r0.md'), '案');
     write(path.join(run, 'combine', c, 'ideas.md'), '案');
-    write(path.join(run, 'combine', c, 'prior-r1.md'), '## 1 案\n- 検索語：…、…、…\n');
+    write(path.join(run, 'combine', c, 'prior-r1.md'), '## 1 案\n- 検索語：…、…、…\n- 特許：検索語「…」→ 見つからなかった\n');
     write(path.join(run, 'combine', c, 'prior-r2.md'), '## 1 案\n- 検索語：…\n');
     for (const j of ['judge-1-r1.md', 'judge-2-r1.md', 'judge-1-r2.md', 'judge-2-r2.md']) write(path.join(run, 'combine', c, j), JUDGE);
   }
@@ -391,12 +391,15 @@ test('REQ-068 先行例の検索語がないと落ち、判定に3つの観点�
   fs.rmSync(path.join(run, 'combine', 'c02', 'prior-r1.md'));
   fs.writeFileSync(path.join(run, 'combine', 'c03', 'judge-2-r2.md'), '- 1 通す\n  - 新しさ：…\n  - 役立つか：…\n通す：1\n');
   const r = gradeIdeaRun({ dataDir, calls });
-  assert.deepEqual(failed(r), ['combine-judge-views', 'combine-prior']);
+  assert.deepEqual(failed(r), ['combine-judge-views', 'combine-prior', 'combine-prior-patent']);
   assert.equal(r.checks.find((c) => c.id === 'combine-judge-views').detail, 'ない判定：c03/judge-2-r2');
   // 分けたファイル（-2）の続きに観点があればよい
   fs.writeFileSync(path.join(run, 'combine', 'c03', 'judge-2-r2-2.md'), '  - 価値：…\n');
   fs.writeFileSync(path.join(run, 'combine', 'c02', 'prior-r1.md'), '## 1 案\n見つからなかった\n');
-  assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-prior']);
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-prior', 'combine-prior-patent']);
+  // 検索語はあるが特許を探していないと、特許の採点だけ落ちる
+  fs.writeFileSync(path.join(run, 'combine', 'c02', 'prior-r1.md'), '## 1 案\n- 検索語：…\n- 論文：見つからなかった\n');
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir, calls })), ['combine-prior-patent']);
 });
 
 test('REQ-068 判定の回が往復の上限を超えると落ち、途中の回の相手が足りないと落ちる', () => {

@@ -357,6 +357,9 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   add('combine-judge-views', '柱4：判定のファイルのすべてに「新しさ」「役立つ」「価値」がある（REQ-068）', judgeTexts.size > 0 && noViews.length === 0, noViews.length ? `ない判定：${noViews.join(', ')}` : `${judgeTexts.size} ファイル`);
   const noPrior = combos.filter((c) => !/検索語/.test(joinFiles(r(`combine/${c}`), /^prior-r1(?:-\d+)?\.md$/)));
   add('combine-prior', '柱4：組ごとに prior-r1.md があり、検索語の記録がある（REQ-068）', combos.length > 0 && noPrior.length === 0, noPrior.length ? `ない組：${noPrior.join(', ')}` : `${combos.length} 組すべて`);
+  // 先行例の種類：組ごとの先行例のファイルに、特許を探した記録がある（2回目の試行では、多くの組で特許を当たっていなかった）
+  const noPatent = combos.filter((c) => !/特許/.test(joinFiles(r(`combine/${c}`), /^prior-r\d+(?:-\d+)?\.md$/)));
+  add('combine-prior-patent', '柱4：組ごとの先行例の記録に、特許を探した記録がある（REQ-068）', combos.length > 0 && noPatent.length === 0, noPatent.length ? `ない組：${noPatent.join(', ')}` : `${combos.length} 組すべて`);
   const partnerCalls = ofType(AGENT.thinker, role('壁打ちの相手'));
   const makerCalls = ofType(AGENT.thinker, role('案を作る|案を直す'));
   const priorCalls = ofType(AGENT.researcher, role('先行例を探す'));
