@@ -68,6 +68,12 @@
 
 関連：[人からナレッジを引き出す手法](knowledge-elicitation.md)、[Claude Code の EVAL の仕組み](claude-plugin-eval.md)
 
+## 内側の EVAL のユーザー役は、作る会話で決めたことを知らない
+
+- 模擬ユーザー test-handoff-compare の外側の EVAL（2026年10月）で、作る会話のユーザー役の AI が、ナレッジにない「病棟ごとにフォルダを分けて4つのファイルを入れる」を自分で足して答えた。クリエイターは、それをもとに作業の画面に必須の欄「病棟のフォルダ」を置き、報告を病棟のフォルダに書く形にした。
+- 内側の EVAL のユーザー役は、模擬ユーザーのナレッジと課題だけを見るので、「病棟のフォルダ」に「決まっていません」と答え、画面で開始できず点数0になった。`inner.mjs --setting ward_folder=inputs` で欄を埋めて動かし直すと、報告は `inputs/compare_report.md` にでき、基準は `compare_report.md`（作業フォルダの根）を見るので、また点数0になった。報告を根に写して採点し直すと9/9だった。
+- 作る会話のユーザー役が足した決まりは、内側の EVAL の課題と食い違いうる。模擬ユーザーの課題には、入力の置き場所と成果物の置き場所を書いておくと食い違いにくい（まだ直していない）。
+
 ## 出典
 
 - [Lost in Simulation: LLM-Simulated Users are Unreliable Proxies for Human Users in Agentic Evaluations（arXiv:2601.17087）](https://arxiv.org/abs/2601.17087)
