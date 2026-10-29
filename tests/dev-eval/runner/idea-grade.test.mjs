@@ -378,6 +378,9 @@ test('REQ-068 選んだ理由の行がないと落ち、判定の前に書いた
   const other = finishedRun();
   const rest = other.calls.filter((c) => !(c.name === 'Write' && /c02｜[^\n]*（判定の前）/.test(c.input?.content ?? '')));
   assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: rest })), ['combine-reason-first']);
+  // シェルで log.md に書いた記録でもよい
+  const bash = { owner: 'main', id: 'b1', name: 'Bash', input: { command: "cat >> combine/log.md <<'EOF'\n- c02｜数 3｜E1、E2、E3｜作った案 10｜通った案：（判定の前）\nEOF" }, group: 'gb' };
+  assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: [...rest, bash] })), []);
   // Edit で書き直したときも、書いた文に「（判定の前）」があればよい
   rest.push({ owner: 'main', id: 'e1', name: 'Edit', input: { file_path: `${other.run}/combine/log.md`, old_string: 'x', new_string: '- c02｜数 2｜E3、E4｜作った案 2｜通った案：（判定の前）\n  - 選んだ理由：…' }, group: 400 });
   assert.deepEqual(failed(gradeIdeaRun({ dataDir: other.dataDir, calls: rest })), []);

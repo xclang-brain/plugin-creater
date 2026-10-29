@@ -371,7 +371,11 @@ export function gradeIdeaRun({ dataDir, calls, hearingState = null, expectKnowle
   const noReason = combos.filter((c) => !reasons.has(c));
   add('combine-reason', '柱4：log.md に、組ごとに「選んだ理由」の行がある（REQ-068）', combos.length > 0 && noReason.length === 0, noReason.length ? `ない組：${noReason.join(', ')}` : `${combos.length} 組すべて`);
   // 判定の前に書いたか：log.md を書いた記録（入口は中身を縮めずに残す）に、その組の行と「（判定の前）」がある
-  const logWrites = calls.filter((c) => WRITES.has(c.name) && /combine[\\/]log\.md$/.test(pathOf(c))).map(writtenText).join('\n');
+  // シェルで書いたもの（cat >> combine/log.md など）も、コマンドの文から読む
+  const logWrites = [
+    ...calls.filter((c) => WRITES.has(c.name) && /combine[\\/]log\.md$/.test(pathOf(c))).map(writtenText),
+    ...calls.filter((c) => c.name === 'Bash' && /combine[\\/]log\.md/.test(String(c.input?.command ?? ''))).map((c) => String(c.input.command)),
+  ].join('\n');
   const beforeJudging = new Set(logWrites.split('\n').filter((l) => /[（(]判定の前[）)]/.test(l)).map((l) => l.match(/\bc\d+\b/)?.[0]).filter(Boolean));
   const late = combos.filter((c) => !beforeJudging.has(c));
   addCall('combine-reason-first', '柱4：組を選んだ理由を、判定の前に log.md に書いた（書いた記録に「（判定の前）」がある）（REQ-068）', combos.length > 0 && late.length === 0, late.length ? `記録がない組：${late.join(', ')}` : `${combos.length} 組すべて`);
