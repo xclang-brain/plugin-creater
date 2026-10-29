@@ -39,6 +39,9 @@
 //   unchanged-items            記録に「変えないので聞かない」の項目があり、画面の項目のうち expect.screenUnchanged（省くと3つすべて）がそれ（REQ-056）
 //   no-screen-questions        expect.screenAsked に当たる問いがない（REQ-056）
 //   last-time-asked            expect.lastTimeAsked に当たる問いがある（REQ-056）
+//   request-not-reasked        最初に受け付けられた確認より前の問いそのもの（見出し・問い・選択肢）が、expect.notAsked の正規表現のどれにも当たらない
+//                              （REQ-056「頼みの文に書いた…ファイルの場所を、もう一度書くよう聞かれない」）。前の文は見ない（頼みにあったことを示して
+//                              から、ほかのことを聞くのは聞き直しではないため）。expect.notAsked がないか空なら、見ることを決めていないと添えて合格にする
 //   stage1 / stage2            直したプラグインの tests/run.py --json（REQ-059・061・062）。段階の不合格がすべてディスクの誤り（ENOSPC・EIO）か、
 //                              入口がディスクの誤りで落ちたなら、環境で止まったとしてその段階を採点しない（notGraded に environment: true で残し、
 //                              verdict に partial を付ける。outer-grade.mjs の environmentNotGraded。作る流れと同じ）
@@ -55,7 +58,9 @@
 //   inner-deliverable          内側の EVAL の結果を渡したときだけ（作る流れと同じ。ディスクの空きが足りずに始めなかったときは、環境で止まったとして採点しない）
 // 環境（ディスクがいっぱい）の影響を受けた回には、作る流れと同じく environment を付ける（outer-grade.mjs の environmentOf）。
 // 英語の覚え書きのようなチャットの文の数と、最初の問いより前にこれからの流れを示したかは、作る流れと同じく counts（countRecorded の nonJapaneseTexts と
-// flowShown。outer-grade.mjs の isEnglishNote と isFlowText）に出す。合否には入れない。聞かれずに話した（faults）も、作る流れと同じ（knowledgeTrace）
+// flowShown。outer-grade.mjs の isEnglishNote と isFlowText）に出す。合否には入れない。聞かれずに話した（faults）も、作る流れと同じ（knowledgeTrace）。
+// 問いの数も counts（questions）に出すだけで、合否には入れない。聞きすぎで落とすのは、聞いてはいけない問いが決まっている
+// no-screen-questions と request-not-reasked だけ（testing.md 6.8）
 
 import { compareVersions } from '../../../com.github.copilot/extensions/plugin-creator/change.mjs';
 import { itemIndex } from '../../../com.github.copilot/extensions/plugin-creator/names.mjs';
@@ -337,6 +342,28 @@ function gradeAddedRules({ persona, units, repo, repoPlaces, confirm }) {
   return { ok: problems.length === 0, detail: problems.join(' / ') || `書き足された決まり ${added.length} 件を決まりの確かめの問いで確かめ、答えのとおりに決まりの一覧に入れた` };
 }
 
+/**
+ * 頼みの文にあることを、もう一度書くよう聞いていない（REQ-056）。最初に受け付けられた確認より前の問いそのもの（見出し・問い・選択肢）が、
+ * 模擬ユーザーの expect.notAsked の正規表現のどれにも当たらない。前の文は見ない（頼みにあったことを示してから、ほかのことを聞くのは
+ * 聞き直しではないため）。確認より後は、確かめたことをまとめて示すところなので見ない。
+ * expect.notAsked がないか空なら、見ることを決めていないので合格にし、そのことを残す
+ */
+function gradeRequestNotReasked({ persona, units, confirm }) {
+  const patterns = persona.expect?.notAsked ?? [];
+  if (patterns.length === 0) return { ok: true, detail: 'expect.notAsked がないか空なので、頼みにあることの聞き直しは見ていない' };
+  const res = patterns.map((p) => new RegExp(p));
+  const asked = beforeConfirm(units, confirm);
+  const hits = [];
+  for (const u of asked) {
+    const m = res.map((re) => re.exec(questionText(u))).find(Boolean);
+    if (m) hits.push(`[${u.seq}]「${flat(m[0]).slice(0, 80)}」`);
+  }
+  return {
+    ok: hits.length === 0,
+    detail: hits.length ? `頼みにあることを聞き直した問い：${list(hits, 3)}` : `確認より前の ${asked.length} の問いは、expect.notAsked の ${res.length} 件のどれにも当たらない`,
+  };
+}
+
 function gradeCommitScoped({ repo }) {
   const b = repo.baseline;
   const problems = [];
@@ -550,6 +577,8 @@ export function gradeChange({ persona, record = {}, state, items, toolEvents, st
     const hit = units.find((u) => new RegExp(expect.lastTimeAsked).test(questionText(u)));
     add('last-time-asked', Boolean(hit), hit ? `最近の1回の問い：${String(hit.question).slice(0, 60)}` : '最近実際にやった1回をたどる問いがない', 'REQ-056');
   }
+  const reasked = gradeRequestNotReasked({ persona, units, confirm });
+  add('request-not-reasked', reasked.ok, reasked.detail, 'REQ-056');
 
   if (stages?.skipped || !stages) {
     add('stage1', false, stages?.reason ?? '1・2段目を動かしていない', 'REQ-061');

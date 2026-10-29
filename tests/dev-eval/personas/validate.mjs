@@ -60,7 +60,7 @@ const CHANGE_KEYS = ['workspace', 'target', 'device', 'expect'];
 const WORKSPACE_KEYS = ['repo'];
 const REPO_KEYS = ['place', 'fixture', 'commitDate', 'staged', 'origin'];
 const STAGED_KEYS = ['path', 'append'];
-const EXPECT_KEYS = ['carriedMax', 'replaced', 'deviceTool', 'userSkills', 'screenUnchanged', 'screenAsked', 'lastTimeAsked', 'explained'];
+const EXPECT_KEYS = ['carriedMax', 'replaced', 'deviceTool', 'userSkills', 'screenUnchanged', 'screenAsked', 'lastTimeAsked', 'notAsked', 'explained'];
 /** 作業の画面の3つの項目（クリエイターの項目の記号。names.mjs）。expect.screenUnchanged には、この名前（か記号）を書く */
 const SCREEN_ITEM_KEYS = ['settings', 'running_view', 'result_view'];
 /** 生成プラグインのファイルを見る markers（改善の模擬ユーザーでは、題材と流用される資産の文字に当たってはいけない） */
@@ -612,6 +612,11 @@ function validateChange(persona, errors, context) {
     }
     checkRegex(ex.screenAsked, 'expect.screenAsked', errors);
     checkRegex(ex.lastTimeAsked, 'expect.lastTimeAsked', errors);
+    // 頼みにあることを聞き直す問い（REQ-056）。省くか空なら、外側の EVAL はこの観点を見ずに合格にする
+    if ('notAsked' in ex) {
+      if (!Array.isArray(ex.notAsked)) errors.push('expect.notAsked は、頼みにあることを聞き直す問いに当たる正規表現の並びで書く（見ないときは書かない）');
+      else ex.notAsked.forEach((v, i) => checkRegex(v, `expect.notAsked[${i}]`, errors));
+    }
     checkRegexList(ex.explained, 'expect.explained', errors);
   }
 

@@ -318,16 +318,20 @@ describe('クリエイターの画面（ブラウザー）', { skip: skipReason 
     });
   });
 
-  test('REQ-056 plugin-creator が作っていないプラグインを直すときは、すべて聞くので、「変えないので聞かないこと」の欄を出さない', async () => {
+  test('REQ-056 REQ-057 plugin-creator が作っていないプラグインを直すときも、「変えないので聞かないこと」の欄が出る。「聞かずに案で示す」は、そのほかの聞くことにその札で出る', async () => {
     await withRun(async (run) => {
       const url = await openScreenUrl(run);
       const view = await openPage(url);
       try {
         await startChange(run, { plugin: { knowledge: null, task: null, evals: [] } });
-        await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: '手順を聞いた' }] });
-        await view.page.locator('#asked li').first().waitFor(WAIT);
+        await run.call('progress', { items: [{ item: '進め方', status: '聞いた', quote: '手順を聞いた' }, { item: '作業の目的', status: '変えないので聞かない', quote: '目的は今のまま' }, { item: '実行中に見たいこと', status: '聞かずに案で示す', quote: '画面はおまかせ' }] });
+        await view.page.locator('#skipped li').first().waitFor(WAIT);
         assert.match(await view.page.locator('#change-target').textContent(), /直すプラグイン：edl-sample（今の版 0\.1\.0）/);
-        assert.equal(await view.page.locator('#skipped').count(), 0);
+        assert.match(await view.page.locator('#skipped h3').textContent(), /変えないので聞かないこと（1）/);
+        assert.deepEqual((await view.page.locator('#skipped li').allTextContents()).map((t) => t.trim()), ['作業の目的変えないので聞かない']);
+        const drafted = view.page.locator('#other-items li[data-item="実行中に見たいこと"]');
+        assert.equal((await drafted.textContent()).trim(), '実行中に見たいこと聞かずに案で示す');
+        assert.equal(await drafted.locator('.badge').getAttribute('class'), 'badge badge-info');
         assert.deepEqual(view.problems, []);
       } finally {
         await view.close();

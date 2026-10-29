@@ -64,7 +64,7 @@ function changeLines(hearing, change) {
   return [
     `直すプラグイン：${change.folder}（${pluginLabel(change)}）`,
     `変えたいこと：${clip((change.wants ?? []).join('／'), WANTS_CLIP)}`,
-    `引き継いだ決まり：${carried}件${change.generated ? '' : '（plugin-creator が作っていないプラグインなので、読み取った決まりは1件ずつ確かめる）'}`,
+    `引き継いだ決まり：${carried}件${change.generated ? '' : '（plugin-creator が作っていないプラグインなので、読み取った決まりは、頼みの文や答えで決まりとして述べられていないものを1件ずつ確かめる）'}`,
     `足した決まり：${list(added)}／直した決まり：${list(replaced.map((r) => `${r.from}→${r.to}`))}／外した決まり：${list(removed)}`,
   ];
 }
@@ -207,6 +207,7 @@ export function hearingView(hearing) {
     return {
       name: item.name,
       status: itemStatusIndex.nameOf(status),
+      // 聞かずに案で示す項目（今のプラグインを直すとき）は、済んだものに数える（案は直す前の確認で示す。REQ-056、REQ-057）
       done: status !== 'todo',
       main: item.group === 'main10',
       // 変えないので聞かない項目（今のプラグインを直すとき。REQ-056）。画面では、まだ聞いていない項目とも、聞いた項目とも分けて示す

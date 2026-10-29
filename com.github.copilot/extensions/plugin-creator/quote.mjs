@@ -3,6 +3,7 @@
 // - 項目を未着手から変えるときの quote は、それより前の問答の記録（ユーザーの答えと打った発言）のどれか1つの中にある（hearing.md 7.2、testing.md 6.5）。
 //   見つかるかどうかの決め方は、外側の EVAL の採点（tests/dev-eval/runner/outer-grade.mjs の normalizeQuote・quoteFound）と同じ。
 //   重ねて持つので、ずれは tests/creator/extension/quote.test.mjs が見張る（同じ場合分けを両方に通す）。
+//   今のプラグインを直すときは、頼みの文も数える（項目「前回の1回」を除く。どちらを数えるかは hearing.mjs が決める。REQ-056）。
 // - 生成前の確認で足したナレッジの quote が、ユーザーが選んだ選択肢の文だけなら、足したことにならない
 //   （「違うところはない」を選んだだけで、AI の案を「ユーザーが足した決まり」として記録した事故。意味の確かめはできないが、この形は見分けられる）。
 // - 直すときに、引き継いだ決まりを中身を変えずに「決まった」にする quote は、その番号を示した ask_user の問いへの答えの中にある
@@ -32,14 +33,17 @@ export function quoteFound(quote, answers) {
 
 /**
  * 問答の記録から、ユーザーの言葉を取り出す：答えが来た ask_user の答え（取り消しと断りは除く）と、ユーザーが打った発言。
- * 頼みの文（request）は数えない（hearing.md 7.4。外側の EVAL の採点が、最初の依頼の文を抜き書きの出どころに含めないため）。
+ * 頼みの文（request）は、既定では数えない（作る流れ。hearing.md 7.4。外側の EVAL の採点が、最初の依頼の文を抜き書きの出どころに含めないため）。
+ * request を true にすると、頼みの文も数える（今のプラグインを直すとき。頼みの文をユーザーの答えと同じに扱う。REQ-056、hearing.md 7.2）。
  * @param {Array<object>} qa store.readQa() の返り値
+ * @param {{ request?: boolean }} [options]
  */
-export function userWords(qa) {
+export function userWords(qa, { request = false } = {}) {
   const words = [];
   for (const entry of Array.isArray(qa) ? qa : []) {
     if (entry?.type === 'ask_user' && (entry.outcome ?? 'answered') === 'answered' && typeof entry.answer === 'string') words.push(entry.answer);
     else if (entry?.type === 'user_prompt' && typeof entry.text === 'string') words.push(entry.text);
+    else if (request && entry?.type === 'request' && typeof entry.text === 'string') words.push(entry.text);
   }
   return words;
 }

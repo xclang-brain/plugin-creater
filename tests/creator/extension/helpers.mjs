@@ -349,6 +349,7 @@ export const INTERNAL_SYMBOLS = [
   'pending',
   'asked',
   'unchanged',
+  'drafted',
   'carried',
   'replaces',
 ];

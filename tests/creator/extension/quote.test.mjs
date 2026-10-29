@@ -3,6 +3,7 @@
 //   - 項目を未着手から変えるときの抜き書きは、それより前の問答の記録のユーザーの言葉の中にある
 //   - 生成前の確認で足したナレッジの抜き書きが、選んだ選択肢の文だけなら、足したことにならない
 // 外側の EVAL（改善）の1回目で落ちた観点への守り：直すとき、引き継いだ決まりを「決まった」にする抜き書きは、その番号を示した問いへの答えの中にある
+// 直すときは、頼みの文もユーザーの言葉に数える（REQ-056。どの項目で数えるかは record-tools.test.mjs で見る）
 // 抜き書きが見つかるかの決め方は、外側の EVAL の採点（tests/dev-eval/runner/outer-grade.mjs）と同じなので、同じ場合分けを両方に通して見張る。
 // 設計書：hearing.md 7.2、testing.md 6.5、REQ-015、REQ-020。
 import assert from 'node:assert/strict';
@@ -82,6 +83,14 @@ describe('問答の記録から取り出すもの（quote.mjs）', () => {
     assert.deepEqual(quote.userWords(QA), ['User responded: はい', 'ついでに、祝日は月曜です', '古い形の答え']);
     assert.deepEqual(quote.userWords([]), []);
     assert.deepEqual(quote.userWords(undefined), []);
+  });
+
+  test('REQ-056 頼みの文は、既定では数えない（作るとき）。request を true にすると数える（今のプラグインを直すとき）', () => {
+    const qa = [{ type: 'request', text: 'デプロイを足したい' }, { type: 'request', text: 5 }, ...QA];
+    assert.deepEqual(quote.userWords(qa), ['User responded: はい', 'ついでに、祝日は月曜です', '古い形の答え']);
+    assert.deepEqual(quote.userWords(qa, {}), quote.userWords(qa));
+    assert.deepEqual(quote.userWords(qa, { request: true }), ['デプロイを足したい', 'User responded: はい', 'ついでに、祝日は月曜です', '古い形の答え'], '文でない頼みの文は数えない');
+    assert.deepEqual(quote.userWords([{ type: 'request', text: 'x' }], { request: true }), ['x']);
   });
 
   test('REQ-020 ask_user の問いの選択肢の文は、choices・options・requestedSchema の enum・oneOf・配列の items から集める。説明をつなげたものも数える', () => {

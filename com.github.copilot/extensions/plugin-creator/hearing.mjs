@@ -6,12 +6,16 @@
 // - Refusal の message は、ユーザーの画面に1行で出る。平易な日本語で、使える値を示す。内部の記号は出さない。
 // - 項目の状態を変えるときは、ユーザーの言葉の抜き書きを添える。添えないと断る（モデルが自分の判断で項目を済ませないため）。
 // - 状態の移り方：未着手 → 聞いた・決まりなし・保留。聞いた・決まりなし・保留どうしは行き来できる。未着手には戻せない。
+//   直すときだけの「変えないので聞かない」「聞かずに案で示す」は、聞いていない状態（未着手とこの2つ）からだけ変えられる。そこから聞いた・決まりなし・保留にもできる。
 // - ナレッジの状態の移り方：候補 → 決まった・外した。決まった・外したどうしは行き来できる。候補には戻せない。
 // - 段階を「生成」に進めるには、生成前の確認（confirm）を受け付けていることと、承認の答えの抜き書きが要る。
 //   進めると承認の時刻を残し、その後は記録を変えない（問答も記録しない。差し込みも返さない）。
 // - 今のプラグインを直すとき（記録の change がある。REQ-052〜061、BLUEPRINT 4.1・4.2）：
 //   - 記録は plugin-creator_change だけが作る（applyChange）。作る記録があるセッションでは断る。
-//   - 項目の状態「変えないので聞かない」は、直すときだけ、未着手からだけ使える。「前回の1回」と、作っていないプラグインでは使えない。
+//   - 項目の状態「変えないので聞かない」は、直すときだけ、まだ聞いていない状態からだけ使える。「前回の1回」には使えない（作っていないプラグインでも使える。REQ-056）。
+//   - 項目の状態「聞かずに案で示す」は、直すときだけ、まだ聞いていない状態からだけ、資産・標準機能と公開のプラグイン・画面の3つの項目にだけ使える（REQ-056、REQ-057）。
+//   - 項目の状態を変える抜き書きは、頼みの文の中にあってもよい（頼みの文をユーザーの答えと同じに扱う。REQ-056）。
+//     ただし「前回の1回」は、頼みの文では閉じない（変えるところに関わる最近の1回を、問いでたどるため。REQ-016）。
 //   - 引き継いだ決まり（carried）の中身を直す記録が来たら、元の行を「外した」にし、新しい番号の行（replaces＝元の番号）を「決まった」で足す（REQ-058）。
 //     中身の直しは、ユーザーが今の中身を答えたときだけなので、状態「決まった」のほかは断る。
 //   - 生成プラグインを直すとき、引き継いだ決まりを中身を変えずに「決まった」にする記録は、抜き書きが、その番号を示した ask_user の問いへの答えの中に
@@ -25,6 +29,7 @@ import { isOnlyChosenOption, quoteFound, quoteInAnswerShowing, userWords } from 
 
 import {
   ASSET_STATUSES,
+  DRAFTABLE_ITEMS,
   ITEMS,
   ITEM_STATUSES,
   KNOWLEDGE_KINDS,
@@ -103,15 +108,19 @@ export const pluginLabel = (change) => `${change.name}、今の版 ${change.vers
 const MAKE_RECORD_MESSAGE = 'このセッションでは、新しく作るか作り直すお話を聞いています。今のプラグインを直すときは、/clear してから頼み直してください。';
 const REBUILD_IN_CHANGE_MESSAGE = '今のプラグインを直すときは、できていたことは聞かずに、すべて引き継ぎます。段階と聞くこと「できていたことの確認」は使いません。';
 
-/** 直すときの、これからの流れ（hearing.md 3.4。直す流れの記録を新しく作ったときに、返り値で示す）。段階を words.md の言葉で並べる */
+/**
+ * 直すときの、これからの流れ（hearing.md 3.4。直す流れの記録を新しく作ったときに、返り値で示す）。段階を words.md の言葉で並べる。
+ * 頼みにあることと、読めば分かることは聞かない流れ（REQ-056）。ただし「聞き直しません」とは言い切らない（決まりの確かめで、聞くものがあるため）。
+ * 今使っているファイルは、要るときだけ聞く（足す作業が受け取るファイルの場所が頼みにないとき。役割の分け直しなどでは聞かないので、「頼みにないときだけ」とは告げない）
+ */
 const FLOW_GENERATED =
-  'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 今の決まりの一覧を確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具（作業の画面を変えるときは、画面で見たいことも） → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
-/** plugin-creator が作っていないプラグインのとき：決まりの一覧の確かめはなく、最近の1回は作業の最初から最後まで聞き、画面で見たいことも聞く */
+  'これから、次の順に進めます。今使っているファイルを教えてもらう（要るときだけ） → プラグインを読み、今の決まりの一覧と変えるところを確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりのうち、まだ伺っていないものを確かめる → まだ分からないことだけを聞く → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+/** plugin-creator が作っていないプラグインのとき：決まりの一覧はなく、引き継ぐことを確かめる。作業の画面は聞かずに案を作り、直す前の確認で見本を示す */
 const FLOW_NOT_GENERATED =
-  'これから、次の順に進めます。今使っているファイルを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 作業の最初から最後まで、最近やった1回の流れを聞く → 読み取った決まりを確かめる → 聞き漏らしがないかを見る → 使っている道具 → 作業の画面で見たいこと → 直す前に、まとめを確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
+  'これから、次の順に進めます。今使っているファイルやほかのプラグインのうち、頼みにないものを教えてもらう → プラグインを読み、引き継ぐことと変えるところを確かめる → 変えるところに関わる作業の、最近やった1回の流れを聞く → 読み取った決まりのうち、まだ伺っていないものを確かめる → まだ分からないことだけを聞く → 直す前に、まとめと作業の画面の見本を確かめてもらう。そのあと、プラグインのフォルダを直して試験し、コミットします。push はしません。';
 
-/** 項目の状態が、聞いていないもの（未着手か、変えないので聞かない）か */
-const notAsked = (status) => status === 'todo' || status === 'unchanged';
+/** 項目の状態が、聞いていないもの（未着手か、変えないので聞かないか、聞かずに案で示す）か */
+const notAsked = (status) => status === 'todo' || status === 'unchanged' || status === 'drafted';
 
 /** 長い文を、画面と返り値のために切る */
 export function clip(value, max) {
@@ -188,17 +197,31 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
 
   // ---- progress ---------------------------------------------------------------
 
-  /** 項目の状態「変えないので聞かない」にしてよいか（REQ-056、BLUEPRINT 4.1）。だめなら断る */
-  function checkUnchanged(next, item) {
-    if (!next.change) throw new Refusal(`「変えないので聞かない」は、今のプラグインを直すときだけ使えます。「${item.name}」は、聞いてから記録してください。`);
-    if (!next.change.generated) {
-      throw new Refusal('plugin-creator が作っていないプラグインを直すときは、プラグインの形を変えること自体が変えるところなので、「変えないので聞かない」は使えません。聞くことは、すべて聞いてください。');
-    }
-    if (item.key === 'last_case') throw new Refusal('「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
+  /** 聞いていない状態（未着手など）からだけ変えられる状態（name）にしてよいか。もう聞いた項目なら断る */
+  function checkStillNotAsked(next, item, name) {
     const current = statusOf(next, item.key);
     if (!notAsked(current)) {
-      throw new Refusal(`「${item.name}」は、もう聞いているので（今の状態：${itemStatusIndex.nameOf(current)}）、「変えないので聞かない」にはできません。「変えないので聞かない」にできるのは、状態が「未着手」のものだけです。`);
+      throw new Refusal(`「${item.name}」は、もう聞いているので（今の状態：${itemStatusIndex.nameOf(current)}）、「${name}」にはできません。「${name}」にできるのは、まだ聞いていない状態（未着手、変えないので聞かない、聞かずに案で示す）のものだけです。`);
     }
+  }
+
+  /** 項目の状態「変えないので聞かない」にしてよいか（REQ-056、BLUEPRINT 4.1）。作っていないプラグインでも使える。だめなら断る */
+  function checkUnchanged(next, item) {
+    if (!next.change) throw new Refusal(`「変えないので聞かない」は、今のプラグインを直すときだけ使えます。「${item.name}」は、聞いてから記録してください。`);
+    if (item.key === 'last_case') throw new Refusal('「前回の1回」は、変えるところに関わる最近の1回をいつも聞くので、「変えないので聞かない」にはできません。');
+    checkStillNotAsked(next, item, '変えないので聞かない');
+  }
+
+  /**
+   * 項目の状態「聞かずに案で示す」にしてよいか（REQ-056、REQ-057）。聞かずに、案を作るか調べた結果を、直す前の確認で示す項目。
+   * 使えるのは、資産・標準機能と公開のプラグイン・画面の3つの項目だけ（ほかの項目は、読めば分かるなら「聞いた」か「変えないので聞かない」）。だめなら断る
+   */
+  function checkDrafted(next, item) {
+    if (!next.change) throw new Refusal(`「聞かずに案で示す」は、今のプラグインを直すときだけ使えます。「${item.name}」は、聞いてから記録してください。`);
+    if (!item.draftable) {
+      throw new Refusal(`「聞かずに案で示す」にできるのは、${listNames(DRAFTABLE_ITEMS)}だけです。「${item.name}」は、聞いてから記録してください。`);
+    }
+    checkStillNotAsked(next, item, '聞かずに案で示す');
   }
 
   function applyProgress(args) {
@@ -244,15 +267,13 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
         }
         if (item.key === 'rebuild_check' && next.change) throw new Refusal(REBUILD_IN_CHANGE_MESSAGE);
         if (status.key === 'unchanged') checkUnchanged(next, item);
+        if (status.key === 'drafted') checkDrafted(next, item);
         if (!has(e.quote)) {
           throw new Refusal(`「${item.name}」の状態を変えるには、ユーザーの言葉の抜き書き（quote）を添えてください。`);
         }
-        // 未着手（か、変えないので聞かない）から変えるときの抜き書きは、それより前のユーザーの言葉のどれか1つの中にある（採点と同じ決め方。要約や言い換えは断る）
-        if (notAsked(statusOf(next, item.key)) && !quoteInUserWords(e.quote)) {
-          throw new Refusal(
-            `「${item.name}」の抜き書き（quote）が、ユーザーの答えの中に見つかりません。1つの答えの言葉を、そのまま写してください（要約しない。間を省くときは「…」でつなぐ）。`,
-          );
-        }
+        // 未着手など（聞いていない状態）から変えるときの抜き書きは、それより前のユーザーの言葉のどれか1つの中にある（採点と同じ決め方。要約や言い換えは断る）。
+        // 直すときは、頼みの文も数える（REQ-056）。「前回の1回」は数えない（最近の1回は、問いでたどるため。REQ-016）
+        if (notAsked(statusOf(next, item.key))) checkItemQuote(next, item, e.quote);
         next.items[item.key] = {
           status: status.key,
           quote: text(e.quote),
@@ -327,13 +348,32 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
   }
 
   /**
-   * 抜き書きが、問答の記録のユーザーの言葉のどれか1つの中にあるか。
-   * 問答の記録にユーザーの言葉が1件もないときは、確かめずに通す：問答の記録のフックの形は、本物の Copilot CLI でまだ確かめていない
+   * 抜き書きが、問答の記録のユーザーの言葉のどれか1つの中にあるか。request が true なら、頼みの文も数える（直すとき。REQ-056）。
+   * 問答の記録にユーザーの言葉（頼みの文を除く）が1件もないときは、確かめずに通す：問答の記録のフックの形は、本物の Copilot CLI でまだ確かめていない
    * （tasks/C1.md の実機の要確認 2）ので、記録が取れていないだけのときに、すべての記録を断って止めないため。
    */
-  function quoteInUserWords(quote) {
-    const words = userWords(store.readQa());
-    return words.length === 0 || quoteFound(quote, words);
+  function quoteInUserWords(quote, { request = false } = {}) {
+    const qa = store.readQa();
+    return userWords(qa).length === 0 || quoteFound(quote, userWords(qa, { request }));
+  }
+
+  /**
+   * 項目の状態を変える抜き書きを確かめる（7.2）。直すときは、頼みの文も数える。ただし「前回の1回」は数えない（REQ-056、REQ-016）。
+   * 「前回の1回」の抜き書きが頼みの文にだけあるときは、そのことを示して断る（頼みに書いた流れは、示して、足りないことを聞くため）
+   */
+  function checkItemQuote(next, item, quote) {
+    const change = Boolean(next.change);
+    const withRequest = change && item.key !== 'last_case';
+    if (quoteInUserWords(quote, { request: withRequest })) return;
+    if (change && item.key === 'last_case' && quoteFound(quote, userWords(store.readQa(), { request: true }))) {
+      throw new Refusal(
+        '「前回の1回」の抜き書きは、頼みの文からは取れません。最近の1回の流れを聞いた問いへの、ユーザーの答えの言葉を、そのまま写してください。頼みに流れが書いてあれば、それを示して、足りないことを聞いてください。',
+      );
+    }
+    const where = withRequest ? 'ユーザーの答えと頼みの文' : 'ユーザーの答え';
+    throw new Refusal(
+      `「${item.name}」の抜き書き（quote）が、${where}の中に見つかりません。1つの答え${withRequest ? 'か頼みの文' : ''}の言葉を、そのまま写してください（要約しない。間を省くときは「…」でつなぐ）。`,
+    );
   }
 
   /** 引き継いだ決まりの中身（種類・項目・文・例・例外）を変える記録か（REQ-058。例と例外の直しも中身の直し） */
@@ -661,7 +701,7 @@ export function createHearing({ store, sessionId, clock, onCreated = () => {} })
     const head = `${flow}直すプラグインとして記録しました（${pluginLabel(next.change)}）。`;
     const nextId = `新しい決まりは ${knowledgeNumber(next.knowledgeCounter + 1)} から付きます。`;
     if (!plugin.generated) {
-      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、1件ずつ確かめてください。${nextId}`;
+      return `${head}決まりの一覧（tests/knowledge.json）と ${plugin.taskRel} がそろっていないので、plugin-creator が作っていないプラグインとして扱います。読み取った決まりは、頼みの文や答えで決まりとして述べられていないものを、1件ずつ確かめてください。${nextId}`;
     }
     const ids = next.change.carried;
     if (ids.length === 0) return `${head}決まりの一覧（tests/knowledge.json）に決まりがないので、取り込んだものはありません。${nextId}`;
