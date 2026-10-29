@@ -183,6 +183,7 @@ async function main() {
   let stopped = null;
   const unreadNotes = [];
   const userSystem = buildIdeaUserSystem(restriction, { excludeFirst: o.excludeFirst });
+  const saveRecord = () => fs.writeFileSync(path.join(outDir, 'record.json'), `${JSON.stringify({ conversation, calls }, null, 2)}\n`);
 
   async function userAnswer(question, choices, notes) {
     const prompt = buildUserPrompt({ question, choices, history, notes });
@@ -246,6 +247,8 @@ async function main() {
             const input = recordedInput(c.input);
             // 同じ応答の tool_use は、別々のメッセージで届くことがある。メッセージの番号（message.id）が同じものを、同時に起動したものとする
             calls.push({ owner, id: c.id, name: c.name, input, group: owner === 'main' ? (m.message?.id ?? `g${group}`) : null });
+            // 途中で止まっても（クラウドの容器の再起動など）、続きの回と合わせて採点できるよう、ときどき記録を書く
+            if (calls.length % 50 === 0) saveRecord();
             if (c.name === 'Agent' || c.name === 'Task') log({ phase: 'agent', type: c.input?.subagent_type, description: c.input?.description });
           }
         }
@@ -283,7 +286,7 @@ async function main() {
   const grade = gradeIdeaRun({ dataDir, calls, hearingState: toolkit.readState(), expectKnowledgeUse: o.expectKnowledge, resume: o.expectResume ? { runsBefore, questions, fromPillar } : null });
   const result = { ok: (stopped.reason === 'finished' || stopped.reason === 'stopped_at_pillar') && (stopped.reason === 'stopped_at_pillar' || grade.ok), stopped, outDir, dataDir, runDir: grade.runDir, costUsd, calls: calls.length, checks: grade.checks };
   fs.writeFileSync(path.join(outDir, 'result.json'), `${JSON.stringify(result, null, 2)}\n`);
-  fs.writeFileSync(path.join(outDir, 'record.json'), `${JSON.stringify({ conversation, calls }, null, 2)}\n`);
+  saveRecord();
   status({ phase: 'done', stopped, ok: result.ok, costUsd });
   process.stdout.write(`${JSON.stringify({ ok: result.ok, stopped, outDir, runDir: grade.runDir, costUsd, failed: grade.checks.filter((c) => !c.ok).map((c) => c.id) })}\n`);
   return result.ok ? 0 : 1;
