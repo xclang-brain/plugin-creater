@@ -1,0 +1,259 @@
+{
+  "runDir": "/tmp/claude-0/-home-user/4601d414-f2a6-59df-a47a-3d781444ff4d/scratchpad/runs3/real-1/agent-home/.plugin-creator/make-idea/runs/20261029-1241",
+  "model": "claude-opus-5-5",
+  "costUsd": 1.8630543,
+  "process": {
+    "ok": true,
+    "items": [
+      {
+        "id": "P1",
+        "title": "なぜなぜ分析",
+        "ok": true,
+        "evidence": "essence/whys-c01-a1-4.md 105「なぜ評価されているのか → 前の物差しは易しすぎた…→ なぜか → …5つの力を、500問で測る（ICLR）」「誰にとって恩恵があるのか → 記憶の仕組みを作り、改善の成果を確かめたい開発者（Mastra「Starting at a low 65% … reached 80%」）」「前は、良くなったかを感覚で言うしかなかった（仮説）。後は、点で改善を確かめられる」。essence/whys-c11-a1.md 76「前は、終わったか、許可待ちかを確かめに端末を何度も見に行った。後は、呼ばれたときだけ戻ればよい」。whys-*.md 全体で作品の見出し612件、『誰にとって恩恵』の行も612件で、ファイルごとの数も同じ。"
+      },
+      {
+        "id": "P2",
+        "title": "掘り下げ",
+        "ok": true,
+        "evidence": "research/deep-1.md 86 Cline「なぜ評価されているかの材料：「Cline is the most impressive agentic coder tool I've used…」（HN、cdelsolar）」「5,774,320インストール、約4つ星、レビュー324件」、DeployHQ「a hard requirement, not a perk」。research/deep-62.md「Hacker News の投稿…976点、コメント 591件」「「The annotation cycle is the key insight for me.」（HN の dennisjoseph）」、vc.ru の解説の引用。"
+      },
+      {
+        "id": "P3",
+        "title": "壁打ちの判定",
+        "ok": true,
+        "evidence": "combine/c01/judge-1-r1.md 案1「いちばん強いだめな理由：いまの助手でも、計画を見せて許しを得るまで手を付けない仕組み…がすでにある」「新しさ：認めない」「役立つか：認めない。困りごと…は案自身が仮説としている」「価値：認めない」「根拠：prior-r1.md 案1（plan mode…）」。restriction.md の範囲「GitHub Copilot CLI と Claude Code で使えるエージェントプラグイン」を判定に使った文は、判定ファイルの grep で見つからない（出てくる「Copilot」は c07/judge-1-r1.md「Copilot Memory は…確かめる」など先行例としてだけ）。"
+      },
+      {
+        "id": "P4",
+        "title": "先行例の調べ",
+        "ok": true,
+        "evidence": "combine/c05/prior-r3.md 案1「製品：検索語「Cursor \"Team Rules\" admin dashboard…」「チーム ルール CLAUDE.md 全員 読み込まれているか…」」「OSS：検索語「\"InstructionsLoaded\" hook github…」」「論文：…→ Rajagopalan, Rao 2026」「特許：検索語「patent comparing content hash of deployed configuration file…」」。combine/c09/prior-r2-4.md 案9・案10でも製品・OSS・論文・特許の検索語を別々に書いている。combine/c01/judge-1-r1.md「先行例の検索語は、製品・OSS・論文・特許で別々の語が4つ未満なら「少ない」とし、新しさを認めない」。"
+      },
+      {
+        "id": "P5",
+        "title": "誰にどんなメリットか",
+        "ok": true,
+        "evidence": "essence/index.md E1「誰に：何人かで同じ仕事を受け持ち…チームの人と、決まりを配るまとめ役」「どんなメリットが：まとめ役は、決まりを一人ずつ伝えたり、一台ずつパソコンに入れて回ったりせずに済む」。essence/index-9.md E74「担当者は、毎朝30分の写し作業が1〜2分になり、表を触らずに計画づくりに時間を使える」。combine/c05/ideas-r2.md 案1「どんなメリットが：まとめ役は、決まりが手元に出ていない人を一人ずつ聞かずに見つけて直せる。社員は、決まりのない助手で知らずに働くことがなくなる」。英語の引用や番号は「根拠」「裏づけ」の行に限られる。"
+      },
+      {
+        "id": "P6",
+        "title": "通った案の固め",
+        "ok": true,
+        "evidence": "combine/c04/passed-ideas.md「## 4 …（通った回：r1）」→ c04/ideas-r1.md・ideas-r2*.md・judge-*-r2/r3 の見出しは案1〜3・5〜10で、4はない。combine/c09/passed-ideas.md「## 6 …（通った回：r1）」→ c09/ideas-r1*.md・ideas-r2*.md・judge-*-r2/r3 に案6はない。combine/c10/passed-ideas.md「## 4（通った回：r1）」「## 5（通った回：r2）」→ c10/ideas-r1.md に4はなく、ideas-r2*.md と judge-*-r3 に4も5もない。c01・c05・c07・c08 は最後の回のr3で通った（例：c01/judge-1-r3.md「通す：2」、c01/judge-2-r3.md「通す：2」）。"
+      }
+    ],
+    "attempts": 1,
+    "toolCalls": {
+      "Read": 16,
+      "Grep": 12,
+      "Glob": 1
+    }
+  },
+  "ideas": [
+    {
+      "file": "explain/1.md",
+      "attempts": 1,
+      "toolCalls": {
+        "WebSearch": 6,
+        "WebFetch": 3
+      },
+      "name": "新人を教える先輩が、新人の分かっていない所から教え始められる",
+      "verdict": "pass",
+      "closest": [
+        {
+          "name": "Commit Comprehension Gate",
+          "url": "https://dev.to/islandbytes/i-built-a-merge-gate-that-quizzes-developers-on-their-own-code-changes-heres-why-and-how-5460",
+          "why_close": "人工知能が書いたプログラムを新人が分かっているかを、取り込む前に確かめる道具。ただし選択式の問題で合否を本人に返すだけで、新人の理由と助手の理由を比べず、先輩に教える所も示さない。"
+        },
+        {
+          "name": "Oli et al., Can LLMs identify gaps and misconceptions in students' code explanations (arXiv 2501.10365)",
+          "url": "https://arxiv.org/abs/2501.10365",
+          "why_close": "学ぶ人が書いたコードの説明から、抜けや思い違いを人工知能で見つける研究。授業向けで、先輩の確かめ画面に示したり、助手に注意を残したりはしない。"
+        },
+        {
+          "name": "Self-Improving Coding Agents（AGENTS.md に学んだことを残すやり方）",
+          "url": "https://addyosmani.com/blog/self-improving-agents/",
+          "why_close": "人が直した内容をファイルに残し、助手が次から読むやり方。ただし新人の理解の食い違いとは結びついていない。"
+        },
+        {
+          "name": "sphinx-ci",
+          "url": "https://www.producthunt.com/p/sphinx-ci",
+          "why_close": "書き換えについて問題を出し、通ると取り込めるようになる学び向けの道具。先輩に教える所を示さない。"
+        }
+      ],
+      "novelty": {
+        "ok": true,
+        "reason": "問題を出す道具、学ぶ人の説明を採点する研究、注意をファイルに残すやり方はそれぞれある。しかし「新人が先に理由を書く」「助手の理由との食い違いだけを先輩の画面に出す」「先輩の注意を新人の助手が読む」をそろえたものは、複数の検索で見つからなかった。先輩に教える所を示す点が既存のものとの違いで、価値の中心になっている。"
+      },
+      "usefulness": {
+        "ok": true,
+        "reason": "PR TIMES の調査（1,004人）で、負担増 77.9%、仕組みや根拠を分かっていない 61.4%、根拠を人工知能に丸投げ 45.8% を確かめた。BairesDev の調査では、新人の理解は完全だと答えた先輩は 16% だけ。先輩が新人の分かっていない所を探す手間という困りごとに、まっすぐ効く。"
+      },
+      "value": {
+        "ok": true,
+        "reason": "困りごとの大きさは二つの独立した調査（国内1,004人、海外1,569人）で裏付けられ、広い範囲で教える負担が増えている。効果の大きさ（時間が減るか、外れの割合）はまだ確かめられておらず、説明もそれを正直に認めている。"
+      },
+      "benefit": {
+        "ok": true,
+        "reason": "誰に（教える先輩）、何が（分かっていない所を探す手間）、どう良くなるか（その所だけを教えられる）がはっきり書かれている。新人が自分で考える癖がつくという、もう一つのメリットもある。",
+        "sentence": "人工知能の助手を使う新人を教える先輩の開発者が、新人に一つずつ聞いて回らなくても、新人が分かっていない所から教え始められる。"
+      },
+      "readability": {
+        "ok": true,
+        "reason": "本文は英語や略語を使わず、短い文で書かれている。「後付け」「文字だけのファイル」「この画面」も本文の中で言い換えられており、専門外の人がつまずく言葉は見当たらなかった。",
+        "unclear": []
+      },
+      "queries": [
+        "junior developer explain AI-generated code before review compare with AI reasoning mismatch",
+        "PR comprehension gate quiz junior developer AI generated code pull request",
+        "新人 AI 生成コード 理解していない 指導 負担 調査 1,004人",
+        "developer writes rationale before seeing AI agent rationale, divergence flagged to reviewer pull request tool",
+        "\"Only 16% of senior developers\" junior engineers fully understand AI-generated code",
+        "mentor review notes saved to AGENTS.md coding agent reads junior learning loop"
+      ],
+      "reasons": [
+        "ほぼ同じ既存のものは見つからなかった（最も近い Commit Comprehension Gate は合否を本人に返すだけで、比べる仕組みも先輩への知らせもない）。",
+        "困りごとの根拠は、元の調査（PR TIMES の発表、BairesDev の調査）で数字を確かめた。",
+        "価値の大きさは、広い範囲で教える負担が増えていることを示す調査で裏付けられている。ただし効果の大きさは確かめられていない。",
+        "誰にどんなメリットかを1文で言える。",
+        "本文に専門外の人がつまずく言葉は見当たらない。"
+      ],
+      "pass": true
+    },
+    {
+      "file": "explain/2.md",
+      "attempts": 1,
+      "toolCalls": {
+        "WebSearch": 3,
+        "WebFetch": 4
+      },
+      "name": "手順を直したのに古いまま働いている人を、まとめ役が名前で見つけられる",
+      "verdict": "fail",
+      "closest": [
+        {
+          "name": "StepSecurity Dev Machine Guard – Agent Skills（中身の目印の比べ）",
+          "url": "https://docs.stepsecurity.io/developer-machines/agent-skills",
+          "why_close": "各パソコンで手順の束の中身から目印を作って全員分を集め、同じ束で目印が2種類以上あると目立たせる。Claude Code の束から来たものも束の名前つきで出す。発表の文では、目印の違いは古いか手元で直した写しのしるしだとしている。"
+        },
+        {
+          "name": "Fleet ai_agent_skills 表",
+          "url": "https://fleetdm.com/tables/ai_agent_skills",
+          "why_close": "パソコンごと・人ごとに手順の束（Claude の束を含む）を一覧にし、置き場所の列から目印の表につなげられる。パソコンをまたいで比べれば同じことができる。"
+        },
+        {
+          "name": "StepSecurity の発表記事（Dev Machine Guard で手順の束を一覧にできるようになった）",
+          "url": "https://www.stepsecurity.io/blog/dev-machine-guard-now-inventories-ai-agent-skills-on-developer-machines",
+          "why_close": "パソコンごとに中身の目印を作り、違いを示して、古い写しのままのパソコンを見つけるという狙いがアイデアと同じ。"
+        },
+        {
+          "name": "claude-plugins-community の自動チェック（中身の目印で確かめる）",
+          "url": "https://instagit.com/anthropics/claude-plugins-community/claude-plugin-ci-cd-reproducibility/",
+          "why_close": "束の中身から目印を作り、記録した目印と比べる。ただし置き場1つの中だけの確かめ。"
+        }
+      ],
+      "novelty": {
+        "ok": false,
+        "reason": "全員のパソコンで束の中身の目印を作って集め、違う写しのパソコンを示す仕組みは、StepSecurity Dev Machine Guard がすでに持っている（Claude Code の束から来たものも含む）。残る違いは、配った目印を正しいものとして比べることと、直した理由を一文で知らせることで、付け足し程度。説明の『似たものとの違い』はこの製品に触れていない。"
+      },
+      "usefulness": {
+        "ok": true,
+        "reason": "公式文書に、比べるのは版の番号で中身ではないこと、自動の入れ替えが初めはオフであることが書かれている。番号を新しくしても古い中身が使われ続ける不具合も、39202、39751 など何件も報告されている。まとめ役の困りごとには根拠がある。"
+      },
+      "value": {
+        "ok": false,
+        "reason": "古い手順による被害の大きさ、古いまま働く人の多さ、何人のチームから役立つか、費用と手間を、本人たちが『まだ確かめていない』と書いている。価値の大きさの根拠がない。"
+      },
+      "benefit": {
+        "ok": true,
+        "reason": "誰が（まとめ役と社員）、何が、どう良くなるかがはっきり書かれている。",
+        "sentence": "社内で助手の手順を配るまとめ役が、直した手順がまだ届いていない社員を聞いて回らずに名前で見つけられ、社員は古い手順で仕事を進める失敗を避けられる。"
+      },
+      "readability": {
+        "ok": false,
+        "reason": "ほとんどの言葉は言い換えられていて読みやすい。ただ、『エンドア・ラボ』が何かの説明がない。また、入れるときの確かめの文は1つの文に多くを詰めていて、一度で読み取りにくい。",
+        "unclear": [
+          "「エンドア・ラボ」の一覧の機能は、パソコンで使われている束を、名前や安全面の危うさで並べます。",
+          "束を入れるときに、置き場から運ばれるあいだに書き換えられていないかを目印で確かめる仕組みもあります。"
+        ]
+      },
+      "queries": [
+        "Claude Code plugin content hash drift detection across organization fleet",
+        "detect employees running outdated AI agent skills compare hash fleet osquery",
+        "Claude Code plugin update not applied stale cache version bump"
+      ],
+      "reasons": [
+        "ほぼ同じ既存のものが見つかった：StepSecurity Dev Machine Guard が、全員のパソコンで束の中身の目印を集め、違う写しを示す。",
+        "価値の大きさに根拠がない：被害の大きさや、古いまま働く人の多さを確かめていないと本人たちが書いている。",
+        "本文に、専門外の人が一度読んで分からない言葉や文がある（『エンドア・ラボ』など）。"
+      ],
+      "pass": false
+    },
+    {
+      "file": "explain/3.md",
+      "attempts": 1,
+      "toolCalls": {
+        "WebSearch": 5,
+        "WebFetch": 2
+      },
+      "name": "先輩が、若手の言えない「ここが分からない」を、気まずさなしに受け取れる",
+      "verdict": "fail",
+      "closest": [
+        {
+          "name": "Swimm (Ask Swimm)",
+          "url": "https://docs.swimm.io/swimm-ai/ask-swimm",
+          "why_close": "プログラムについて人工知能が答え、答えが足りないときに問いをチームの詳しい人へ回し、説明文書を作らせる。名前を外すことと、変更の作者へ自動で届けることがない点だけが違う。"
+        },
+        {
+          "name": "PRFlow (GraphBit) — Product Hunt の投稿「Your code reviews are unknowingly silencing your intern and junior engineers」",
+          "url": "https://www.producthunt.com/p/graphbit/your-code-reviews-are-unknowingly-silencing-your-intern-and-junior-engineers?page=1",
+          "why_close": "若手が人前で指摘される気まずさに触れ、人に見られずに人工知能とやりとりできる場を用意している。分かりにくい箇所を先輩に知らせる働きはない。"
+        },
+        {
+          "name": "hamedghaderi/review の Ask the AI about selected code",
+          "url": "https://github.com/hamedghaderi/review/pull/29",
+          "why_close": "変更を読む人が行を選んで人工知能にこっそり尋ねられる（答えは投稿されない）。答えをまとめて作者に届ける働きはない。"
+        },
+        {
+          "name": "kapa.ai Coverage Gaps",
+          "url": "https://www.kapa.ai/",
+          "why_close": "答えが出なかった問いを集めて書き手に返す仕組み。対象はプログラムの変更ではなく製品の説明書（ページは未確認）。"
+        }
+      ],
+      "novelty": {
+        "ok": false,
+        "reason": "人工知能に尋ねて答えられなかった問いを、名前を外して変更の作者へ届ける組み合わせそのものは見つからなかった。しかし、いちばん近い Swimm との違いの中心は『名前を外すこと』で、若手が先輩の変更を読むよくある場面（読み手が1人）では誰が尋ねたか分かってしまうと説明自身が認めている。違いが価値の中心として成り立つ場面がはっきりしない。"
+      },
+      "usefulness": {
+        "ok": true,
+        "reason": "若手が先輩の変更を確かめにくいこと（SSW Rules）、知識が一人に偏ると失われること（Hajari ほか 2023）には根拠があり、それに効く筋道は分かる。"
+      },
+      "value": {
+        "ok": false,
+        "reason": "黙ったまま残る分かりにくい箇所がどれくらいあるか、それでどれだけ損をしているかを示す数字がない。83.9%受け入れの数字は名前を出して書いた意見のもので、このアイデアに当てはまるかは確かめていない。書き足しが増えるか、偏りが減るかも未検証で、仕組みの大事な部分もほとんど決まっていない。"
+      },
+      "benefit": {
+        "ok": true,
+        "reason": "誰に（先輩）、何が（伝わっていない箇所が分かる）、どう良くなる（説明を書き足せる）がはっきり書かれている。",
+        "sentence": "自分の変更を若手に読んでもらう先輩が、若手が口に出せない『分かりにくかった箇所』を名前なしで受け取り、そこへ早く説明を書き足せるようになる。"
+      },
+      "readability": {
+        "ok": true,
+        "reason": "本文は『変更』『人工知能の道具』などをかみ砕いて説明しており、略語や英語の名前は出典の節に限られている。専門外の人が一度読んでつまずく言葉は見当たらない。",
+        "unclear": []
+      },
+      "queries": [
+        "anonymous questions code review junior developers AI unanswered questions sent to pull request author",
+        "AI code review chat unanswered questions documentation gaps report to author pull request",
+        "junior developer afraid to ask questions senior code review anonymous feedback tool",
+        "\"ask questions\" about pull request privately AI, aggregate confusing code areas anonymized feedback to code owner",
+        "developer questions to AI codebase assistant analytics identify undocumented code knowledge gaps report to maintainers"
+      ],
+      "reasons": [
+        "価値の大きさに根拠がない：困りごとがどれくらいあるか、どれだけ損になっているかの数字がなく、効き目もすべて未検証。",
+        "新しさの中心である『名前を外すこと』が、読み手が1人のよくある場面では成り立たない。その場合は既存の Swimm（尋ねた人が自分で問いを回す）とほとんど変わらない。"
+      ],
+      "pass": false
+    }
+  ],
+  "ok": false
+}
